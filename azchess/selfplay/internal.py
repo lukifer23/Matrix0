@@ -18,8 +18,9 @@ from ..encoding import encode_board, move_to_index
 
 
 def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: int, q: Queue | None = None):
-    random.seed(1234 + proc_id)
-    np.random.seed(1234 + proc_id)
+    base_seed = int(cfg_dict.get("seed", 1234))
+    random.seed(base_seed + proc_id)
+    np.random.seed(base_seed + proc_id)
 
     device = select_device(cfg_dict.get("device", "auto"))
 

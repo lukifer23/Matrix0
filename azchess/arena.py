@@ -6,9 +6,8 @@ from pathlib import Path
 import numpy as np
 import time
 import os
-import chess.pgn
-
 import chess
+import chess.pgn
 import torch
 
 from .config import Config, select_device
@@ -79,7 +78,6 @@ def play_match(ckpt_a: str, ckpt_b: str, games: int, cfg: Config, seed: int | No
     for g in range(games):
         board = chess.Board()
         if g % 2 == 1:
-            # swap colors
             engines = [mcts_b, mcts_a]
         else:
             engines = [mcts_a, mcts_b]
@@ -117,51 +115,15 @@ def main():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--pgn-out", type=str, default=None)
     parser.add_argument("--pgn-sample", type=int, default=0)
-    parser.add_argument("--external-engines", action="store_true", help="Evaluate against external engines")
     args = parser.parse_args()
 
     cfg = Config.load(args.config)
-    
-    if args.external_engines:
-        # Use external engine evaluation
-        try:
-            from .eval.multi_engine_evaluator import evaluate_matrix0_against_engines
-            import asyncio
-            
-            print("Evaluating Matrix0 against external engines...")
-            
-            async def run_external_evaluation():
-                results = await evaluate_matrix0_against_engines(
-                    args.config, games_per_engine=args.games
-                )
-                return results
-            
-            results = asyncio.run(run_external_evaluation())
-            
-            print("\nExternal Engine Evaluation Results:")
-            print("=" * 50)
-            
-            for engine_name, result in results.items():
-                print(f"\n{engine_name.upper()}:")
-                print(f"  Games: {result.total_games}")
-                print(f"  Wins: {result.matrix0_wins}")
-                print(f"  Losses: {result.matrix0_losses}")
-                print(f"  Draws: {result.matrix0_draws}")
-                print(f"  Win Rate: {result.win_rate:.3f}")
-                print(f"  Time Control: {result.time_control}")
-                
-        except ImportError as e:
-            print(f"External engine evaluation not available: {e}")
-            print("Falling back to internal evaluation")
-            args.external_engines = False
-    
-    if not args.external_engines:
-        # Original internal evaluation logic with extras
-        score = play_match(args.ckpt_a, args.ckpt_b, args.games, cfg, seed=args.seed, pgn_out=args.pgn_out, pgn_sample=args.pgn_sample)
-        wr = score / float(args.games)
-        lo, hi = _wilson_interval(wr, args.games)
-        print(f"Score (A as White first): {score} / {args.games} (win_rate={wr:.3f}, CI95=[{lo:.3f},{hi:.3f}])")
+    score = play_match(args.ckpt_a, args.ckpt_b, args.games, cfg, seed=args.seed, pgn_out=args.pgn_out, pgn_sample=args.pgn_sample)
+    wr = score / float(args.games)
+    lo, hi = _wilson_interval(wr, args.games)
+    print(f"Score (A as White first): {score} / {args.games} (win_rate={wr:.3f}, CI95=[{lo:.3f},{hi:.3f}])")
 
 
 if __name__ == "__main__":
     main()
+

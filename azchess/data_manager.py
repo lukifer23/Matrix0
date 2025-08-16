@@ -438,6 +438,30 @@ class DataManager:
         conn.commit()
         conn.close()
 
+    def quarantine_corrupted_shards(self, quarantine_dir: str | None = None) -> int:
+        """Move corrupted shards to a quarantine directory and remove their DB records.
+
+        Returns number of files quarantined.
+        """
+        qdir = Path(quarantine_dir or (self.backups_dir / "quarantine"))
+        qdir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT path FROM shards WHERE corrupted = TRUE")
+        rows = cursor.fetchall()
+        count = 0
+        for (pstr,) in rows:
+            p = Path(pstr)
+            try:
+                if p.exists():
+                    p.rename(qdir / p.name)
+                self._remove_shard_record(pstr)
+                count += 1
+            except Exception:
+                continue
+        conn.close()
+        return count
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Matrix0 Data Manager CLI")
     parser.add_argument("--action", type=str, required=True, choices=["stats", "validate", "quarantine"], help="Action to perform")

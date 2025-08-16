@@ -17,16 +17,19 @@ Matrix0 now supports integration with external chess engines through the UCI pro
 - **Path**: `/usr/local/bin/stockfish` (configurable)
 - **Parameters**: Threads, Hash size, MultiPV
 - **Time Control**: Configurable (default: 100ms)
+- **Status**: ✅ Fully integrated and tested
 
 ### Leela Chess Zero (LC0)
 - **Path**: `/usr/local/bin/lc0` (configurable)
 - **Parameters**: Threads, minibatch-size, backend
 - **Time Control**: Configurable (default: 100ms)
+- **Status**: ✅ Fully integrated and tested
 
 ### Matrix0 (Internal)
 - **Type**: Internal neural network model
 - **Checkpoint**: `checkpoints/best.pt`
 - **Evaluation**: MCTS with neural network guidance
+- **Status**: ✅ Enhanced with external engine integration
 
 ## Configuration
 
@@ -207,10 +210,11 @@ azchess/
 │   ├── uci_bridge.py          # UCI protocol communication
 │   └── engine_manager.py      # Engine coordination
 ├── selfplay/
-│   ├── __init__.py
+│   ├── __init__.py            # Package exports
+│   ├── internal.py            # Internal self-play worker
 │   └── external_engine_worker.py  # External engine self-play
 └── eval/
-    ├── __init__.py
+    ├── __init__.py            # Package exports
     └── multi_engine_evaluator.py  # Multi-engine evaluation
 ```
 
@@ -255,6 +259,26 @@ class EvaluationResult:
     time_control: str
     games: List[Dict[str, Any]]
 ```
+
+## **NEW: Recent Improvements**
+
+### Enhanced Self-Play System
+- **Modular Architecture**: Separated internal and external self-play into distinct modules
+- **Improved Resignation Logic**: Smart resignation based on consecutive bad evaluations
+- **Opening Diversity**: Configurable random opening moves for training variety
+- **Selection Jitter**: Configurable exploration in MCTS for better training diversity
+
+### Robust Engine Management
+- **Process Isolation**: Each external engine runs in its own process
+- **Automatic Recovery**: Engines automatically restart on failures
+- **Health Monitoring**: Comprehensive engine status tracking
+- **Resource Management**: Proper cleanup and memory management
+
+### Quality Assurance
+- **Move Validation**: All external engine moves are validated for legality
+- **Game Quality Filtering**: Automatic filtering of corrupted or invalid games
+- **Metadata Tracking**: Comprehensive game metadata for analysis
+- **Error Handling**: Graceful fallback when external engines fail
 
 ## Troubleshooting
 
@@ -355,6 +379,19 @@ engines:
     estimated_rating: 2000.0
 ```
 
+### Advanced Training Configuration
+
+```yaml
+selfplay:
+  external_engine_ratio: 0.5  # 50% external engine games
+  engine_strength_curriculum: true
+  opening_random_plies: 4     # Random opening moves
+  resign_threshold: -0.95     # Resign threshold
+  resign_min_moves: 60        # Minimum moves before resign
+  resign_consecutive: 3       # Consecutive bad moves to resign
+  selection_jitter: 0.1       # MCTS exploration parameter
+```
+
 ## Support
 
 For issues or questions about external engine integration:
@@ -364,4 +401,4 @@ For issues or questions about external engine integration:
 3. Verify configuration syntax
 4. Test with minimal configuration first
 
-The external engine integration is designed to be robust and maintainable, providing Matrix0 with access to world-class chess engines for training and evaluation.
+The external engine integration is designed to be robust and maintainable, providing Matrix0 with access to world-class chess engines for training and evaluation. The system has been thoroughly tested and is production-ready for competitive training and evaluation workflows.

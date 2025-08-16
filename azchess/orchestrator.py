@@ -14,14 +14,14 @@ from .config import Config
 from .logging_utils import setup_logging
 from .selfplay.internal import selfplay_worker, math_div_ceil
 from .train import main as train_main
-from .eval import play_match
+from .arena import play_match
 import gc
 import torch
 from .data_manager import DataManager
 from .monitor import dir_stats, disk_free, memory_usage_bytes
 
 
-def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None, doctor_fix: bool | None = None):
+def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
 
@@ -40,6 +40,19 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     external_engine_integration = bool(orch.get("external_engine_integration", False))
 
     sp_cfg = cfg.to_dict()
+    # Apply reproducible seed if provided
+    if seed is not None:
+        try:
+            import random, numpy as np, torch as _torch
+            random.seed(seed)
+            np.random.seed(seed)
+            try:
+                _torch.manual_seed(seed)
+            except Exception:
+                pass
+            sp_cfg["seed"] = int(seed)
+        except Exception:
+            pass
     workers = sp_cfg["selfplay"].get("num_workers", 2)
     games_per_worker = math_div_ceil(games_target, workers)
 
@@ -169,13 +182,10 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         # Compact self-play to replay
         logger.info("Compacting self-play to replay (DataManager)")
         dm = DataManager(base_dir=cfg.get("data_dir", "data"))
-        dm.compact_selfplay_to_replay(
-            shard_size=int(sp_cfg["training"]["replay_shard_size"]),
-            max_shards=int(sp_cfg["training"]["replay_max_shards"]),
-            backup_dir="data/backups/selfplay",
-            selfplay_dir=sp_cfg["selfplay"]["buffer_dir"],
-            replay_dir=sp_cfg["training"]["replay_dir"],
-        )
+        dm.compact_selfplay_to_replay()
+        
+        replay_stats = dir_stats(cfg.training().get("replay_dir", "data/replays"))
+        logger.info(f"Replay buffer after compaction: {replay_stats.files} shards, {replay_stats.bytes / 1e6:.1f}MB")
 
         # Data integrity check
         if run_doctor_fix:
@@ -230,7 +240,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         attempt = 0
         while True:
             try:
-                score = play_match(str(latest), str(best_ckpt), eval_games, cfg)
+                score = play_match(str(latest), str(best_ckpt), eval_games, cfg, seed=seed)
                 break
             except Exception as e:
                 if attempt >= max_retries:
@@ -243,6 +253,27 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         if win_rate >= promote_thr:
             logger.info("Promoting latest to best")
             best_ckpt.write_bytes(latest.read_bytes())
+
+        # Per-cycle JSONL summary
+        try:
+            import json
+            summary = {
+                "type": "cycle_summary",
+                "games_target": games_target,
+                "games_internal": int(done),
+                "games_external": int(external_done),
+                "replay_files": int(dir_stats(cfg.training().get("replay_dir", "data/replays")).files),
+                "train_secs": float(train_secs),
+                "eval_games": int(eval_games),
+                "win_rate": float(win_rate),
+                "timestamp": int(__import__("time").time()),
+            }
+            logs_dir = Path(cfg.training().get("log_dir", "logs"))
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            with (logs_dir / "cycle_summary.jsonl").open("a") as f:
+                f.write(json.dumps(summary) + "\n")
+        except Exception:
+            pass
 
         # Prune old checkpoints if desired
         ckpts = sorted(glob.glob(str(ckpt_dir / "model_*.pt")))
@@ -261,6 +292,7 @@ def main():
     ap.add_argument("--eval-games", type=int, default=None, help="Override eval games per cycle")
     ap.add_argument("--doctor-fix", action="store_true", help="Quarantine corrupted data files before training")
     ap.add_argument("--external-engines", action="store_true", help="Enable external engine integration")
+    ap.add_argument("--seed", type=int, default=None, help="Deterministic seed for self-play/eval")
     args = ap.parse_args()
     # Enforce strict encoding via env if configured
     try:
@@ -270,7 +302,7 @@ def main():
             _os.environ["MATRIX0_STRICT_ENCODING"] = "1"
     except Exception:
         pass
-    orchestrate(args.config, games_override=args.games, eval_games_override=args.eval_games, doctor_fix=args.doctor_fix)
+    orchestrate(args.config, games_override=args.games, eval_games_override=args.eval_games, doctor_fix=args.doctor_fix, seed=args.seed)
 
 
 if __name__ == "__main__":
