@@ -38,32 +38,33 @@ engines:
 selfplay:
   num_workers: 4
   games_per_worker: 32
-  num_simulations: 200
+  num_simulations: 100  # Reduced from 200 for faster iteration
   cpuct: 1.5
   dirichlet_alpha: 0.3
   dirichlet_frac: 0.25
   temperature: 1.0
   temp_moves: 30
-  max_game_len: 512
-  resign_threshold: -0.95
-  resign_min_moves: 60
+  max_game_len: 150  # Reduced from 512 - games were taking too long!
+  resign_threshold: -0.8  # More aggressive resignation (was -0.95)
+  resign_min_moves: 30  # Reduced from 60 - resign earlier
   resign_consecutive: 3
   buffer_dir: data/selfplay
   tt_capacity: 200000
   selection_jitter: 0.0
   opening_random_plies: 0
+  move_time_limit: 10  # NEW: Maximum 10 seconds per move
   external_engine_ratio: 0.3  # 30% games vs external engines
   engine_strength_curriculum: true
   schedule:
     - until_move: 20
       temperature: 1.0
-      num_simulations: 200
+      num_simulations: 100  # Reduced from 200
     - until_move: 60
       temperature: 0.5
-      num_simulations: 200
-    - until_move: 512
+      num_simulations: 100  # Reduced from 200
+    - until_move: 150  # Reduced from 512
       temperature: 0.1
-      num_simulations: 400
+      num_simulations: 150  # Reduced from 400
 
 training:
   batch_size: 256
@@ -95,7 +96,7 @@ eval:
   strength_estimation_games: 50
 
 orchestrator:
-  games_per_cycle: 300
+  games_per_cycle: 64  # Reduced from 300 for faster development cycles
   train_epochs_per_cycle: 1
   eval_games_per_cycle: 20
   promotion_threshold: 0.55  # win rate to promote new checkpoint

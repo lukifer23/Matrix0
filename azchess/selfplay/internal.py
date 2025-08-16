@@ -3,6 +3,7 @@ from __future__ import annotations
 from multiprocessing import Queue
 from time import perf_counter
 from typing import Dict, List, Tuple
+import logging
 
 import numpy as np
 import chess
@@ -18,6 +19,7 @@ from ..encoding import encode_board, move_to_index
 
 
 def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: int, q: Queue | None = None):
+    logger = logging.getLogger(f"selfplay_worker_{proc_id}")
     base_seed = int(cfg_dict.get("seed", 1234))
     random.seed(base_seed + proc_id)
     np.random.seed(base_seed + proc_id)
@@ -77,10 +79,21 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         resigned = False
         resign_winner = 0.0
 
-        while not board.is_game_over() and len(states) < cfg_dict["selfplay"].get("max_game_len", 512):
+        while not board.is_game_over() and len(states) < cfg_dict["selfplay"].get("max_game_len", 150):
             mv_no = len(states)
             temperature, sims = schedule_params(cfg_dict["selfplay"], mv_no)
+            
+            # Add move time limiting
+            move_time_limit = float(cfg_dict["selfplay"].get("move_time_limit", 10.0))
+            move_start_time = perf_counter()
+            
             visit_counts, pi, v = mcts.run(board, num_simulations=sims)
+            
+            # Check if move took too long
+            move_time = perf_counter() - move_start_time
+            if move_time > move_time_limit:
+                logger.warning(f"Move {mv_no} took {move_time:.1f}s (limit: {move_time_limit}s)")
+            
             move = sample_move_from_counts(board, visit_counts, temperature)
             states.append(encode_board(board))
             pis.append(pi)
