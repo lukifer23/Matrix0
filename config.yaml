@@ -1,0 +1,105 @@
+experiment_name: Matrix0
+seed: 42
+
+device: auto  # auto|mps|cpu
+precision: fp16  # fp16|bf16|fp32
+strict_encoding: true  # warn on legacy move_encoding imports
+
+model:
+  planes: 19
+  channels: 160
+  blocks: 14
+  policy_size: 4672
+
+engines:
+  stockfish:
+    path: /usr/local/bin/stockfish
+    parameters:
+      Threads: 2
+      Hash: 128
+      MultiPV: 1
+    time_control: 100ms
+    enabled: true
+  
+  lc0:
+    path: /usr/local/bin/lc0
+    parameters:
+      threads: 2
+      minibatch-size: 256
+      backend: cuda
+    time_control: 100ms
+    enabled: true
+  
+  matrix0:
+    type: internal
+    checkpoint: checkpoints/best.pt
+    enabled: true
+
+selfplay:
+  num_workers: 4
+  games_per_worker: 32
+  num_simulations: 200
+  cpuct: 1.5
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  temperature: 1.0
+  temp_moves: 30
+  max_game_len: 512
+  resign_threshold: -0.95
+  resign_min_moves: 60
+  resign_consecutive: 3
+  buffer_dir: data/selfplay
+  tt_capacity: 200000
+  selection_jitter: 0.0
+  opening_random_plies: 0
+  external_engine_ratio: 0.3  # 30% games vs external engines
+  engine_strength_curriculum: true
+  schedule:
+    - until_move: 20
+      temperature: 1.0
+      num_simulations: 200
+    - until_move: 60
+      temperature: 0.5
+      num_simulations: 200
+    - until_move: 512
+      temperature: 0.1
+      num_simulations: 400
+
+training:
+  batch_size: 256
+  epochs: 1
+  steps_per_epoch: 1000
+  lr: 0.001
+  weight_decay: 1.0e-4
+  ema_decay: 0.999
+  grad_clip_norm: 1.0
+  accum_steps: 1
+  replay_dir: data/replays
+  validation_dir: data/validation
+  backup_dir: data/backups
+  replay_shard_size: 16384
+  replay_max_shards: 128
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  external_engine_ratio: 0.3  # 30% games vs external engines
+  engine_strength_curriculum: true
+  adversarial_training: true
+
+eval:
+  games: 50
+  temperature: 0.1
+  num_simulations: 200
+  cpuct: 1.5
+  external_engines: ["stockfish", "lc0"]
+  tournament_rounds: 100
+  strength_estimation_games: 50
+
+orchestrator:
+  games_per_cycle: 64
+  train_epochs_per_cycle: 1
+  eval_games_per_cycle: 20
+  promotion_threshold: 0.55  # win rate to promote new checkpoint
+  keep_top_k: 3
+  max_retries: 2
+  backoff_seconds: 5
+  external_engine_integration: true

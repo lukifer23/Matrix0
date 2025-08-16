@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.DS_Store
+*.pyc
+*.pyo
+*.swp
+*.swo
+env/
+.venv/
+dist/
+build/
+*.egg-info/
+logs/
+checkpoints/
+data/selfplay/
+data/replays/
+artifacts/

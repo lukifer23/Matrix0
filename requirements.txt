@@ -1,0 +1,10 @@
+torch>=2.3
+numpy>=1.24
+python-chess>=1.999
+PyYAML>=6.0
+tqdm>=4.66
+rich>=13.7
+tensorboard>=2.14
+coremltools>=6.4 ; platform_system == "Darwin"
+ml-dtypes>=0.4 ; platform_system == "Darwin"
+psutil>=5.9

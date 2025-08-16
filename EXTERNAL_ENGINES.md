@@ -1,0 +1,367 @@
+# External Engine Integration for Matrix0
+
+This document describes how to integrate and use external chess engines (Stockfish, Leela Chess Zero) with Matrix0 for training, evaluation, and competition.
+
+## Overview
+
+Matrix0 now supports integration with external chess engines through the UCI protocol, enabling:
+
+- **Training Partner Integration**: Generate games between Matrix0 and external engines
+- **Multi-Engine Evaluation**: Evaluate Matrix0's strength against external engines
+- **Competitive Training**: Use external engines as training opponents
+- **Strength Benchmarking**: Measure Matrix0's progress against established engines
+
+## Supported Engines
+
+### Stockfish
+- **Path**: `/usr/local/bin/stockfish` (configurable)
+- **Parameters**: Threads, Hash size, MultiPV
+- **Time Control**: Configurable (default: 100ms)
+
+### Leela Chess Zero (LC0)
+- **Path**: `/usr/local/bin/lc0` (configurable)
+- **Parameters**: Threads, minibatch-size, backend
+- **Time Control**: Configurable (default: 100ms)
+
+### Matrix0 (Internal)
+- **Type**: Internal neural network model
+- **Checkpoint**: `checkpoints/best.pt`
+- **Evaluation**: MCTS with neural network guidance
+
+## Configuration
+
+### Basic Engine Configuration
+
+Add engine configurations to your `config.yaml`:
+
+```yaml
+engines:
+  stockfish:
+    path: /usr/local/bin/stockfish
+    parameters:
+      Threads: 2
+      Hash: 128
+      MultiPV: 1
+    time_control: 100ms
+    enabled: true
+  
+  lc0:
+    path: /usr/local/bin/lc0
+    parameters:
+      threads: 2
+      minibatch-size: 256
+      backend: cuda
+    time_control: 100ms
+    enabled: true
+  
+  matrix0:
+    type: internal
+    checkpoint: checkpoints/best.pt
+    enabled: true
+```
+
+### Training Configuration
+
+Configure external engine training parameters:
+
+```yaml
+selfplay:
+  external_engine_ratio: 0.3  # 30% games vs external engines
+  engine_strength_curriculum: true
+
+training:
+  external_engine_ratio: 0.3
+  engine_strength_curriculum: true
+  adversarial_training: true
+```
+
+### Evaluation Configuration
+
+Configure external engine evaluation:
+
+```yaml
+eval:
+  external_engines: ["stockfish", "lc0"]
+  tournament_rounds: 100
+  strength_estimation_games: 50
+```
+
+### Orchestrator Configuration
+
+Enable external engine integration in training cycles:
+
+```yaml
+orchestrator:
+  external_engine_integration: true
+```
+
+## Usage
+
+### 1. Self-Play with External Engines
+
+Generate games between Matrix0 and external engines:
+
+```bash
+# Generate games using external engines
+python -m azchess.selfplay --external-engines --games 32
+
+# Or use the orchestrator with external engines enabled
+python -m azchess.orchestrator --external-engines
+```
+
+### 2. Evaluate Against External Engines
+
+Evaluate Matrix0's strength against external engines:
+
+```bash
+# Evaluate against all configured external engines
+python -m azchess.eval --external-engines --games 50
+
+# Or use the multi-engine evaluator directly
+python -m azchess.eval.multi_engine_evaluator --config config.yaml --games 50
+```
+
+### 3. Multi-Engine Evaluation
+
+Run comprehensive evaluation against multiple engines:
+
+```python
+from azchess.eval.multi_engine_evaluator import evaluate_matrix0_against_engines
+
+# Evaluate against specific engines
+results = await evaluate_matrix0_against_engines(
+    "config.yaml", 
+    engine_names=["stockfish", "lc0"], 
+    games_per_engine=50
+)
+
+# Print results
+for engine_name, result in results.items():
+    print(f"{engine_name}: {result.win_rate:.3f} win rate")
+```
+
+### 4. External Engine Self-Play
+
+Generate training data using external engines:
+
+```python
+from azchess.selfplay.external_engine_worker import ExternalEngineSelfPlay
+from azchess.engines import EngineManager
+
+# Initialize
+config = Config.load("config.yaml")
+engine_manager = EngineManager(config.to_dict())
+selfplay = ExternalEngineSelfPlay(config, engine_manager)
+
+# Generate games
+games = await selfplay.generate_games(100, "data/external_games")
+```
+
+## Engine Management
+
+### Starting and Stopping Engines
+
+```python
+from azchess.engines import EngineManager
+
+# Initialize and start all engines
+engine_manager = EngineManager(config.to_dict())
+await engine_manager.start_all_engines()
+
+# Start specific engine
+await engine_manager.start_engine("stockfish")
+
+# Stop specific engine
+await engine_manager.stop_engine("stockfish")
+
+# Cleanup all engines
+await engine_manager.cleanup()
+```
+
+### Health Monitoring
+
+```python
+# Check engine health
+health_results = await engine_manager.check_all_engines_health()
+
+# Get engine information
+info = engine_manager.get_engine_info("stockfish")
+print(f"Status: {info['health']['status']}")
+print(f"Last error: {info['health']['last_error']}")
+```
+
+### Engine Selection
+
+```python
+# Select training partner based on target strength
+partner = engine_manager.select_training_partner(target_strength=1800.0)
+print(f"Selected partner: {partner}")
+```
+
+## File Structure
+
+```
+azchess/
+├── engines/
+│   ├── __init__.py
+│   ├── uci_bridge.py          # UCI protocol communication
+│   └── engine_manager.py      # Engine coordination
+├── selfplay/
+│   ├── __init__.py
+│   └── external_engine_worker.py  # External engine self-play
+└── eval/
+    ├── __init__.py
+    └── multi_engine_evaluator.py  # Multi-engine evaluation
+```
+
+## Data Formats
+
+### External Engine Games
+
+Games against external engines are saved in JSON format:
+
+```json
+{
+  "metadata": {
+    "white_engine": "matrix0",
+    "black_engine": "stockfish",
+    "moves": 45,
+    "result": 1.0,
+    "time_seconds": 12.5,
+    "timestamp": 1234567890.123
+  },
+  "game_data": {
+    "moves": ["e2e4", "e7e5", "g1f3", ...],
+    "positions": [...],
+    "evaluations": [...],
+    "final_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+  }
+}
+```
+
+### Evaluation Results
+
+Evaluation results include comprehensive statistics:
+
+```python
+@dataclass
+class EvaluationResult:
+    matrix0_wins: int
+    matrix0_losses: int
+    matrix0_draws: int
+    total_games: int
+    win_rate: float
+    engine_name: str
+    time_control: str
+    games: List[Dict[str, Any]]
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Engine Not Found**
+   - Verify engine path in configuration
+   - Ensure engine executable has proper permissions
+   - Check if engine is installed and accessible
+
+2. **Engine Communication Errors**
+   - Verify UCI protocol compatibility
+   - Check engine parameters and time controls
+   - Review engine logs for errors
+
+3. **Performance Issues**
+   - Adjust time controls for faster games
+   - Reduce engine thread count
+   - Monitor system resources
+
+### Debug Mode
+
+Enable detailed logging for troubleshooting:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+
+### Health Checks
+
+Run engine health checks:
+
+```python
+# Check all engines
+health = await engine_manager.check_all_engines_health()
+
+# Check specific engine
+is_healthy = await engine_manager.check_engine_health("stockfish")
+```
+
+## Performance Considerations
+
+### Resource Management
+- **Memory**: External engines consume additional memory
+- **CPU**: Engine processes compete with Matrix0 training
+- **Disk**: Game data storage requirements increase
+
+### Optimization Tips
+- Use appropriate time controls for your use case
+- Limit concurrent engine processes
+- Implement engine rotation for load balancing
+- Monitor system resources during operation
+
+## Future Enhancements
+
+### Planned Features
+- **Engine Strength Estimation**: Automatic rating calculation
+- **Adaptive Training**: Dynamic opponent selection
+- **Opening Book Integration**: Engine-specific opening strategies
+- **Performance Analytics**: Detailed engine comparison metrics
+
+### Extensibility
+The system is designed to easily add new engines:
+1. Add engine configuration to `config.yaml`
+2. Ensure UCI protocol compatibility
+3. Test engine integration
+4. Configure training and evaluation parameters
+
+## Examples
+
+### Complete Training Cycle
+
+```bash
+# 1. Generate games with external engines
+python -m azchess.selfplay --external-engines --games 64
+
+# 2. Train on combined data
+python -m azchess.train --config config.yaml
+
+# 3. Evaluate against external engines
+python -m azchess.eval --external-engines --games 50
+
+# 4. Or run complete cycle
+python -m azchess.orchestrator --external-engines
+```
+
+### Custom Engine Configuration
+
+```yaml
+engines:
+  custom_engine:
+    path: /path/to/custom/engine
+    parameters:
+      custom_param: value
+    time_control: 200ms
+    enabled: true
+    estimated_rating: 2000.0
+```
+
+## Support
+
+For issues or questions about external engine integration:
+
+1. Check the troubleshooting section
+2. Review engine-specific documentation
+3. Verify configuration syntax
+4. Test with minimal configuration first
+
+The external engine integration is designed to be robust and maintainable, providing Matrix0 with access to world-class chess engines for training and evaluation.
