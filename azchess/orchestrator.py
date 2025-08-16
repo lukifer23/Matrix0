@@ -58,6 +58,21 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
 
     Path(cfg.training().get("checkpoint_dir", "checkpoints")).mkdir(parents=True, exist_ok=True)
     best_ckpt = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "best.pt"
+    
+    # Auto-create best.pt from model.pt if it doesn't exist
+    if not best_ckpt.exists():
+        model_ckpt = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "model.pt"
+        if model_ckpt.exists():
+            logger.info(f"Creating best.pt from existing model.pt")
+            try:
+                import shutil
+                shutil.copy2(model_ckpt, best_ckpt)
+                logger.info(f"Successfully created {best_ckpt}")
+            except Exception as e:
+                logger.warning(f"Failed to copy model.pt to best.pt: {e}")
+                logger.info("Will create new model with random weights")
+        else:
+            logger.info("No existing checkpoints found. Will create new model with random weights")
 
     with Progress(
         "{task.description}",
