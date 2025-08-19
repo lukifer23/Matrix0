@@ -174,7 +174,7 @@ class MCTS:
         self._in_bulk_put: bool = False
 
     @torch.no_grad()
-    def run(self, board: chess.Board, num_simulations: Optional[int] = None) -> Tuple[Dict[chess.Move, int], np.ndarray, float]:
+    def run(self, board: chess.Board, num_simulations: Optional[int] = None, ply: Optional[int] = None) -> Tuple[Dict[chess.Move, int], np.ndarray, float]:
         if board.is_game_over():
             return {}, np.zeros(4672, dtype=np.float32), self._terminal_value(board)
 
@@ -188,7 +188,10 @@ class MCTS:
             # Use cached value if root is already evaluated
             _, v = self.nn_cache.get(board._transposition_key()) or (None, 0.0)
 
-        self._add_dirichlet(root)
+        # Optionally gate Dirichlet noise by ply (apply in early game only)
+        dirichlet_plies = getattr(self.cfg, 'dirichlet_plies', None)
+        if dirichlet_plies is None or (ply is None) or (ply < int(dirichlet_plies)):
+            self._add_dirichlet(root)
 
         sims_to_run = num_simulations if num_simulations is not None else self.cfg.num_simulations
         
@@ -224,8 +227,7 @@ class MCTS:
                 self._backpropagate(path, v_leaf)
                 sims_run_this_turn += 1
 
-        # Update root node visit count from actual simulations
-        root.n = sims_run_this_turn
+        # Preserve root.n from backpropagations; do not overwrite with sims_run_this_turn
         
         # Debug: Log what happened during MCTS
         if sims_run_this_turn == 0:
@@ -282,7 +284,9 @@ class MCTS:
             
             for child in node.children.values():
                 if child.n == 0:
-                    q = -self.cfg.fpu if self.cfg.parent_q_init else 0.0
+                    # FPU scaled by parent Q to emphasize uncertain branches
+                    fpu_bias = (self.cfg.fpu * (0.5 - node.q)) if self.cfg.parent_q_init else 0.0
+                    q = -fpu_bias
                 else:
                     q = child.q
 

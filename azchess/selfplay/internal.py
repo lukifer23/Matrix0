@@ -254,7 +254,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
 
             try:
                 t_move0 = perf_counter()
-                visit_counts, pi, v = mcts.run(board)
+                # Pass ply index to MCTS for ply-gated Dirichlet in early game
+                visit_counts, pi, v = mcts.run(board, ply=len(states))
                 t_move1 = perf_counter()
                 
                 # Validate visit counts

@@ -206,13 +206,16 @@ class PolicyValueNet(nn.Module):
         else:
             self.ssl_head = None
 
-        # Enhanced policy head
+        # Enhanced policy head trunk shared by both branches
         self.policy_head = nn.Sequential(
-            nn.Conv2d(C, 64, kernel_size=1, bias=False),  # Increased from 32
+            nn.Conv2d(C, 64, kernel_size=1, bias=False),
             _norm(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.1),  # Add dropout for regularization
+            nn.Dropout(0.1),
         )
+        # Spatial conv branch: per-square 73 logits
+        self.policy_conv_out = nn.Conv2d(64, 73, kernel_size=1, bias=True)
+        # Dense branch: preserves original capacity (4096 → 4672)
         self.policy_fc = nn.Linear(64 * 8 * 8, cfg.policy_size)
         
         # Enhanced value head
@@ -231,13 +234,12 @@ class PolicyValueNet(nn.Module):
 
     def _init_weights(self):
         """Initialize weights properly for chess policy learning."""
-        # Policy head initialization - ensure reasonable logit magnitudes
+        # Policy head initialization
         nn.init.kaiming_normal_(self.policy_head[0].weight, mode='fan_out', nonlinearity='relu')
-        
-        # Policy FC layer - use proper scaling for 4672 outputs
-        # The issue was that default initialization produces logits too close to zero
+        nn.init.xavier_uniform_(self.policy_conv_out.weight, gain=1.0)
+        nn.init.constant_(self.policy_conv_out.bias, 0.0)
         nn.init.xavier_uniform_(self.policy_fc.weight, gain=1.0)
-        nn.init.constant_(self.policy_fc.bias, 0.0)  # Start with zero bias
+        nn.init.constant_(self.policy_fc.bias, 0.0)
         
         # Value head initialization
         nn.init.kaiming_normal_(self.value_head[0].weight, mode='fan_out', nonlinearity='relu')
@@ -250,11 +252,10 @@ class PolicyValueNet(nn.Module):
         nn.init.constant_(self.value_fc2.bias, 0.0)
         nn.init.constant_(self.value_fc3.bias, 0.0)
         
-        # Scale policy weights to ensure reasonable logit magnitudes
-        # This prevents the "uniform policy" problem from the start
+        # Scale policy output weights to ensure reasonable logit magnitudes
         with torch.no_grad():
-            # Scale policy weights to produce logits in reasonable range
-            self.policy_fc.weight.data *= 2.0
+            self.policy_conv_out.weight.data *= 1.5
+            self.policy_fc.weight.data *= 1.5
 
     def forward(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = self.stem(x)
@@ -265,10 +266,15 @@ class PolicyValueNet(nn.Module):
         
         x = self.tower(x)
 
-        # Policy head
-        p = self.policy_head(x)
-        p = p.contiguous().reshape(p.size(0), -1)
-        p = self.policy_fc(p)
+        # Policy head branches combined
+        pfeat = self.policy_head(x)
+        # Spatial conv branch
+        p_conv = self.policy_conv_out(pfeat)
+        p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
+        # Dense branch
+        p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
+        # Combine logits
+        p = p_conv + p_fc
 
         # Value head
         v = self.value_head(x)

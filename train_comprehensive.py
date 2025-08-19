@@ -94,20 +94,33 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         except Exception:
             pass
         p, v, ssl_out = model(s, return_ssl=True)
+
+        # Optional legality masking for stability: mask logits where target is zero
+        # Assumes pi provides positive mass only on legal actions
+        try:
+            with torch.no_grad():
+                legal_mask = (pi > 0)
+                # If any row is all-zero (e.g., fallback), skip masking for that row
+                valid_rows = legal_mask.any(dim=1, keepdim=True)
+            masked_p = p.clone()
+            masked_p[valid_rows.expand_as(p) & (~legal_mask)] = -1e9
+            p_for_loss = masked_p
+        except Exception:
+            p_for_loss = p
         # Policy loss with optional label smoothing
         if label_smoothing and label_smoothing > 0.0:
             num_actions = p.shape[1]
             smooth = label_smoothing / float(num_actions)
             pi_smooth = (1.0 - label_smoothing) * pi + smooth
-            log_probs = nn.functional.log_softmax(p, dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
             policy_loss = -(pi_smooth * log_probs).sum(dim=1).mean()
         else:
-            log_probs = nn.functional.log_softmax(p, dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
             policy_loss = -(pi * log_probs).sum(dim=1).mean()
         
         # Add policy regularization to prevent uniform outputs
         # This encourages the model to produce diverse, meaningful policies
-        policy_probs = torch.softmax(p, dim=1)
+        policy_probs = torch.softmax(p_for_loss, dim=1)
         uniform_probs = torch.ones_like(policy_probs) / policy_probs.shape[1]
         policy_entropy = -(policy_probs * torch.log(policy_probs + 1e-8)).sum(dim=1).mean()
         max_entropy = torch.log(torch.tensor(policy_probs.shape[1], dtype=torch.float32, device=p.device))

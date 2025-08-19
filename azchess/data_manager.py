@@ -811,10 +811,14 @@ class DataManager:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Matrix0 Data Manager CLI")
-    parser.add_argument("--action", type=str, required=True, choices=["stats", "validate", "quarantine"], help="Action to perform")
+    parser.add_argument("--base-dir", type=str, default="data", help="Base data directory")
+    parser.add_argument("--action", type=str, required=True,
+                        choices=["stats", "validate", "quarantine", "compact", "backup", "import"],
+                        help="Action to perform")
+    parser.add_argument("--path", type=str, default=None, help="Path for import action")
     args = parser.parse_args()
 
-    dm = DataManager()
+    dm = DataManager(base_dir=args.base_dir)
 
     if args.action == "stats":
         stats = dm.get_stats()
@@ -825,162 +829,18 @@ if __name__ == "__main__":
     elif args.action == "quarantine":
         count = dm.quarantine_corrupted_shards()
         print(f"Quarantined {count} corrupted shards.")
-
-    def import_replay_dir(self, src_dir: str, source: str = "external", move_files: bool = False) -> int:
-        """Import existing NPZ shards from a directory into the replay buffer and DB.
-
-        If move_files is True, files are moved into the managed replay directory; otherwise
-        they are left in place and simply recorded in the DB so training can read them.
-
-        Returns number of files imported.
-        """
-        src = Path(src_dir)
-        if not src.exists():
-            return 0
-        count = 0
-        for f in sorted(src.glob('*.npz')):
-            try:
-                dest_path = f
-                if move_files:
-                    dest_path = self.replays_dir / f.name
-                    if dest_path.resolve() != f.resolve():
-                        dest_path.write_bytes(f.read_bytes())
-                        f.unlink(missing_ok=True)
-                # Load to get sample count quickly
-                with np.load(dest_path, mmap_mode='r') as data:
-                    s = data['s']
-                    sample_count = int(s.shape[0])
-                size_bytes = dest_path.stat().st_size
-                ts = datetime.now().isoformat()
-                checksum = self._calculate_checksum(dest_path)
-                self._record_shard(str(dest_path), size_bytes, sample_count, ts, checksum, source=source)
-                count += 1
-            except Exception as e:
-                logger.error(f"Failed to import shard {f}: {e}")
-        return count
-
-    def _record_shard(self, path: str, size_bytes: int, sample_count: int, 
-                      created_at: str, checksum: str, source: str = "selfplay"):
-        """Record shard metadata in database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        def _do():
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO shards 
-                (path, size_bytes, sample_count, created_at, checksum, version, source, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (path, size_bytes, sample_count, created_at, checksum, self.version, source, created_at)
-            )
-            conn.commit()
-        self._with_retry(_do)
-        conn.close()
-    
-    def _get_valid_shard_paths(self) -> List[str]:
-        """Get paths of valid (non-corrupted) shards."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT path FROM shards WHERE corrupted = FALSE ORDER BY created_at DESC")
-        paths = [row[0] for row in cursor.fetchall()]
-        
-        conn.close()
-        
-        # Filter out paths that don't exist on disk
-        valid_paths = []
-        for path in paths:
-            if Path(path).exists():
-                valid_paths.append(path)
-            else:
-                # Mark as corrupted if file doesn't exist
-                self._mark_shard_corrupted(path)
-        
-        return valid_paths
-    
-    def _get_all_shards(self) -> List[DataShard]:
-        """Get all shards with metadata."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT path, size_bytes, sample_count, created_at, checksum, version, corrupted
-            FROM shards ORDER BY created_at DESC
-        """)
-        
-        shards = []
-        for row in cursor.fetchall():
-            shards.append(DataShard(
-                path=row[0],
-                size_bytes=row[1],
-                sample_count=row[2],
-                created_at=row[3],
-                checksum=row[4],
-                version=row[5],
-                corrupted=bool(row[6])
-            ))
-        
-        conn.close()
-        return shards
-    
-    def _calculate_checksum(self, filepath: Path) -> str:
-        """Calculate SHA256 checksum of file."""
-        sha256_hash = hashlib.sha256()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
-    
-    def _validate_shard(self, shard: DataShard) -> bool:
-        """Validate a single shard's integrity."""
-        try:
-            filepath = Path(shard.path)
-            if not filepath.exists():
-                return False
-            
-            # Check file size
-            if filepath.stat().st_size != shard.size_bytes:
-                return False
-            
-            # Check checksum
-            current_checksum = self._calculate_checksum(filepath)
-            if current_checksum != shard.checksum:
-                return False
-            
-            # Try to load data
-            with np.load(filepath) as data:
-                required_keys = ['s', 'pi', 'z']
-                if not all(key in data for key in required_keys):
-                    return False
-                
-                # Check sample count
-                if len(data['s']) != shard.sample_count:
-                    return False
-            
-            return True
-            
-        except Exception:
-            return False
-    
-    def _mark_shard_corrupted(self, path: str):
-        """Mark a shard as corrupted in the database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("UPDATE shards SET corrupted = TRUE WHERE path = ?", (path,))
-        
-        conn.commit()
-        conn.close()
-    
-    def _remove_shard_record(self, path: str):
-        """Remove a shard record from the database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM shards WHERE path = ?", (path,))
-        
-        conn.commit()
-        conn.close()
+    elif args.action == "compact":
+        dm.compact_selfplay_to_replay()
+        stats = dm.get_stats()
+        print(json.dumps(asdict(stats), indent=2))
+    elif args.action == "backup":
+        path = dm.create_backup()
+        print(json.dumps({"backup": path}, indent=2))
+    elif args.action == "import":
+        if not args.path:
+            raise SystemExit("--path required for import action")
+        n = dm.import_replay_dir(args.path, source="external", move_files=False)
+        print(json.dumps({"imported": n, "from": args.path}, indent=2))
 
     def quarantine_corrupted_shards(self, quarantine_dir: str | None = None) -> int:
         """Move corrupted shards to a quarantine directory and remove their DB records.

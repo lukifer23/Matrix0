@@ -62,6 +62,10 @@ selfplay:
   batch_size: 32
   buffer_dir: "data/selfplay"
   early_draw_enabled: false  # Disable heuristic early draw adjudication by default
+  # Low-visit fallback sampling: when root max visits below threshold, prefer sampling
+  low_visit_threshold: 15
+  # Require consecutive bad values before resigning
+  resign_consecutive_bad: 3
 
 # NEW: Openings configuration
 openings:
@@ -72,6 +76,20 @@ openings:
 
 training:
   batch_size: 512  # Increased for better GPU utilization
+  policy_masking: true
+  ssl_warmup_steps: 1000
+
+mcts:
+  # Gate Dirichlet to first K plies to avoid midgame chaos
+  dirichlet_plies: 16
+
+eval:
+  # Ensure eval MCTS pulls from consistent keys
+  num_simulations: 200
+  cpuct: 1.5
+  dirichlet_alpha: 0.3
+  tt_capacity: 200000
+  selection_jitter: 0.0
   epochs: 1
   steps_per_epoch: 10000  # Increased to 10,000 steps
   lr: 0.001
