@@ -56,12 +56,9 @@ selfplay:
   temperature_start: 1.0
   temperature_end: 0.2
   temperature_moves: 30
-  selection_jitter: 0.01
   resign_threshold: -0.98
   max_game_len: 140
   batch_size: 32
-  fpu: 0.5
-  parent_q_init: true
   buffer_dir: "data/selfplay"
 
 # NEW: Openings configuration
@@ -106,6 +103,7 @@ presets:
       num_workers: 6
       num_simulations: 256
       batch_size: 64
+    mcts:
       fpu: 0.5
     training:
       batch_size: 512
@@ -115,6 +113,7 @@ presets:
       num_workers: 4  # Increased for better parallelization
       num_simulations: 256  # Increased for better play quality
       batch_size: 64  # Increased for better GPU utilization
+    mcts:
       fpu: 0.5
     training:
       batch_size: 512  # Increased for better GPU utilization
@@ -148,7 +147,9 @@ mcts:
   cpuct: 2.5
   dirichlet_alpha: 0.3
   dirichlet_frac: 0.25
-  temperature: 1.0
+  fpu: 0.5
+  selection_jitter: 0.01
+  parent_q_init: true
   tt_capacity: 2000000
   tt_cleanup_frequency: 500
 
