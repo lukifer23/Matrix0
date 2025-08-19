@@ -55,8 +55,9 @@ class EMA:
             if k in self.shadow:
                 p.copy_(self.shadow[k])
 
-def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True, 
-               ssl_weight: float = 0.1, enable_ssl: bool = True):
+def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
+               ssl_weight: float = 0.1, enable_ssl: bool = True,
+               label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     model.train()
     s, pi, z = batch
@@ -87,17 +88,47 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     device_type = device.split(':')[0]
     use_autocast = (scaler is not None) or (device_type == 'mps')
     with torch.autocast(device_type=device_type, enabled=use_autocast):
+        # Channels-last can speed up on MPS
+        try:
+            s = s.contiguous(memory_format=torch.channels_last)
+        except Exception:
+            pass
         p, v, ssl_out = model(s, return_ssl=True)
-        log_probs = nn.functional.log_softmax(p, dim=1)
-        policy_loss = -(pi * log_probs).sum(dim=1).mean()
-        value_loss = nn.functional.mse_loss(v, z)
+        # Policy loss with optional label smoothing
+        if label_smoothing and label_smoothing > 0.0:
+            num_actions = p.shape[1]
+            smooth = label_smoothing / float(num_actions)
+            pi_smooth = (1.0 - label_smoothing) * pi + smooth
+            log_probs = nn.functional.log_softmax(p, dim=1)
+            policy_loss = -(pi_smooth * log_probs).sum(dim=1).mean()
+        else:
+            log_probs = nn.functional.log_softmax(p, dim=1)
+            policy_loss = -(pi * log_probs).sum(dim=1).mean()
+        
+        # Add policy regularization to prevent uniform outputs
+        # This encourages the model to produce diverse, meaningful policies
+        policy_probs = torch.softmax(p, dim=1)
+        uniform_probs = torch.ones_like(policy_probs) / policy_probs.shape[1]
+        policy_entropy = -(policy_probs * torch.log(policy_probs + 1e-8)).sum(dim=1).mean()
+        max_entropy = torch.log(torch.tensor(policy_probs.shape[1], dtype=torch.float32, device=p.device))
+        
+        # Penalize if policy is too close to uniform (entropy too high)
+        # But don't penalize if policy is too concentrated (entropy too low)
+        entropy_penalty = torch.relu(policy_entropy - 0.8 * max_entropy)
+        policy_reg_loss = 0.1 * entropy_penalty
+        
+        # Value loss: MSE or Huber
+        if value_loss_type == 'huber':
+            value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
+        else:
+            value_loss = nn.functional.mse_loss(v, z)
         
         ssl_loss = 0.0
         if enable_ssl and ssl_target is not None and ssl_out is not None:
             ssl_loss = nn.functional.cross_entropy(ssl_out, ssl_target)
-            loss = policy_loss + value_loss + ssl_weight * ssl_loss
+            loss = policy_loss + policy_reg_loss + value_loss + ssl_weight * ssl_loss
         else:
-            loss = policy_loss + value_loss
+            loss = policy_loss + policy_reg_loss + value_loss
     
     # Scale loss and backward pass
     if scaler is not None:
@@ -205,11 +236,38 @@ def train_comprehensive(
     # Setup data using DataManager
     data_manager = DataManager(base_dir=cfg.get("data_dir", "data"))
     data_stats = data_manager.get_stats()
-    if data_stats.total_samples == 0:
-        raise ValueError("No training data found by DataManager!")
-    logger.info(f"DataManager found {data_stats.total_shards} shards with {data_stats.total_samples} total samples.")
+    external_stats = data_manager.get_external_data_stats()
     
-    batch_generator = data_manager.get_training_batch(batch_size, device)
+    if data_stats.total_samples == 0 and external_stats['external_total'] == 0:
+        raise ValueError("No training data found by DataManager!")
+    
+    logger.info(f"DataManager found {data_stats.total_shards} shards with {data_stats.total_samples} total samples.")
+    logger.info(f"External training data: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples.")
+    
+    # Check if curriculum learning is enabled
+    use_curriculum = cfg.training().get("use_curriculum", False)
+    curriculum_phases = cfg.training().get("curriculum_phases", [])
+    
+    if use_curriculum and curriculum_phases:
+        logger.info(f"Curriculum learning enabled with {len(curriculum_phases)} phases")
+        current_phase = curriculum_phases[0]['name']  # Start with first phase
+        logger.info(f"Starting with curriculum phase: {current_phase}")
+    else:
+        logger.info("Using standard training data mixing")
+        current_phase = "mixed"
+    
+    # Use appropriate batch method based on configuration
+    if use_curriculum and curriculum_phases:
+        # Curriculum learning - will be handled in training loop
+        batch_generator = None
+    else:
+        # Standard training - use external data if available, fallback to replay buffer
+        if external_stats['external_total'] > 0:
+            logger.info("Using external training data with self-play mixing")
+            batch_generator = None  # Will use get_curriculum_batch in training loop
+        else:
+            logger.info("Using replay buffer only")
+            batch_generator = data_manager.get_training_batch(batch_size, device)
     
     logger.info(f"Training for {total_steps - start_step} steps.")
     logger.info(f"Batch size: {batch_size}, Gradient Accumulation: {accum_steps}")
@@ -233,19 +291,67 @@ def train_comprehensive(
 
     try:
         while current_step < total_steps:
+            # Handle curriculum learning phase transitions
+            if use_curriculum and curriculum_phases:
+                current_phase_info = None
+                for phase in curriculum_phases:
+                    if current_step < phase.get('steps', float('inf')):
+                        current_phase_info = phase
+                        break
+                
+                if current_phase_info and current_phase_info['name'] != current_phase:
+                    current_phase = current_phase_info['name']
+                    logger.info(f"Transitioning to curriculum phase: {current_phase}")
+            
+            # Get training batch based on current configuration
             try:
-                batch = next(batch_generator)
+                if use_curriculum and curriculum_phases:
+                    # Curriculum learning - use phase-specific data
+                    batch_dict = data_manager.get_curriculum_batch(batch_size, current_phase)
+                    if batch_dict is None:
+                        logger.warning(f"No data available for phase {current_phase}, falling back to mixed")
+                        batch_dict = data_manager.get_curriculum_batch(batch_size, "mixed")
+                    
+                    if batch_dict is None:
+                        logger.error("No training data available, stopping training")
+                        break
+                    
+                    # Convert dict format to tuple format for existing train_step
+                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    
+                elif batch_generator is None:
+                    # External data training - use curriculum mixing
+                    batch_dict = data_manager.get_curriculum_batch(batch_size, "mixed")
+                    if batch_dict is None:
+                        logger.error("No external training data available, stopping training")
+                        break
+                    
+                    # Convert dict format to tuple format for existing train_step
+                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    
+                else:
+                    # Standard replay buffer training
+                    batch = next(batch_generator)
+                    
             except StopIteration:
-                logger.info("Data stream exhausted, restarting batch generator.")
-                batch_generator = data_manager.get_training_batch(batch_size, device)
-                continue
+                if batch_generator:
+                    logger.info("Data stream exhausted, restarting batch generator.")
+                    batch_generator = data_manager.get_training_batch(batch_size, device)
+                    continue
+                else:
+                    logger.error("External data stream exhausted, stopping training")
+                    break
             except Exception as e:
                 logger.warning(f"Error getting batch: {e}, skipping...")
                 continue
 
+            tr_cfg = cfg.training()
             loss, policy_loss, value_loss, ssl_loss = train_step(
-                model, optimizer, scaler, batch, device, accum_steps, augment, 
-                ssl_weight=0.1, enable_ssl=True
+                model, optimizer, scaler, batch, device, accum_steps, augment,
+                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(tr_cfg.get('self_supervised', True)),
+                label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
+                value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
+                huber_delta=float(tr_cfg.get('huber_delta', 1.0)),
             )
             
             running_loss = 0.98 * running_loss + 0.02 * loss

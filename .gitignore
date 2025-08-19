@@ -15,3 +15,4 @@ checkpoints/
 data/selfplay/
 data/replays/
 artifacts/
+chessData.csv

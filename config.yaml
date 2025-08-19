@@ -1,7 +1,8 @@
 experiment_name: Matrix0
 seed: 42
 
-device: auto  # auto|mps|cpu
+device: mps  # auto|mps|cpu (set to mps for MacBook Pro)
+data_dir: data  # Base directory used by DataManager and ingestion
 precision: fp16  # fp16|bf16|fp32
 strict_encoding: true  # warn on legacy move_encoding imports
 use_presets: true  # Apply device-specific presets when available
@@ -55,11 +56,12 @@ selfplay:
   book_path: "data/openings/lichess_elite.pgn" # PGN opening book for self-play
   temperature_start: 1.0
   temperature_end: 0.2
-  temperature_moves: 30
+  temperature_moves: 20  # Lowered to reduce midgame stochasticity
   resign_threshold: -0.98
   max_game_len: 140
   batch_size: 32
   buffer_dir: "data/selfplay"
+  early_draw_enabled: false  # Disable heuristic early draw adjudication by default
 
 # NEW: Openings configuration
 openings:
@@ -91,10 +93,31 @@ training:
   adversarial_training: true
   ssl_weight: 0.1  # Self-supervised learning weight
   chess_features_weight: 0.05  # Chess-specific features weight
+  policy_label_smoothing: 0.0  # Label smoothing for policy targets
+  value_loss: mse  # mse|huber
+  huber_delta: 1.0
   checkpoint_save_freq: 1000  # Save every 1000 steps
   validation_freq: 500  # Validate every 500 steps
+  
+  # NEW: Curriculum Learning Configuration
+  use_curriculum: true  # Enable curriculum learning
+  curriculum_phases:
+    - name: "openings"
+      steps: 2000  # First 2000 steps focus on openings
+      description: "Opening mastery phase"
+    - name: "tactics" 
+      steps: 5000  # Steps 2000-5000 focus on tactics
+      description: "Tactical training phase"
+    - name: "mixed"
+      steps: 10000  # Steps 5000+ use mixed data
+      description: "Balanced training with self-play"
+  
   extra_replay_dirs:
     - /Users/admin/Downloads/VSCode/Matrix0/data/lichess
+    - /Users/admin/Downloads/VSCode/Matrix0/data/replays
+    - /Users/admin/Downloads/VSCode/Matrix0/data/training
+    - /Users/admin/Downloads/VSCode/Matrix0/data/tactical
+    - /Users/admin/Downloads/VSCode/Matrix0/data/openings
 
 # Device-specific presets applied when use_presets: true
 presets:
@@ -118,10 +141,17 @@ presets:
     training:
       batch_size: 512  # Increased for better GPU utilization
       replay_shard_size: 32768  # Increased for better data handling
+    eval:
+      num_simulations: 256
+      dirichlet_frac: 0.0
+      max_moves: 220
 
 eval:
   games: 50
   temperature: 0.1
+  num_simulations: 256
+  max_moves: 220  # Adjudicate long games sooner in eval
+  dirichlet_frac: 0.0  # Disable Dirichlet noise during evaluation
   external_engines: ["stockfish", "lc0"]
   tournament_rounds: 100
   strength_estimation_games: 50
@@ -146,15 +176,15 @@ mcts:
   num_simulations: 200
   cpuct: 2.5
   dirichlet_alpha: 0.3
-  dirichlet_frac: 0.25
+  dirichlet_frac: 0.3
   fpu: 0.5
   selection_jitter: 0.01
   parent_q_init: true
   tt_capacity: 2000000
   tt_cleanup_frequency: 500
+  draw_penalty: -0.2
 
 tablebases:
   enabled: false # Set to true to enable tablebase probing
   path: "/path/to/syzygy" # Path to your Syzygy tablebase files
   max_pieces: 7 # Probe for positions with this many pieces or fewer
-

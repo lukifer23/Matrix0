@@ -235,6 +235,237 @@ class DataManager:
                 self._mark_shard_corrupted(shard_path)
                 continue
     
+    def get_external_training_batch(self, batch_size: int, source: str = "mixed") -> Optional[Dict[str, np.ndarray]]:
+        """Get training batches from external training data sources.
+        
+        Args:
+            batch_size: Size of training batch
+            source: Data source ("tactical", "openings", "mixed")
+            
+        Returns:
+            Training batch dict with keys 's', 'pi', 'z' or None if no data
+        """
+        try:
+            if source == "tactical":
+                return self._get_tactical_batch(batch_size)
+            elif source == "openings":
+                return self._get_openings_batch(batch_size)
+            elif source == "mixed":
+                return self._get_mixed_external_batch(batch_size)
+            else:
+                logger.warning(f"Unknown external data source: {source}")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting external training batch: {e}")
+            return None
+    
+    def get_curriculum_batch(self, batch_size: int, phase: str = "mixed") -> Optional[Dict[str, np.ndarray]]:
+        """Get curriculum-appropriate training batch.
+        
+        Args:
+            batch_size: Size of training batch
+            phase: Training phase ("openings", "tactics", "mixed")
+            
+        Returns:
+            Training batch dict with keys 's', 'pi', 'z' or None if no data
+        """
+        try:
+            if phase == "openings":
+                # Focus on openings (80% openings, 20% tactics)
+                return self._get_curriculum_openings_batch(batch_size)
+            elif phase == "tactics":
+                # Focus on tactics (80% tactics, 20% openings)
+                return self._get_curriculum_tactics_batch(batch_size)
+            elif phase == "mixed":
+                # Balanced mix with self-play
+                return self._get_curriculum_mixed_batch(batch_size)
+            else:
+                logger.warning(f"Unknown curriculum phase: {phase}")
+                return self._get_mixed_external_batch(batch_size)
+        except Exception as e:
+            logger.error(f"Error getting curriculum batch: {e}")
+            return None
+    
+    def _get_tactical_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get batch from tactical training data."""
+        tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
+        if not tactical_path.exists():
+            logger.warning("Tactical training data not found")
+            return None
+        
+        try:
+            with np.load(tactical_path) as data:
+                indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                return {
+                    's': data['positions'][indices],
+                    'pi': data['policy_targets'][indices],
+                    'z': data['value_targets'][indices]
+                }
+        except Exception as e:
+            logger.error(f"Error loading tactical data: {e}")
+            return None
+    
+    def _get_openings_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get batch from openings training data."""
+        openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
+        if not openings_path.exists():
+            logger.warning("Openings training data not found")
+            return None
+        
+        try:
+            with np.load(openings_path) as data:
+                indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                return {
+                    's': data['positions'][indices],
+                    'pi': data['policy_targets'][indices],
+                    'z': data['value_targets'][indices]
+                }
+        except Exception as e:
+            logger.error(f"Error loading openings data: {e}")
+            return None
+    
+    def _get_mixed_external_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get mixed batch from external training data sources."""
+        tactical_batch = self._get_tactical_batch(batch_size // 2)
+        openings_batch = self._get_openings_batch(batch_size // 2)
+        
+        if not tactical_batch and not openings_batch:
+            return None
+        
+        if not tactical_batch:
+            return openings_batch
+        if not openings_batch:
+            return tactical_batch
+        
+        # Combine batches
+        combined_batch = {}
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = np.concatenate([
+                tactical_batch[key], openings_batch[key]
+            ], axis=0)
+        
+        # Shuffle the combined batch
+        indices = np.random.permutation(len(combined_batch['s']))
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = combined_batch[key][indices]
+        
+        return combined_batch
+    
+    def _get_curriculum_openings_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get curriculum batch focused on openings (80% openings, 20% tactics)."""
+        openings_size = int(batch_size * 0.8)
+        tactical_size = batch_size - openings_size
+        
+        openings_batch = self._get_openings_batch(openings_size)
+        tactical_batch = self._get_tactical_batch(tactical_size) if tactical_size > 0 else None
+        
+        if not openings_batch:
+            return tactical_batch
+        
+        if not tactical_batch:
+            return openings_batch
+        
+        # Combine with openings focus
+        combined_batch = {}
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = np.concatenate([
+                openings_batch[key], tactical_batch[key]
+            ], axis=0)
+        
+        return combined_batch
+    
+    def _get_curriculum_tactics_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get curriculum batch focused on tactics (80% tactics, 20% openings)."""
+        tactical_size = int(batch_size * 0.8)
+        openings_size = batch_size - tactical_size
+        
+        tactical_batch = self._get_tactical_batch(tactical_size)
+        openings_batch = self._get_openings_batch(openings_size) if openings_size > 0 else None
+        
+        if not tactical_batch:
+            return openings_batch
+        
+        if not openings_batch:
+            return tactical_batch
+        
+        # Combine with tactics focus
+        combined_batch = {}
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = np.concatenate([
+                tactical_batch[key], openings_batch[key]
+            ], axis=0)
+        
+        return combined_batch
+    
+    def _get_curriculum_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Get curriculum batch with balanced mix and self-play data."""
+        # Try to get external data first
+        external_batch = self._get_mixed_external_batch(batch_size // 2)
+        
+        # Try to get self-play data for the other half
+        try:
+            # Get a batch from the regular replay buffer
+            sp_generator = self.get_training_batch(batch_size // 2, "cpu")
+            sp_batch = next(sp_generator)
+            sp_dict = {
+                's': sp_batch[0],
+                'pi': sp_batch[1], 
+                'z': sp_batch[2]
+            }
+        except Exception:
+            sp_dict = None
+        
+        if not external_batch and not sp_dict:
+            return None
+        
+        if not external_batch:
+            return sp_dict
+        if not sp_dict:
+            return external_batch
+        
+        # Combine external and self-play data
+        combined_batch = {}
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = np.concatenate([
+                external_batch[key], sp_dict[key]
+            ], axis=0)
+        
+        # Shuffle the combined batch
+        indices = np.random.permutation(len(combined_batch['s']))
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = combined_batch[key][indices]
+        
+        return combined_batch
+    
+    def get_external_data_stats(self) -> Dict[str, int]:
+        """Get statistics about external training data availability."""
+        stats = {
+            'tactical_samples': 0,
+            'openings_samples': 0,
+            'external_total': 0
+        }
+        
+        # Check tactical data
+        tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
+        if tactical_path.exists():
+            try:
+                with np.load(tactical_path) as data:
+                    stats['tactical_samples'] = len(data['positions'])
+            except Exception:
+                pass
+        
+        # Check openings data
+        openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
+        if openings_path.exists():
+            try:
+                with np.load(openings_path) as data:
+                    stats['openings_samples'] = len(data['positions'])
+            except Exception:
+                pass
+        
+        stats['external_total'] = stats['tactical_samples'] + stats['openings_samples']
+        return stats
+    
     def cleanup_old_shards(self, keep_recent: int = 64):
         """Remove old shards to maintain storage limits."""
         shards = self._get_all_shards()
@@ -594,323 +825,6 @@ if __name__ == "__main__":
     elif args.action == "quarantine":
         count = dm.quarantine_corrupted_shards()
         print(f"Quarantined {count} corrupted shards.")
-
-    def _init_database(self):
-        """Initialize SQLite database for metadata tracking."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS shards (
-                path TEXT PRIMARY KEY,
-                size_bytes INTEGER,
-                sample_count INTEGER,
-                created_at TEXT,
-                checksum TEXT,
-                version TEXT,
-                source TEXT,
-                corrupted BOOLEAN DEFAULT FALSE,
-                last_accessed TEXT
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS data_stats (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TEXT
-            )
-        """)
-        
-        conn.commit()
-
-        # Lightweight migration: ensure expected columns exist
-        try:
-            cursor.execute("PRAGMA table_info(shards)")
-            cols = {row[1] for row in cursor.fetchall()}  # column names
-            migrations = []
-            if 'source' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN source TEXT")
-            if 'corrupted' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN corrupted BOOLEAN DEFAULT FALSE")
-            if 'last_accessed' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN last_accessed TEXT")
-            if 'version' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN version TEXT")
-            for sql in migrations:
-                try:
-                    cursor.execute(sql)
-                except Exception:
-                    pass
-            if migrations:
-                conn.commit()
-        except Exception:
-            pass
-        conn.close()
-
-    def _with_retry(self, func, *args, **kwargs):
-        """Retry a DB operation if the database is locked."""
-        attempts = 0
-        delay = 0.05
-        while True:
-            try:
-                return func(*args, **kwargs)
-            except sqlite3.OperationalError as e:
-                msg = str(e).lower()
-                if 'locked' in msg or 'busy' in msg:
-                    attempts += 1
-                    if attempts > 10:
-                        raise
-                    time.sleep(delay)
-                    delay = min(0.5, delay * 2)
-                else:
-                    raise
-    
-    def add_selfplay_data(self, data: Dict[str, np.ndarray], worker_id: int, game_id: int) -> str:
-        """Add self-play data to the buffer."""
-        # Use filesystem-safe timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"selfplay_w{worker_id}_g{game_id}_{timestamp}.npz"
-        filepath = self.selfplay_dir / filename
-        
-        # Save atomically: write to temp then move
-        tmp_path = filepath.with_suffix('.npz.tmp')
-        np.savez_compressed(tmp_path, **data)
-        tmp_path.replace(filepath)
-        
-        # Calculate metadata
-        file_size = filepath.stat().st_size
-        sample_count = len(data.get('s', []))
-        checksum = self._calculate_checksum(filepath)
-        
-        # Record in database
-        self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source="selfplay")
-        
-        logger.info(f"Added self-play data: {filename} ({sample_count} samples, {file_size/1024:.1f}KB)")
-        return str(filepath)
-    
-    def add_training_data(self, data: Dict[str, np.ndarray], shard_id: int, source: str = "selfplay") -> str:
-        """Add processed training data to replay buffer."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"replay_{shard_id:06d}_{timestamp}.npz"
-        filepath = self.replays_dir / filename
-        
-        # Save atomically
-        tmp_path = filepath.with_suffix('.npz.tmp')
-        np.savez_compressed(tmp_path, **data)
-        tmp_path.replace(filepath)
-        
-        # Calculate metadata
-        file_size = filepath.stat().st_size
-        sample_count = len(data.get('s', []))
-        checksum = self._calculate_checksum(filepath)
-        
-        # Record in database
-        self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source=source)
-        
-        logger.info(f"Added training data: {filename} ({sample_count} samples, {file_size/1024:.1f}KB)")
-        return str(filepath)
-    
-    def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Get training batches from replay buffer."""
-        shard_paths = self._get_valid_shard_paths()
-        
-        if not shard_paths:
-            raise RuntimeError("No valid training data available")
-        
-        # Randomly sample from shards
-        np.random.shuffle(shard_paths)
-        
-        for shard_path in shard_paths:
-            try:
-                # Memory-map to reduce RSS and speed IO
-                with np.load(shard_path, mmap_mode='r') as data:
-                    states = data['s']
-                    policies = data['pi']
-                    values = data['z']
-                    
-                    # Shuffle within shard
-                    indices = np.random.permutation(len(states))
-                    states = states[indices]
-                    policies = policies[indices]
-                    values = values[indices]
-                    
-                    # Yield batches
-                    for i in range(0, len(states), batch_size):
-                        batch_states = states[i:i+batch_size]
-                        batch_policies = policies[i:i+batch_size]
-                        batch_values = values[i:i+batch_size]
-                        
-                        if len(batch_states) == batch_size:
-                            yield batch_states, batch_policies, batch_values
-                            
-            except Exception as e:
-                logger.error(f"Error loading shard {shard_path}: {e}")
-                self._mark_shard_corrupted(shard_path)
-                continue
-    
-    def cleanup_old_shards(self, keep_recent: int = 64):
-        """Remove old shards to maintain storage limits."""
-        shards = self._get_all_shards()
-        
-        if len(shards) <= keep_recent:
-            return
-        
-        # Sort by creation time, keep most recent
-        shards.sort(key=lambda x: x.created_at, reverse=True)
-        to_remove = shards[keep_recent:]
-        
-        for shard in to_remove:
-            try:
-                Path(shard.path).unlink()
-                self._remove_shard_record(shard.path)
-                logger.info(f"Removed old shard: {shard.path}")
-            except Exception as e:
-                logger.error(f"Error removing shard {shard.path}: {e}")
-    
-    def validate_data_integrity(self) -> Tuple[int, int]:
-        """Validate all shards and return (valid, corrupted) counts."""
-        shards = self._get_all_shards()
-        valid_count = 0
-        corrupted_count = 0
-        
-        for shard in shards:
-            try:
-                if self._validate_shard(shard):
-                    valid_count += 1
-                else:
-                    corrupted_count += 1
-                    self._mark_shard_corrupted(shard.path)
-            except Exception as e:
-                logger.error(f"Error validating shard {shard.path}: {e}")
-                corrupted_count += 1
-                self._mark_shard_corrupted(shard.path)
-        
-        return valid_count, corrupted_count
-
-    def quarantine_corrupted_shards(self) -> int:
-        """Moves corrupted shards to a quarantine directory."""
-        quarantine_dir = self.backups_dir / "quarantine"
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
-        
-        shards = self._get_all_shards()
-        quarantined_count = 0
-        
-        for shard in shards:
-            if shard.corrupted:
-                try:
-                    shard_path = Path(shard.path)
-                    if shard_path.exists():
-                        new_path = quarantine_dir / shard_path.name
-                        shard_path.rename(new_path)
-                        logger.info(f"Quarantined corrupted shard: {shard.path} to {new_path}")
-                        quarantined_count += 1
-                except Exception as e:
-                    logger.error(f"Error quarantining shard {shard.path}: {e}")
-        
-        return quarantined_count
-
-    def get_stats(self) -> DataStats:
-        """Get current data pipeline statistics."""
-        shards = self._get_all_shards()
-        
-        total_shards = len(shards)
-        total_samples = sum(s.sample_count for s in shards)
-        total_size_gb = sum(s.size_bytes for s in shards) / (1024**3)
-        corrupted_shards = sum(1 for s in shards if s.corrupted)
-        
-        return DataStats(
-            total_shards=total_shards,
-            total_samples=total_samples,
-            total_size_gb=total_size_gb,
-            corrupted_shards=corrupted_shards,
-            last_updated=datetime.now().isoformat()
-        )
-    
-    def create_backup(self) -> str:
-        """Create a backup of the current data state."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = self.backups_dir / f"backup_{timestamp}"
-        backup_dir.mkdir(exist_ok=True)
-        
-        # Copy database
-        import shutil
-        shutil.copy2(self.db_path, backup_dir / "data_metadata.db")
-        
-        # Create manifest
-        manifest = {
-            "timestamp": timestamp,
-            "version": self.version,
-            "stats": asdict(self.get_stats()),
-            "shards": [asdict(s) for s in self._get_all_shards()]
-        }
-        
-        with open(backup_dir / "manifest.json", "w") as f:
-            json.dump(manifest, f, indent=2)
-        
-        logger.info(f"Created backup: {backup_dir}")
-        return str(backup_dir)
-
-    def compact_selfplay_to_replay(self):
-        """Compacts self-play games into larger replay shards."""
-        sp_files = sorted([x for x in self.selfplay_dir.glob("*.npz") if x.is_file()])
-        if not sp_files:
-            return
-
-        # Determine next shard index
-        existing = sorted(self.replays_dir.glob("shard_*.npz"))
-        next_idx = 0
-        if existing:
-            last = existing[-1]
-            try:
-                next_idx = int(last.stem.split("_")[-1]) + 1
-            except Exception:
-                next_idx = len(existing)
-
-        buf_s, buf_pi, buf_z = [], [], []
-        count = 0
-        for f in sp_files:
-            try:
-                with np.load(f) as data:
-                    s, pi, z = data["s"], data["pi"], data["z"]
-                buf_s.append(s)
-                buf_pi.append(pi)
-                buf_z.append(z)
-                count += s.shape[0]
-                # Move source file to backup instead of deleting
-                backup_path = self.backups_dir / f.name
-                backup_path.write_bytes(f.read_bytes())
-                f.unlink(missing_ok=True)
-            except Exception as e:
-                logger.error(f"Error processing selfplay file {f}: {e}")
-                self._mark_shard_corrupted(str(f))
-                continue
-
-            # Flush if buffer is large
-            while count >= self.shard_size:
-                take = self.shard_size
-                s_cat = np.concatenate(buf_s, axis=0)
-                pi_cat = np.concatenate(buf_pi, axis=0)
-                z_cat = np.concatenate(buf_z, axis=0)
-                shard_s, shard_pi, shard_z = s_cat[:take], pi_cat[:take], z_cat[:take]
-                # Keep leftovers
-                buf_s = [s_cat[take:]]
-                buf_pi = [pi_cat[take:]]
-                buf_z = [z_cat[take:]]
-                count = s_cat.shape[0] - take
-                
-                self.add_training_data({"s": shard_s, "pi": shard_pi, "z": shard_z}, next_idx)
-                next_idx += 1
-
-        # Flush tail
-        if count > 0:
-            s_cat = np.concatenate(buf_s, axis=0)
-            pi_cat = np.concatenate(buf_pi, axis=0)
-            z_cat = np.concatenate(buf_z, axis=0)
-            self.add_training_data({"s": s_cat, "pi": pi_cat, "z": z_cat}, next_idx)
-
-        # Enforce max shards (keep most recent)
-        self.cleanup_old_shards(keep_recent=self.max_shards)
 
     def import_replay_dir(self, src_dir: str, source: str = "external", move_files: bool = False) -> int:
         """Import existing NPZ shards from a directory into the replay buffer and DB.

@@ -150,6 +150,7 @@ mcts:
   dirichlet_alpha: 0.3      # Noise for exploration
   dirichlet_frac: 0.25      # Noise impact fraction
   fpu: 0.5                  # First-play urgency for unvisited nodes
+  draw_penalty: -0.1        # Slight draw penalty in terminal evaluation
 
 selfplay:
   num_workers: 4            # Parallel workers
@@ -161,6 +162,12 @@ training:
   ssl_weight: 0.1          # SSL loss weight
   warmup_steps: 500        # Learning rate warmup
 ```
+
+### Additional Tips
+- For evaluation, disable Dirichlet noise: set `eval.dirichlet_frac: 0.0`.
+- Reduce eval marathon games: set `eval.max_moves` to ~220.
+- To reduce drawish play, slightly increase `mcts.draw_penalty` magnitude (e.g., -0.2).
+- In self-play, lower `selfplay.temperature_moves` (e.g., 20) to rein in midgame randomness.
 
 ## 📊 **Performance & Monitoring**
 
@@ -207,6 +214,32 @@ python -m azchess.tools.model_info
 python -m azchess.tools.bench_inference
 python -m azchess.tools.bench_mcts
 ```
+
+Use the MCTS benchmark to estimate sims/s and tune your `mcts.num_simulations` and batch sizes.
+For evaluation stability, combine `eval.dirichlet_frac: 0.0` with a lower `eval.max_moves`.
+
+## 📥 External Data → Training Shards
+
+You can ingest external CSV datasets (openings, evaluations, puzzles) into NPZ shards compatible with training:
+
+```bash
+# FEN + best move (one-hot policy, optional win% → value)
+python -m azchess.tools.convert_csv --csv openings_fen7.csv --format fen_bestmove --out data/replays --prefix openfen7 --shard-size 16384
+
+# FEN + evaluation in centipawns (uniform policy, cp → value)
+python -m azchess.tools.convert_csv --csv chessData.csv --format fen_eval --out data/replays --prefix chesseval --shard-size 16384
+
+# Lichess puzzles (UCI move sequences; one-hot policy per step; value=+0.8)
+python -m azchess.tools.convert_csv --csv lichess_db_puzzle.csv --format puzzles --out data/replays --prefix puzzles --shard-size 16384
+
+# Auto-detect format from headers (fen/best_move, fen/evaluation, fen/moves)
+python -m azchess.tools.convert_csv --csv openings.csv --format auto --out data/replays --prefix openings_auto --shard-size 16384
+```
+
+Notes:
+- Value targets: `fen_eval` uses cp→value via `tanh(cp/300)`, flipped for Black-to-move. `fen_bestmove` uses `winning_percentage` when present (`2*p-1`), else 0.0. Puzzles default to `+0.8`.
+- Policies: one-hot on provided best move when available; uniform over legals for eval-only rows.
+- Shards are written under `training.replay_dir` (defaults to `data/replays`). Training will automatically pick them up.
 
 ## 🎯 **Training Pipeline**
 

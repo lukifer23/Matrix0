@@ -53,6 +53,7 @@ class MCTSConfig:
     batch_size: int = 32
     fpu: float = 0.5  # First-Play Urgency
     parent_q_init: bool = True # Initialize child Q with parent Q
+    draw_penalty: float = -0.1  # Slight draw penalty to reduce draws
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -98,6 +99,20 @@ class Node:
             probs = torch.from_numpy(logits)
             probs = torch.softmax(probs, dim=-1).numpy()
 
+            # Check if policy is too uniform (degenerate case)
+            policy_entropy = -np.sum(probs * np.log(probs + 1e-8))
+            max_entropy = np.log(len(legal_moves))
+            entropy_ratio = policy_entropy / max_entropy
+            
+            # If policy is too uniform, add noise to encourage exploration
+            if entropy_ratio > 0.9:
+                logger.warning(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
+                # Add small random noise to break uniformity
+                noise = np.random.normal(0, 0.1, probs.shape)
+                probs = probs + noise
+                probs = np.maximum(probs, 1e-8)  # Ensure positive
+                probs = probs / probs.sum()  # Renormalize
+
             legal_priors: List[float] = []
             for move in legal_moves:
                 try:
@@ -124,14 +139,6 @@ class Node:
             if self.parent and self.parent.q != 0.0:
                 child.q = -self.parent.q
             self.children[move] = child
-        
-        # Ensure at least one child gets a minimal visit to prevent all-zero scenarios
-        if legal_moves:
-            first_move = legal_moves[0]
-            first_child = self.children[first_move]
-            first_child.n = 1
-            first_child.w = 0.0
-            first_child.q = 0.0
         
         self.expanded = True
     
@@ -191,7 +198,7 @@ class MCTS:
             leaves: List[Tuple[Node, List[Node], chess.Board]] = []
             
             # 1. Select leaves to expand
-            for _ in range(batch_size):
+            for i in range(batch_size):
                 node, path, leaf_board = self._select(board.copy(), root)
                 if leaf_board.is_game_over():
                     v_leaf = self._terminal_value(leaf_board)
@@ -219,6 +226,13 @@ class MCTS:
 
         # Update root node visit count from actual simulations
         root.n = sims_run_this_turn
+        
+        # Debug: Log what happened during MCTS
+        if sims_run_this_turn == 0:
+            logger.warning(f"MCTS ran {sims_to_run} simulations but no simulations completed!")
+            logger.warning(f"Root children: {len(root.children)}")
+            for move, child in root.children.items():
+                logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
         
         # Properly handle unvisited root children without corrupting the tree
         # Only update children that were actually visited during backpropagation
@@ -275,15 +289,31 @@ class MCTS:
                 u = self.cfg.cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
                 score = q + u
                 
+                # Always add small jitter to break ties when UCB scores are identical
                 if self.cfg.selection_jitter > 0:
                     score += (random.random() - 0.5) * self.cfg.selection_jitter
+                else:
+                    # Add minimal jitter even when selection_jitter is 0 to break ties
+                    score += (random.random() - 0.5) * 0.001
+
+                # Debug: Log UCB scores only when selection fails (reduced spam)
 
                 if score > best_score:
                     best_score = score
                     best_child = child
             
             if best_child is None:
-                break # Should not happen if children exist
+                # Debug: Log why no child was selected
+                logger.warning(f"No child selected from {len(node.children)} children")
+                for move, child in node.children.items():
+                    logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
+                
+                # Fallback: select first child if all UCB scores are identical
+                if node.children:
+                    best_child = next(iter(node.children.values()))
+                    logger.warning(f"Fallback: selected first child {best_child.move}")
+                else:
+                    break # Should not happen if children exist
             
             board.push(best_child.move)
             node = self._tt_get(board._transposition_key()) or best_child
@@ -407,7 +437,7 @@ class MCTS:
             return -1.0
         # Penalize draws slightly to encourage finding wins
         if board.is_stalemate() or board.is_insufficient_material() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
-            return -0.1
+            return float(self.cfg.draw_penalty)
         return 0.0
 
     def _tt_get(self, key: str) -> Optional[Node]:
@@ -513,6 +543,13 @@ class MCTS:
             total_weight += weight
         
         # Normalize to probabilities
+        if total_weight > 0 and np.isfinite(total_weight):
+            policy /= float(total_weight)
+        else:
+            # Uniform over legal moves as ultimate fallback
+            for move in legal_moves:
+                policy[move_to_index(board, move)] = 1.0 / len(legal_moves)
+        return policy.astype(np.float32, copy=False)
         if total_weight > 0:
             policy /= total_weight
         

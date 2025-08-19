@@ -98,7 +98,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             preset = sp_cfg["presets"].get(dev_sel)
             if preset:
                 # Merge selfplay and training presets without clobbering existing keys unless absent
-                for section in ("selfplay", "training"):
+                for section in ("selfplay", "training", "mcts", "eval"):
                     if section in preset:
                         sp_cfg.setdefault(section, {})
                         for k, v in preset[section].items():
@@ -203,13 +203,23 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     worker_tasks[i] = progress.add_task(f"W{i}", total=games_per_worker)
                 stats_task = progress.add_task("W/L/D: 0/0/0", total=1)
             ckpt_for_sp = str(best_ckpt) if best_ckpt.exists() else None
+            logger.info(f"Checkpoint path for self-play: {ckpt_for_sp}")
             
             # Pre-load the model state dict in the main process to avoid issues in spawned processes
             model_state_dict = None
             if ckpt_for_sp:
                 try:
+                    logger.info(f"Loading checkpoint from: {ckpt_for_sp}")
                     state = torch.load(ckpt_for_sp, map_location='cpu')
+                    logger.info(f"Checkpoint keys: {list(state.keys())}")
                     model_state_dict = state.get("model_ema", state.get("model", state))
+                    if "model_ema" in state:
+                        logger.info("Using model_ema from checkpoint")
+                    elif "model" in state:
+                        logger.info("Using model from checkpoint")
+                    else:
+                        logger.info("Using checkpoint directly as model state dict")
+                    logger.info(f"Model state dict loaded successfully with {len(model_state_dict)} parameters")
                 except Exception as e:
                     logger.error(f"Failed to pre-load checkpoint state_dict: {e}")
                     raise
@@ -504,6 +514,29 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         except Exception as e:
             logger.warning(f"Loading extra replay dirs failed: {e}")
 
+        # Ingest external CSV datasets if present
+        try:
+            _ingest_external_csvs(cfg, dm)
+        except Exception as e:
+            logger.warning(f"External CSV ingest failed: {e}")
+
+        # Ensure all common NPZ directories are registered with the DB
+        try:
+            ndirs = _register_external_npz_dirs(cfg, dm)
+            if ndirs:
+                logger.info(f"Registered NPZ shards from {ndirs} external directories")
+        except Exception as e:
+            logger.warning(f"Registering NPZ directories failed: {e}")
+
+        # Ensure we have usable data before training
+        try:
+            stats = DataManager(base_dir=cfg.get("data_dir", "data")).get_stats()
+            if int(stats.total_samples) <= 0:
+                logger.warning("No training data available after ingestion; skipping training and evaluation.")
+                return
+        except Exception:
+            logger.warning("Could not obtain data stats; attempting training anyway.")
+
         # Train phase
         logger.info("Starting training phase")
         try:
@@ -544,13 +577,15 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         logger.info(f"Evaluating candidate {candidate} vs best {best_ckpt}")
         # Parallelize eval games if configured
         eval_workers = int(cfg.eval().get("workers", 1))
+        eval_num_sims = int(cfg.eval().get("num_simulations", cfg.mcts().get("num_simulations", 500)))
         score = play_match(
             ckpt_a=str(candidate),
             ckpt_b=str(best_ckpt),
             games=eval_games,
             cfg=cfg,
             seed=seed or int(time.time()),
-            workers=eval_workers
+            workers=eval_workers,
+            num_sims=eval_num_sims
         )
         win_rate = score / float(max(1, eval_games))
         logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
@@ -673,6 +708,125 @@ def main():
         seed=args.seed,
         tui_mode=chosen_tui
     )
+
+def _ingest_external_csvs(cfg: Config, dm: DataManager) -> None:
+    """Scan common CSV sources under project root and data/ and convert to replay shards.
+
+    Converts known formats using azchess.tools.convert_csv and registers resulting shards in the DB.
+    """
+    try:
+        from .tools.convert_csv import convert_fen_bestmove, convert_fen_eval, convert_puzzles, convert_opening_san, write_shards
+    except Exception:
+        return
+    root = Path('.')
+    data_root = Path(cfg.get('data_dir', 'data'))
+    targets = [
+        (root / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
+        (root / 'openings.csv', 'opening_san', 'openings'),
+        (root / 'chessData.csv', 'fen_eval', 'chesseval'),
+        (root / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
+        (data_root / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
+        (data_root / 'openings.csv', 'opening_san', 'openings'),
+        (data_root / 'chessData.csv', 'fen_eval', 'chesseval'),
+        (data_root / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
+        (data_root / 'openings' / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
+        (data_root / 'openings' / 'openings.csv', 'opening_san', 'openings'),
+        (data_root / 'training' / 'chessData.csv', 'fen_eval', 'chesseval'),
+        (data_root / 'tactical' / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
+    ]
+    shard_size = int(cfg.training().get('replay_shard_size', 16384))
+    out_dir = dm.replays_dir
+    converted = 0
+    for path, kind, prefix in targets:
+        if not path.exists():
+            continue
+        try:
+            if kind == 'fen_bestmove':
+                _, _, s, p, z = convert_fen_bestmove(str(path), shard_size)
+            elif kind == 'fen_eval':
+                _, _, s, p, z = convert_fen_eval(str(path), shard_size)
+            elif kind == 'puzzles':
+                _, _, s, p, z = convert_puzzles(str(path), shard_size)
+            elif kind == 'opening_san':
+                _, _, s, p, z = convert_opening_san(str(path), shard_size)
+            else:
+                continue
+            if s:
+                sh, smp = write_shards(str(out_dir), prefix, shard_size, s, p, z)
+                logger = setup_logging(cfg.training().get('log_dir', 'logs'))
+                logger.info(f"Converted {path.name}: shards={sh} samples={smp}")
+                converted += sh
+        except Exception:
+            continue
+    if converted:
+        try:
+            dm.import_replay_dir(str(out_dir), source='external', move_files=False)
+        except Exception:
+            pass
+
+def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
+    """Register NPZ shards in the DB from common replay directories.
+
+    Returns number of directories successfully imported.
+    """
+    count_dirs = 0
+    data_root = Path(cfg.get('data_dir', 'data'))
+    dirs = [
+        Path(cfg.training().get('replay_dir', 'data/replays')),
+        data_root / 'replays',
+        data_root / 'openings',
+        data_root / 'training',
+        data_root / 'tactical',
+    ]
+    # Deduplicate while preserving order
+    seen = set()
+    uniq_dirs = []
+    for d in dirs + [Path(p) for p in (cfg.training().get('extra_replay_dirs', []) or [])]:
+        try:
+            rp = d.resolve()
+        except Exception:
+            rp = d
+        if rp in seen:
+            continue
+        seen.add(rp)
+        uniq_dirs.append(d)
+    
+    # Log external training data availability
+    try:
+        external_stats = dm.get_external_data_stats()
+        if external_stats['external_total'] > 0:
+            logger = setup_logging(cfg.training().get("log_dir", "logs"))
+            logger.info(f"External training data available: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples")
+            
+            # Check curriculum configuration
+            if cfg.training().get('use_curriculum', False):
+                curriculum_phases = cfg.training().get('curriculum_phases', [])
+                logger.info(f"Curriculum learning enabled with {len(curriculum_phases)} phases:")
+                for phase in curriculum_phases:
+                    logger.info(f"  - {phase['name']}: steps 0-{phase['steps']} ({phase.get('description', '')})")
+    except Exception as e:
+        # Non-critical, continue with directory registration
+        pass
+    
+    # Filter out external training data directories to avoid import errors
+    # These are handled separately by the enhanced DataManager
+    external_training_dirs = [
+        data_root / 'training',  # Contains our processed external data
+        data_root / 'tactical',  # Contains our processed tactical data
+        data_root / 'openings',  # Contains our processed openings data
+    ]
+    
+    # Remove external training dirs from the import list
+    uniq_dirs = [d for d in uniq_dirs if d not in external_training_dirs]
+    
+    for d in uniq_dirs:
+        try:
+            n = dm.import_replay_dir(str(d), source='external', move_files=False)
+            if n:
+                count_dirs += 1
+        except Exception:
+            continue
+    return count_dirs
 
 
 if __name__ == "__main__":

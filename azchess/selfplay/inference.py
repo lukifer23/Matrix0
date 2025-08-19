@@ -42,8 +42,9 @@ def run_inference_server(
         logger.info(f"Inference server starting on device: {device}")
         model = PolicyValueNet.from_config(model_cfg).to(device)
         if model_state_dict:
+            logger.info(f"Loading model from state_dict with {len(model_state_dict)} parameters")
             model.load_state_dict(model_state_dict)
-            logger.info(f"Model loaded from state_dict.")
+            logger.info(f"Model loaded from state_dict successfully.")
         else:
             logger.warning("No model state_dict provided, using random weights.")
         model.eval()

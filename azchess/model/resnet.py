@@ -151,7 +151,7 @@ class ChessSpecificFeatures(nn.Module):
 
 @dataclass
 class NetConfig:
-    planes: int = 20
+    planes: int = 19
     channels: int = 160
     blocks: int = 14
     policy_size: int = 4672
@@ -214,7 +214,7 @@ class PolicyValueNet(nn.Module):
             nn.Dropout(0.1),  # Add dropout for regularization
         )
         self.policy_fc = nn.Linear(64 * 8 * 8, cfg.policy_size)
-
+        
         # Enhanced value head
         self.value_head = nn.Sequential(
             nn.Conv2d(C, 64, kernel_size=1, bias=False),  # Increased from 32
@@ -225,6 +225,36 @@ class PolicyValueNet(nn.Module):
         self.value_fc1 = nn.Linear(64 * 8 * 8, C)
         self.value_fc2 = nn.Linear(C, C // 2)
         self.value_fc3 = nn.Linear(C // 2, 1)
+        
+        # Initialize weights properly for training
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights properly for chess policy learning."""
+        # Policy head initialization - ensure reasonable logit magnitudes
+        nn.init.kaiming_normal_(self.policy_head[0].weight, mode='fan_out', nonlinearity='relu')
+        
+        # Policy FC layer - use proper scaling for 4672 outputs
+        # The issue was that default initialization produces logits too close to zero
+        nn.init.xavier_uniform_(self.policy_fc.weight, gain=1.0)
+        nn.init.constant_(self.policy_fc.bias, 0.0)  # Start with zero bias
+        
+        # Value head initialization
+        nn.init.kaiming_normal_(self.value_head[0].weight, mode='fan_out', nonlinearity='relu')
+        nn.init.xavier_uniform_(self.value_fc1.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.value_fc2.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.value_fc3.weight, gain=1.0)
+        
+        # Initialize biases to reasonable values
+        nn.init.constant_(self.value_fc1.bias, 0.0)
+        nn.init.constant_(self.value_fc2.bias, 0.0)
+        nn.init.constant_(self.value_fc3.bias, 0.0)
+        
+        # Scale policy weights to ensure reasonable logit magnitudes
+        # This prevents the "uniform policy" problem from the start
+        with torch.no_grad():
+            # Scale policy weights to produce logits in reasonable range
+            self.policy_fc.weight.data *= 2.0
 
     def forward(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = self.stem(x)
@@ -251,11 +281,10 @@ class PolicyValueNet(nn.Module):
         ssl_output = None
         if self.ssl_head is not None and return_ssl:
             ssl_output = self.ssl_head(x) # (B, 13, 8, 8)
-        
+        # Return (policy, value); if return_ssl is True, also return SSL output
         if return_ssl:
             return p, v.squeeze(-1), ssl_output
-        else:
-            return p, v.squeeze(-1)
+        return p, v.squeeze(-1)
 
     @staticmethod
     def from_config(d: dict) -> "PolicyValueNet":

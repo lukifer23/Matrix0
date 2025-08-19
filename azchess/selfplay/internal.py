@@ -174,6 +174,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             batch_size=int(sp_cfg.get("batch_size", mcts_cfg.get("batch_size", 32))),
             fpu=float(sp_cfg.get("fpu", mcts_cfg.get("fpu", 0.5))),
             parent_q_init=bool(sp_cfg.get("parent_q_init", mcts_cfg.get("parent_q_init", True))),
+            tt_cleanup_frequency=int(mcts_cfg.get("tt_cleanup_frequency", 500)),
+            draw_penalty=float(mcts_cfg.get("draw_penalty", -0.1)),
         ),
         device=device,
         inference_backend=infer_backend,
@@ -223,14 +225,16 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
 
         while not board.is_game_over() and len(states) < sp_cfg.get("max_game_len", 200):
             # Check for early termination to prevent draws
-            if _should_terminate_early(
-                board,
-                move_history,
-                min_plies_before_check=int(sp_cfg.get("early_draw_min_plies", 40)),
-                recent_window=int(sp_cfg.get("early_draw_window", 16)),
-                min_unique_in_window=int(sp_cfg.get("early_draw_min_unique", 5)),
-            ):
-                break
+            # Optional early draw adjudication (configurable)
+            if bool(sp_cfg.get("early_draw_enabled", False)):
+                if _should_terminate_early(
+                    board,
+                    move_history,
+                    min_plies_before_check=int(sp_cfg.get("early_draw_min_plies", 60)),
+                    recent_window=int(sp_cfg.get("early_draw_window", 24)),
+                    min_unique_in_window=int(sp_cfg.get("early_draw_min_unique", 8)),
+                ):
+                    break
 
             move_no = board.fullmove_number
             # Early draw adjudication is handled in _should_terminate_early; still allow claimable draws
