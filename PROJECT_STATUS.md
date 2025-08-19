@@ -25,8 +25,8 @@
 - **Impact**: Import failures, circular dependencies, maintenance nightmare
 
 #### **2. Configuration Mismatches**
-- **MCTS Parameters**: `config.yaml` uses `fpu_reduction` but code uses `fpu`
-- **Parameter Names**: Inconsistent naming between config and implementation
+- **MCTS Parameters**: Configuration now aligned with code (`fpu`, `dirichlet_frac`, etc.)
+- **Parameter Names**: Standardized naming between config and implementation
 - **Hardcoded Values**: Many parameters not configurable
 - **Impact**: MCTS behavior unpredictable, configuration errors
 
