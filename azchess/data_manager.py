@@ -62,63 +62,6 @@ class DataManager:
         # Version tracking
         self.version = "1.0.0"
         
-    from __future__ import annotations
-
-import os
-import json
-import hashlib
-import sqlite3
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Iterator
-from datetime import datetime
-import numpy as np
-import logging
-import argparse
-import time
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DataShard:
-    """Represents a single data shard with metadata."""
-    path: str
-    size_bytes: int
-    sample_count: int
-    created_at: str
-    checksum: str
-    version: str
-    corrupted: bool = False
-
-
-@dataclass
-class DataStats:
-    """Statistics about the data pipeline."""
-    total_shards: int
-    total_samples: int
-    total_size_gb: float
-    corrupted_shards: int
-    last_updated: str
-
-
-class DataManager:
-    """Manages the replay buffer and data pipeline for Matrix0 training."""
-    
-    def __init__(self, base_dir: str = "data", max_shards: int = 128, shard_size: int = 16384):
-        self.base_dir = Path(base_dir)
-        self.max_shards = max_shards
-        self.shard_size = shard_size
-        
-        # Ensure directories exist
-        self.selfplay_dir = self.base_dir / "selfplay"
-        self.replays_dir = self.base_dir / "replays"
-        self.validation_dir = self.base_dir / "validation"
-        self.backups_dir = self.base_dir / "backups"
-        
-        for dir_path in [self.selfplay_dir, self.replays_dir, self.validation_dir, self.backups_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
         # Initialize database for tracking
         self.db_path = self.base_dir / "data_metadata.db"
         self._init_database()

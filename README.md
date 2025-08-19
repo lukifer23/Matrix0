@@ -40,7 +40,7 @@ Matrix0 is an efficient, AlphaZero-style chess engine designed specifically for 
 ```
 Matrix0/
 ├── azchess/                    # Core package
-│   ├── __init__.py            # Package exports
+│   ├── __init__.py            # Exports config, data_manager, mcts, model
 │   ├── config.py              # Configuration management
 │   ├── model/                 # Neural network models
 │   │   ├── resnet.py         # ResNet with attention & SSL
@@ -69,6 +69,12 @@ Matrix0/
 │   └── backups/              # Data backups
 ├── logs/                      # Training logs
 └── webui/                     # Web interface (eval-only)
+```
+
+The package re-exports its most commonly used modules, allowing direct access:
+
+```python
+from azchess import config, data_manager, mcts, model
 ```
 
 ## 🚀 **Quick Start**
