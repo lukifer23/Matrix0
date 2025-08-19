@@ -11,7 +11,12 @@ import numpy as np
 import chess
 import torch
 import logging
-import psutil  # Added for memory monitoring
+
+try:  # Optional dependency for memory monitoring
+    import psutil  # Added for memory monitoring
+    psutil_available = True
+except ImportError:  # pragma: no cover - exercised in tests via patching
+    psutil_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -417,10 +422,14 @@ class MCTS:
 
     def _check_memory_pressure(self) -> bool:
         """Check if memory usage is high and trigger cleanup if needed."""
+        if not psutil_available:
+            return False
         try:
             memory_percent = psutil.virtual_memory().percent
             if memory_percent > self._memory_cleanup_threshold:
-                logger.warning(f"Memory pressure detected: {memory_percent:.1f}%, triggering aggressive cleanup")
+                logger.warning(
+                    f"Memory pressure detected: {memory_percent:.1f}%, triggering aggressive cleanup"
+                )
                 self._cleanup_deep_branches(max_depth=20)  # More aggressive pruning
                 return True
         except Exception as e:
