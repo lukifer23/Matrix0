@@ -405,6 +405,9 @@ class MCTS:
     def _terminal_value(self, board: chess.Board) -> float:
         if board.is_checkmate():
             return -1.0
+        # Penalize draws slightly to encourage finding wins
+        if board.is_stalemate() or board.is_insufficient_material() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
+            return -0.1
         return 0.0
 
     def _tt_get(self, key: str) -> Optional[Node]:

@@ -9,13 +9,14 @@ import chess
 
 # --- Board planes encoding (19 planes) ---
 
-def encode_board(board: chess.Board, planes: int = 19) -> np.ndarray:
+def encode_board(board: chess.Board, planes: int = 20) -> np.ndarray:
     """
     Encode board into planes [planes, 8, 8]. Order:
       0..11: piece planes (white then black; P,N,B,R,Q,K)
       12: side to move (1.0 white, 0.0 black)
       13..16: castling rights (W-K, W-Q, B-K, B-Q)
       17..18: normalized halfmove and fullmove counters
+      19: no-progress counter (for 50-move rule)
     """
     P = []
     for color in (chess.WHITE, chess.BLACK):
@@ -30,8 +31,10 @@ def encode_board(board: chess.Board, planes: int = 19) -> np.ndarray:
 
     halfmove = min(board.halfmove_clock, 99) / 99.0
     fullmove = min(board.fullmove_number, 199) / 199.0
+    no_progress = min(board.halfmove_clock, 50) / 50.0
     P.append(np.full((8, 8), halfmove, dtype=np.float32))
     P.append(np.full((8, 8), fullmove, dtype=np.float32))
+    P.append(np.full((8, 8), no_progress, dtype=np.float32))
 
     if len(P) != planes:
         raise ValueError(f"Expected {planes} planes, got {len(P)}")

@@ -151,7 +151,7 @@ class ChessSpecificFeatures(nn.Module):
 
 @dataclass
 class NetConfig:
-    planes: int = 19
+    planes: int = 20
     channels: int = 160
     blocks: int = 14
     policy_size: int = 4672
