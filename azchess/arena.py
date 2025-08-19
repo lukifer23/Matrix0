@@ -85,7 +85,13 @@ def _arena_run_one_game(args_tuple):
                 idxc = int(np.random.choice(len(moves), p=probs))
                 move = moves[idxc]
         else:
-            move = max(visits.items(), key=lambda kv: kv[1])[0]
+            if not visits:
+                # Fallback: if MCTS returns no visits, use random legal move
+                legal_moves = list(board.legal_moves)
+                move = random.choice(legal_moves)
+                print(f"  ⚠️  MCTS returned no visits, using random move")
+            else:
+                move = max(visits.items(), key=lambda kv: kv[1])[0]
         board.push(move)
         moves_count += 1
     # Score from A's perspective
@@ -197,7 +203,13 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
                     idxc = int(_np.random.choice(len(moves), p=probs))
                     move = moves[idxc]
             else:
-                move = max(visits.items(), key=lambda kv: kv[1])[0]
+                if not visits:
+                    # Fallback: if MCTS returns no visits, use random legal move
+                    legal_moves = list(board.legal_moves)
+                    move = random.choice(legal_moves)
+                    print(f"  ⚠️  MCTS returned no visits, using random move")
+                else:
+                    move = max(visits.items(), key=lambda kv: kv[1])[0]
             board.push(move)
             moves_count += 1
             now = _time.perf_counter()
@@ -626,7 +638,13 @@ def play_match(
                     idx = int(np.random.choice(len(moves), p=probs))
                     move = moves[idx]
             else:
-                move = max(visits.items(), key=lambda kv: kv[1])[0]
+                if not visits:
+                    # Fallback: if MCTS returns no visits, use random legal move
+                    legal_moves = list(board.legal_moves)
+                    move = random.choice(legal_moves)
+                    print(f"  ⚠️  MCTS returned no visits, using random move")
+                else:
+                    move = max(visits.items(), key=lambda kv: kv[1])[0]
             board.push(move)
             trace.append(move)
             move_history.append(move)  # Track move history
