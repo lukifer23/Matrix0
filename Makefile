@@ -3,7 +3,7 @@ VENV_DIR=.venv
 PIP=$(VENV_DIR)/bin/pip
 PYTHON_EXEC=$(VENV_DIR)/bin/python
 
-.PHONY: help install setup train selfplay data-stats lint download-lichess
+.PHONY: help install setup train selfplay data-stats lint download-lichess cleanup-temp-npz
 
 help:
 	@echo "Matrix0 Makefile"
@@ -15,6 +15,7 @@ help:
 	@echo "data-stats     - Display statistics about the training data."
 	@echo "lint           - Run linter and code formatter (requires ruff)."
 	@echo "download-lichess - Download a month of Lichess data (e.g., make download-lichess MONTH=2023-01)."
+	@echo "cleanup-temp-npz - Remove stray temporary .npz files from the data directory."
 
 # Environment and Installation
 setup: $(VENV_DIR)/bin/activate
@@ -47,6 +48,10 @@ data-stats:
 download-lichess:
 	@echo "Downloading Lichess data for month: $(MONTH)"
 	$(PYTHON_EXEC) azchess/tools/process_lichess.py download $(MONTH)
+
+cleanup-temp-npz:
+	@echo "Cleaning up temporary NPZ files..."
+	$(PYTHON_EXEC) scripts/cleanup_temp_npz.py
 
 # Code Quality
 lint:
