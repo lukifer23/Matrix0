@@ -1,0 +1,11 @@
+[Event "Matrix0 Eval"]
+[Site "Local"]
+[Date "2025.08.16"]
+[Round "1"]
+[White "A (trained)"]
+[Black "B (untrained)"]
+[Result "1/2-1/2"]
+[Moves "30"]
+[Time "71.0s"]
+
+1. c4 Nh6 2. Nc3 Na6 3. d3 Rb8 4. a3 Ra8 5. e3 Rb8 6. Be2 d5 7. Nxd5 Qd7 8. Qd2 Qd8 9. Qd1 Qd7 10. Qd2 Qd8 11. Qd1 Qd7 12. Qd2 Ra8 13. Qd1 Rb8 14. Qd2 Ra8 15. Qd1 Rb8 1/2-1/2

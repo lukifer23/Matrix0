@@ -4,20 +4,31 @@ seed: 42
 device: auto  # auto|mps|cpu
 precision: fp16  # fp16|bf16|fp32
 strict_encoding: true  # warn on legacy move_encoding imports
+use_presets: true  # Apply device-specific presets when available
 
 model:
   planes: 19
   channels: 160
   blocks: 14
   policy_size: 4672
+  se: true  # Enable SE blocks for better feature extraction
+  se_ratio: 0.25
+  attention: true  # Enable attention mechanisms
+  attention_heads: 8
+  chess_features: true  # Enable chess-specific features
+  self_supervised: true  # Enable self-supervised learning
+  piece_square_tables: true  # Enable piece-square table features
 
 engines:
   stockfish:
     path: /usr/local/bin/stockfish
     parameters:
-      Threads: 2
-      Hash: 128
-      MultiPV: 1
+      Threads: 4
+      Hash: 512
+      MultiPV: 8
+      UCI_LimitStrength: false
+      UCI_Elo: 2000
+      Contempt: 0
     time_control: 100ms
     enabled: true
   
@@ -27,6 +38,7 @@ engines:
       threads: 2
       minibatch-size: 256
       backend: cuda
+      WeightsFile: /path/to/network.pb.gz
     time_control: 100ms
     enabled: true
   
@@ -35,62 +47,82 @@ engines:
     checkpoint: checkpoints/best.pt
     enabled: true
 
+
+
 selfplay:
-  num_workers: 4
-  games_per_worker: 32
-  num_simulations: 100  # Reduced from 200 for faster iteration
-  cpuct: 1.5
-  dirichlet_alpha: 0.3
-  dirichlet_frac: 0.25
-  temperature: 1.0
-  temp_moves: 30
-  max_game_len: 150  # Reduced from 512 - games were taking too long!
-  resign_threshold: -0.8  # More aggressive resignation (was -0.95)
-  resign_min_moves: 30  # Reduced from 60 - resign earlier
-  resign_consecutive: 3
-  buffer_dir: data/selfplay
-  tt_capacity: 200000
-  selection_jitter: 0.0
-  opening_random_plies: 0
-  move_time_limit: 10  # NEW: Maximum 10 seconds per move
-  external_engine_ratio: 0.3  # 30% games vs external engines
-  engine_strength_curriculum: true
-  schedule:
-    - until_move: 20
-      temperature: 1.0
-      num_simulations: 100  # Reduced from 200
-    - until_move: 60
-      temperature: 0.5
-      num_simulations: 100  # Reduced from 200
-    - until_move: 150  # Reduced from 512
-      temperature: 0.1
-      num_simulations: 150  # Reduced from 400
+  num_workers: 2
+  shared_inference: true  # Re-enabled after fixing the startup issue
+  book_path: "data/openings/lichess_elite.pgn" # PGN opening book for self-play
+  temperature_start: 1.0
+  temperature_end: 0.2
+  temperature_moves: 30
+  selection_jitter: 0.01
+  resign_threshold: -0.98
+  max_game_len: 140
+  batch_size: 32
+  fpu: 0.5
+  parent_q_init: true
+  buffer_dir: "data/selfplay"
+
+# NEW: Openings configuration
+openings:
+  polyglot: "data/openings/performance.bin"  # Polyglot opening book
+  pgn: "data/openings/lichess_openings.pgn"  # PGN opening database
+  random_plies: 4  # Random opening moves for diversity
+  max_plies: 12  # Maximum opening plies
 
 training:
-  batch_size: 256
+  batch_size: 512  # Increased for better GPU utilization
   epochs: 1
-  steps_per_epoch: 5000
+  steps_per_epoch: 10000  # Increased to 10,000 steps
   lr: 0.001
   weight_decay: 1.0e-4
   ema_decay: 0.999
   grad_clip_norm: 1.0
   accum_steps: 1
+  warmup_steps: 500  # Learning rate warmup steps
   replay_dir: data/replays
   validation_dir: data/validation
   backup_dir: data/backups
   replay_shard_size: 16384
   replay_max_shards: 128
   checkpoint_dir: checkpoints
+  checkpoint_prefix: "enhanced"  # New prefix to avoid overwriting best.pt
   log_dir: logs
   external_engine_ratio: 0.3  # 30% games vs external engines
   engine_strength_curriculum: true
   adversarial_training: true
+  ssl_weight: 0.1  # Self-supervised learning weight
+  chess_features_weight: 0.05  # Chess-specific features weight
+  checkpoint_save_freq: 1000  # Save every 1000 steps
+  validation_freq: 500  # Validate every 500 steps
+  extra_replay_dirs:
+    - /Users/admin/Downloads/VSCode/Matrix0/data/lichess
+
+# Device-specific presets applied when use_presets: true
+presets:
+  cuda:
+    selfplay:
+      num_workers: 6
+      num_simulations: 256
+      batch_size: 64
+      fpu: 0.5
+    training:
+      batch_size: 512
+      replay_shard_size: 32768
+  mps:
+    selfplay:
+      num_workers: 4  # Increased for better parallelization
+      num_simulations: 256  # Increased for better play quality
+      batch_size: 64  # Increased for better GPU utilization
+      fpu: 0.5
+    training:
+      batch_size: 512  # Increased for better GPU utilization
+      replay_shard_size: 32768  # Increased for better data handling
 
 eval:
   games: 50
   temperature: 0.1
-  num_simulations: 200
-  cpuct: 1.5
   external_engines: ["stockfish", "lc0"]
   tournament_rounds: 100
   strength_estimation_games: 50
@@ -103,4 +135,25 @@ orchestrator:
   keep_top_k: 3
   max_retries: 2
   backoff_seconds: 5
-  external_engine_integration: true
+  external_engine_integration: false
+  tui: table
+
+external_data:
+  multipv: 8
+  score_temperature_cp: 200.0
+  smoothing_epsilon: 0.01
+
+mcts:
+  num_simulations: 200
+  cpuct: 2.5
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  temperature: 1.0
+  tt_capacity: 2000000
+  tt_cleanup_frequency: 500
+
+tablebases:
+  enabled: false # Set to true to enable tablebase probing
+  path: "/path/to/syzygy" # Path to your Syzygy tablebase files
+  max_pieces: 7 # Probe for positions with this many pieces or fewer
+

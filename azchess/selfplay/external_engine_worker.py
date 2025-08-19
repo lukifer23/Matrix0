@@ -10,6 +10,7 @@ from time import perf_counter
 
 import numpy as np
 import chess
+import chess.pgn
 
 import torch
 
@@ -18,6 +19,9 @@ from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
 from ..encoding import encode_board, move_to_index
 from ..engines import EngineManager
+import chess.polyglot as polyglot
+import io
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +47,45 @@ class ExternalEngineSelfPlay:
         
         # Load Matrix0 model
         self.matrix0_model = PolicyValueNet.from_config(config.model()).to(self.device)
-        self.matrix0_mcts = MCTS(self.matrix0_model, MCTSConfig(**config.selfplay()), self.device)
+        sp_cfg = config.selfplay()
+        self.matrix0_mcts = MCTS(
+            self.matrix0_model,
+            MCTSConfig(
+                num_simulations=int(sp_cfg.get("num_simulations", 200)),
+                cpuct=float(sp_cfg.get("cpuct", 1.5)),
+                dirichlet_alpha=float(sp_cfg.get("dirichlet_alpha", 0.3)),
+                dirichlet_frac=float(sp_cfg.get("dirichlet_frac", 0.25)),
+                tt_capacity=int(sp_cfg.get("tt_capacity", 200000)),
+                selection_jitter=float(sp_cfg.get("selection_jitter", 0.0)),
+            ),
+            self.device,
+        )
         
         # Load best checkpoint if available
         checkpoint_path = config.engines().get("matrix0", {}).get("checkpoint", "checkpoints/best.pt")
         if Path(checkpoint_path).exists():
             state = torch.load(checkpoint_path, map_location=self.device)
-            if "model_ema" in state:
-                self.matrix0_model.load_state_dict(state["model_ema"])
+            sd = state.get("model_ema") or state.get("model") or state
+            try:
+                missing, unexpected = self.matrix0_model.load_state_dict(sd, strict=False)
+                if missing or unexpected:
+                    logger.warning(f"Checkpoint mismatch: missing={len(missing)} unexpected={len(unexpected)}")
+            except Exception as e:
+                logger.error(f"Failed to load checkpoint {checkpoint_path} (strict=False): {e}")
             else:
-                self.matrix0_model.load_state_dict(state["model"])
-            logger.info(f"Loaded Matrix0 checkpoint: {checkpoint_path}")
+                logger.info(f"Loaded Matrix0 checkpoint: {checkpoint_path}")
         
         # Configuration
         self.external_engine_ratio = config.selfplay().get("external_engine_ratio", 0.3)
         self.engine_strength_curriculum = config.selfplay().get("engine_strength_curriculum", True)
         self.max_game_len = config.selfplay().get("max_game_len", 512)
         self.resign_threshold = config.selfplay().get("resign_threshold", -0.95)
+        # Openings configuration
+        self.openings_cfg = config.openings()
+        self._book_path = self.openings_cfg.get("polyglot")
+        self._pgn_path = self.openings_cfg.get("pgn")
+        self._random_plies = int(self.openings_cfg.get("random_plies", 0))
+        self._open_max_plies = int(self.openings_cfg.get("max_plies", 12))
         
     async def generate_games(self, num_games: int, output_dir: str, 
                            engine_pairs: Optional[List[Tuple[str, str]]] = None) -> List[GameResult]:
@@ -125,13 +151,20 @@ class ExternalEngineSelfPlay:
     async def _play_game(self, white_engine: str, black_engine: str) -> Optional[GameResult]:
         """Play a single game between two engines."""
         board = chess.Board()
+        # Apply opening if configured
+        try:
+            self._apply_opening(board)
+        except Exception as e:
+            logger.warning(f"Opening application failed: {e}")
         moves = []
         game_data = {
             "white_engine": white_engine,
             "black_engine": black_engine,
             "moves": [],
             "positions": [],
-            "evaluations": []
+            "fens": [],
+            "evaluations": [],
+            "multipv": []  # list per position: [{move, score_cp}, ...]
         }
         
         start_time = perf_counter()
@@ -152,12 +185,19 @@ class ExternalEngineSelfPlay:
             
             # Record position and move
             game_data["positions"].append(encode_board(board))
+            game_data["fens"].append(board.fen())
             game_data["moves"].append(move.uci())
             
             # Get evaluation if available
             evaluation = await self._get_position_evaluation(board, current_engine)
             if evaluation is not None:
                 game_data["evaluations"].append(evaluation)
+            # Get MultiPV (only for external engines)
+            multipv_list = await self._get_multipv(board, current_engine)
+            if multipv_list is not None:
+                game_data["multipv"].append(multipv_list)
+            else:
+                game_data["multipv"].append([])
             
             # Check for resignation
             if evaluation is not None and evaluation < self.resign_threshold:
@@ -239,6 +279,17 @@ class ExternalEngineSelfPlay:
                 elif hasattr(score, 'score'):
                     return score.score(mate_score=10000) / 100.0
             return None
+
+    async def _get_multipv(self, board: chess.Board, engine_name: str):
+        if engine_name == "matrix0":
+            return None
+        engine_client = self.engine_manager.get_engine(engine_name)
+        if engine_client is None:
+            return None
+        time_control = self.config.engines().get(engine_name, {}).get("time_control", "100ms")
+        time_ms = self._parse_time_control(time_control)
+        multipv = int(self.config.external_data().get("multipv", 8))
+        return await engine_client.analyze_multipv(board, time_ms=time_ms, multipv=multipv)
     
     def _get_game_result(self, board: chess.Board) -> float:
         """Get game result as float."""
@@ -284,6 +335,50 @@ class ExternalEngineSelfPlay:
             json.dump(save_data, f, indent=2)
         
         logger.debug(f"Saved game data to {filename}")
+
+    def _apply_opening(self, board: chess.Board) -> None:
+        # Try polyglot book
+        if self._book_path and os.path.exists(self._book_path):
+            try:
+                with polyglot.open_reader(self._book_path) as reader:
+                    plies = 0
+                    while plies < self._open_max_plies:
+                        entries = list(reader.find_all(board))
+                        if not entries:
+                            break
+                        mv = random.choice(entries).move()
+                        if mv not in board.legal_moves:
+                            break
+                        board.push(mv)
+                        plies += 1
+                return
+            except Exception as e:
+                logger.warning(f"Polyglot opening failed: {e}")
+        # Try PGN
+        if self._pgn_path and os.path.exists(self._pgn_path):
+            try:
+                with open(self._pgn_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Read first game only for simplicity; in production sample randomly
+                    game = chess.pgn.read_game(f)
+                    if game is not None:
+                        node = game
+                        plies = 0
+                        while node.variations and plies < self._open_max_plies:
+                            node = random.choice(node.variations)
+                            board.push(node.move)
+                            plies += 1
+                        return
+            except Exception as e:
+                logger.warning(f"PGN opening failed: {e}")
+        # Random plies as last resort
+        rp = max(0, int(self._random_plies))
+        for _ in range(rp):
+            if board.is_game_over():
+                break
+            legal = list(board.legal_moves)
+            if not legal:
+                break
+            board.push(random.choice(legal))
 
 
 async def external_engine_worker(proc_id: int, config: Config, output_dir: str, 

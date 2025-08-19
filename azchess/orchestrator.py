@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import glob
 import os
-from multiprocessing import Process, Queue
+import queue as pyqueue
+from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List
@@ -13,12 +14,25 @@ from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingC
 from .config import Config
 from .logging_utils import setup_logging
 from .selfplay.internal import selfplay_worker, math_div_ceil
-from .train import main as train_main
+from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
+from .config import select_device
+from train_comprehensive import train_from_config as train_main
 from .arena import play_match
 import gc
 import torch
 from .data_manager import DataManager
 from .monitor import dir_stats, disk_free, memory_usage_bytes
+import numpy as np
+import time
+
+
+# Top-level helper for external engine process (macOS spawn-safe)
+def _run_external_proc(proc_id: int, cfg_path: str, out_dir: str, n_games: int):
+    import asyncio as _asyncio
+    from .config import Config as _Cfg
+    from .selfplay.external_engine_worker import external_engine_worker as _worker
+    _cfg = _Cfg.load(cfg_path)
+    _asyncio.run(_worker(proc_id=proc_id, config=_cfg, output_dir=out_dir, num_games=n_games))
 
 
 def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None, 
@@ -31,9 +45,26 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 weight_decay_override: float | None = None, ema_decay_override: float | None = None,
                 grad_clip_override: float | None = None, promotion_threshold_override: float | None = None,
                 device_override: str | None = None, max_retries_override: int | None = None,
-                backoff_seconds_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None):
+                backoff_seconds_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None,
+                tui_mode: str = "bars"):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
+    try:
+        import torch as _torch
+        import os as _os
+        dev_req = cfg.get("device", "auto")
+        from .config import select_device as _sel
+        dev_sel = _sel(dev_req)
+        # Set MPS-friendly env if we are likely to use MPS
+        if dev_sel == 'mps':
+            _os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+            _os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.8'
+            _os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = '0.6'
+        mps_built = getattr(_torch.backends.mps, 'is_built', lambda: False)()
+        mps_avail = getattr(_torch.backends.mps, 'is_available', lambda: False)()
+        logger.info(f"Device requested={dev_req} selected={dev_sel} | MPS built={mps_built} available={mps_avail}")
+    except Exception:
+        pass
 
     orch = cfg.raw.get("orchestrator", {})
     games_target = int(orch.get("games_per_cycle", 64))
@@ -56,6 +87,26 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     external_engine_integration = bool(orch.get("external_engine_integration", False))
 
     sp_cfg = cfg.to_dict()
+
+    # Apply device-specific presets if configured
+    try:
+        from copy import deepcopy
+        if bool(sp_cfg.get("use_presets", True)) and isinstance(sp_cfg.get("presets", None), dict):
+            dev = sp_cfg.get("device", cfg.get("device", "auto"))
+            from .config import select_device as _sel_dev
+            dev_sel = _sel_dev(dev)
+            preset = sp_cfg["presets"].get(dev_sel)
+            if preset:
+                # Merge selfplay and training presets without clobbering existing keys unless absent
+                for section in ("selfplay", "training"):
+                    if section in preset:
+                        sp_cfg.setdefault(section, {})
+                        for k, v in preset[section].items():
+                            if k not in sp_cfg[section]:
+                                sp_cfg[section][k] = v
+                logger.info(f"Applied {dev_sel} presets to config")
+    except Exception as e:
+        logger.warning(f"Failed to apply presets: {e}")
     
     # Apply command-line overrides to self-play config
     if workers_override is not None:
@@ -130,86 +181,282 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 logger.info("Will create new model with random weights")
         else:
             logger.info("No existing checkpoints found. Will create new model with random weights")
+            logger.info("DEBUG: About to start training phase")
 
     with Progress(
         "{task.description}",
         BarColumn(),
         "{task.completed}/{task.total}",
         "•", TimeElapsedColumn(), "•", TimeRemainingColumn(),
+        transient=False,
     ) as progress:
         # Self-play
         def run_selfplay_once():
             logger.info("Starting self-play")
             q: Queue = Queue()
             procs: List[Process] = []
-            sp_task = progress.add_task("Self-Play games", total=workers * games_per_worker)
+            use_table = (tui_mode == "table")
+            if not use_table:
+                sp_task = progress.add_task("Self-Play (total)", total=workers * games_per_worker)
+                worker_tasks: Dict[int, int] = {}
+                for i in range(workers):
+                    worker_tasks[i] = progress.add_task(f"W{i}", total=games_per_worker)
+                stats_task = progress.add_task("W/L/D: 0/0/0", total=1)
             ckpt_for_sp = str(best_ckpt) if best_ckpt.exists() else None
+            
+            # Pre-load the model state dict in the main process to avoid issues in spawned processes
+            model_state_dict = None
+            if ckpt_for_sp:
+                try:
+                    state = torch.load(ckpt_for_sp, map_location='cpu')
+                    model_state_dict = state.get("model_ema", state.get("model", state))
+                except Exception as e:
+                    logger.error(f"Failed to pre-load checkpoint state_dict: {e}")
+                    raise
+
+            # Start shared inference server if beneficial
+            infer_proc: Process | None = None
+            stop_event = None
+            shared_memory_resources = []
+            try:
+                dev = select_device(sp_cfg.get("device", cfg.get("device", "auto")))
+            except Exception:
+                dev = "cpu"
+            shared_infer_enabled = bool(sp_cfg.get("selfplay", {}).get("shared_inference", True))
+            if shared_infer_enabled and dev != "cpu":
+                logger.info(f"Setting up shared memory and launching inference server on device: {dev}")
+                stop_event = MPEvent()
+                server_ready_event = MPEvent()
+                
+                # Create shared memory resources for each worker
+                model_params = sp_cfg["model"]
+                sp_params = sp_cfg["selfplay"]
+                for i in range(workers):
+                    res = setup_shared_memory_for_worker(
+                        worker_id=i,
+                        planes=model_params['planes'],
+                        policy_size=model_params['policy_size'],
+                        max_batch_size=sp_params['batch_size']
+                    )
+                    shared_memory_resources.append(res)
+
+                infer_proc = Process(target=run_inference_server, args=(dev, sp_cfg["model"], model_state_dict, stop_event, server_ready_event, shared_memory_resources))
+                infer_proc.start()
+                
+                logger.info("Waiting for inference server to initialize...")
+                if not server_ready_event.wait(timeout=60):
+                    logger.error("Inference server failed to start in time. Aborting.")
+                    if infer_proc.is_alive(): infer_proc.terminate()
+                    raise RuntimeError("Inference server startup timeout")
+                logger.info("Inference server is ready.")
+
             for i in range(workers):
-                p = Process(target=selfplay_worker, args=(i, sp_cfg, ckpt_for_sp, games_per_worker, q))
+                os.environ.setdefault('MATRIX0_WORKER_LOG_LEVEL', 'WARNING')
+                # Pass the specific shared memory resource for this worker
+                sm_res = shared_memory_resources[i] if shared_memory_resources else None
+                p = Process(target=selfplay_worker, args=(i, sp_cfg, ckpt_for_sp, games_per_worker, q, sm_res))
                 p.start()
                 procs.append(p)
-            stats = {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0}
+
+            stats = {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0, "avg_ms_per_move_sum": 0.0, "avg_sims_sum": 0.0, "games_with_metrics": 0}
             done = 0
+            # For table mode, track per-worker stats
+            per_worker = {i: {"done": 0, "avg_ms": 0.0, "avg_sims": 0.0, "moves": 0, "hb_ts": 0.0} for i in range(workers)}
+
+            # Helper: monitor, respawn or adjust targets if workers die
+            def _check_and_respawn_workers(last_progress_ts: float,
+                                          per_worker_done: Dict[int, int]) -> None:
+                now = time.time()
+                for i, p in enumerate(list(procs)):
+                    if p.is_alive():
+                        continue
+                    # Worker died. Determine remaining games and respawn if needed
+                    remaining = max(0, games_per_worker - per_worker_done.get(i, 0))
+                    if remaining <= 0:
+                        continue
+                    logger.warning(f"Worker {i} died early (done={per_worker_done.get(i,0)}/{games_per_worker}). Respawning for remaining {remaining} games.")
+                    # Reuse the same shared memory resource if present
+                    sm_res = shared_memory_resources[i] if shared_memory_resources else None
+                    new_p = Process(target=selfplay_worker, args=(i, sp_cfg, ckpt_for_sp, remaining, q, sm_res))
+                    new_p.start()
+                    procs[i] = new_p
+
             try:
-                while done < workers * games_per_worker:
-                    msg = q.get()
-                    if isinstance(msg, dict) and msg.get("type") == "game":
-                        done += 1
-                        progress.update(sp_task, advance=1)
-                        stats["moves"] += int(msg["moves"]) if "moves" in msg else 0
-                        stats["time"] += float(msg["secs"]) if "secs" in msg else 0.0
-                        res = float(msg.get("result", 0.0))
-                        if res > 0: stats["win"] += 1
-                        elif res < 0: stats["loss"] += 1
-                        else: stats["draw"] += 1
+                if use_table:
+                    from rich.live import Live
+                    from rich.table import Table
+                    
+                    def mem_title() -> str:
+                        try:
+                            import psutil
+                            vm = psutil.virtual_memory()
+                            total_gb = vm.total / (1024**3)
+                            used_gb = (vm.total - vm.available) / (1024**3)
+                            return f"Self-Play | Mem {used_gb:.1f}/{total_gb:.1f} GB ({vm.percent:.0f}%)"
+                        except Exception:
+                            return "Self-Play"
+
+                    table = Table(title=mem_title())
+                    table.add_column("Worker", justify="left")
+                    table.add_column("Done/Total", justify="right")
+                    table.add_column("Avg ms/move", justify="right")
+                    table.add_column("Avg sims", justify="right")
+                    table.add_column("Moves", justify="right")
+                    table.add_column("HB(s)", justify="right")
+                    table.add_column("W/L/D", justify="right")
+                    
+                    with Live(table, refresh_per_second=4, transient=False) as live:
+                        for i in range(workers):
+                            w = per_worker[i]
+                            hb_age = 0.0
+                            if w["hb_ts"] > 0:
+                                hb_age = max(0.0, time.perf_counter() - w["hb_ts"])
+                            table.add_row(
+                                f"W{i}",
+                                f"{w['done']}/{games_per_worker}",
+                                f"{w['avg_ms']:.1f}",
+                                f"{w['avg_sims']:.1f}",
+                                f"{w['moves']}",
+                                f"{hb_age:.0f}",
+                                f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                            )
+                        
+                        last_msg_time = time.time()
+                        total_target = workers * games_per_worker
+                        while done < total_target:
+                            try:
+                                msg = q.get(timeout=2.0)
+                            except pyqueue.Empty:
+                                # Periodically check for dead workers and respawn if needed
+                                _check_and_respawn_workers(last_msg_time, {k: v["done"] for k, v in per_worker.items()})
+                                # Detect total stall (no progress) and break to allow retry loop
+                                if time.time() - last_msg_time > 300:
+                                    raise RuntimeError("Self-play appears stalled (no progress for 300s)")
+                                continue
+                            # Any message counts as progress for stall detection
+                            last_msg_time = time.time()
+                            # Heartbeat updates
+                            if isinstance(msg, dict) and msg.get("type") == "heartbeat":
+                                wid = int(msg.get("proc", -1))
+                                if wid in per_worker:
+                                    per_worker[wid]["moves"] = int(msg.get("moves", 0))
+                                    per_worker[wid]["hb_ts"] = time.perf_counter()
+                                # Refresh table to reflect heartbeat and memory
+                                new_table = Table(title=mem_title())
+                                new_table.add_column("Worker", justify="left")
+                                new_table.add_column("Done/Total", justify="right")
+                                new_table.add_column("Avg ms/move", justify="right")
+                                new_table.add_column("Avg sims", justify="right")
+                                new_table.add_column("Moves", justify="right")
+                                new_table.add_column("HB(s)", justify="right")
+                                new_table.add_column("W/L/D", justify="right")
+                                for i in range(workers):
+                                    w = per_worker[i]
+                                    hb_age = 0.0
+                                    if w["hb_ts"] > 0:
+                                        hb_age = max(0.0, time.perf_counter() - w["hb_ts"])
+                                    new_table.add_row(
+                                        f"W{i}",
+                                        f"{w['done']}/{games_per_worker}",
+                                        f"{w['avg_ms']:.1f}",
+                                        f"{w['avg_sims']:.1f}",
+                                        f"{w['moves']}",
+                                        f"{hb_age:.0f}",
+                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                                    )
+                                live.update(new_table)
+                                continue
+                            if isinstance(msg, dict) and msg.get("type") == "game":
+                                done += 1
+                                wid = int(msg.get("proc", -1))
+                                if wid in per_worker:
+                                    per_worker[wid]["done"] += 1
+                                    ms = float(msg.get("avg_ms_per_move", 0.0))
+                                    sims = float(msg.get("avg_sims", 0.0))
+                                    c = per_worker[wid]["done"]
+                                    per_worker[wid]["avg_ms"] = (per_worker[wid]["avg_ms"] * (c - 1) + ms) / max(1, c)
+                                    per_worker[wid]["avg_sims"] = (per_worker[wid]["avg_sims"] * (c - 1) + sims) / max(1, c)
+                                stats["moves"] += int(msg.get("moves", 0))
+                                stats["time"] += float(msg.get("secs", 0.0))
+                                if "avg_ms_per_move" in msg and "avg_sims" in msg:
+                                    stats["avg_ms_per_move_sum"] += float(msg["avg_ms_per_move"])
+                                    stats["avg_sims_sum"] += float(msg["avg_sims"])
+                                    stats["games_with_metrics"] += 1
+                                res = float(msg.get("result", 0.0))
+                                if res > 0: stats["win"] += 1
+                                elif res < 0: stats["loss"] += 1
+                                else: stats["draw"] += 1
+                                # Rebuild table with memory and heartbeat info
+                                new_table = Table(title=mem_title())
+                                new_table.add_column("Worker", justify="left")
+                                new_table.add_column("Done/Total", justify="right")
+                                new_table.add_column("Avg ms/move", justify="right")
+                                new_table.add_column("Avg sims", justify="right")
+                                new_table.add_column("Moves", justify="right")
+                                new_table.add_column("HB(s)", justify="right")
+                                new_table.add_column("W/L/D", justify="right")
+                                
+                                for i in range(workers):
+                                    w = per_worker[i]
+                                    hb_age = 0.0
+                                    if w["hb_ts"] > 0:
+                                        hb_age = max(0.0, time.perf_counter() - w["hb_ts"])
+                                    new_table.add_row(
+                                        f"W{i}",
+                                        f"{w['done']}/{games_per_worker}",
+                                        f"{w['avg_ms']:.1f}",
+                                        f"{w['avg_sims']:.1f}",
+                                        f"{w['moves']}",
+                                        f"{hb_age:.0f}",
+                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                                    )
+                                
+                                live.update(new_table)
+                else:
+                    last_msg_time = time.time()
+                    total_target = workers * games_per_worker
+                    while done < total_target:
+                        try:
+                            msg = q.get(timeout=2.0)
+                        except pyqueue.Empty:
+                            # Periodically check for dead workers and respawn if needed
+                            # Build minimal per-worker-done map from progress tasks when in bars mode
+                            # We don't track per-worker here tightly; maintain a simple done counter only.
+                            # Use zeros so we only respawn if a worker died very early.
+                            per_worker_done = {i: 0 for i in range(workers)}
+                            _check_and_respawn_workers(last_msg_time, per_worker_done)
+                            if time.time() - last_msg_time > 300:
+                                raise RuntimeError("Self-play appears stalled (no progress for 300s)")
+                            continue
+                        # Any message counts as progress for stall detection
+                        last_msg_time = time.time()
+                        if isinstance(msg, dict) and msg.get("type") == "game":
+                            done += 1
+                            progress.update(sp_task, advance=1)
+                            wid = int(msg.get("proc", -1))
+                            if wid in worker_tasks:
+                                progress.update(worker_tasks[wid], advance=1)
+                            stats["moves"] += int(msg.get("moves", 0))
+                            stats["time"] += float(msg.get("secs", 0.0))
+                            if "avg_ms_per_move" in msg and "avg_sims" in msg:
+                                stats["avg_ms_per_move_sum"] += float(msg["avg_ms_per_move"])
+                                stats["avg_sims_sum"] += float(msg["avg_sims"])
+                                stats["games_with_metrics"] += 1
+                            res = float(msg.get("result", 0.0))
+                            if res > 0: stats["win"] += 1
+                            elif res < 0: stats["loss"] += 1
+                            else: stats["draw"] += 1
+                            progress.update(stats_task, description=f"W/L/D: {stats['win']}/{stats['loss']}/{stats['draw']}")
             finally:
                 for p in procs:
                     p.join()
-            return stats, done
-
-        # External engine self-play (if enabled)
-        def run_external_engine_selfplay():
-            if not external_engine_integration:
-                logger.info("External engine integration disabled, skipping external engine self-play")
-                return {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0}, 0
-            
-            try:
-                from .selfplay.external_engine_worker import ExternalEngineSelfPlay
-                from .engines import EngineManager
-                import asyncio
-                
-                logger.info("Starting external engine self-play")
-                
-                async def run_external_selfplay():
-                    engine_manager = EngineManager(cfg.to_dict())
-                    await engine_manager.start_all_engines()
-                    
+                if infer_proc is not None:
                     try:
-                        selfplay = ExternalEngineSelfPlay(cfg, engine_manager)
-                        external_games = int(games_target * cfg.selfplay().get("external_engine_ratio", 0.3))
-                        
-                        if external_games > 0:
-                            games = await selfplay.generate_games(
-                                external_games, 
-                                cfg.selfplay().get("buffer_dir", "data/selfplay")
-                            )
-                            logger.info(f"Generated {len(games)} external engine games")
-                            return len(games)
-                        else:
-                            logger.info("No external engine games configured")
-                            return 0
-                    finally:
-                        await engine_manager.cleanup()
-                
-                external_games_count = asyncio.run(run_external_selfplay())
-                return {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0}, external_games_count
-                
-            except ImportError as e:
-                logger.warning(f"External engine support not available: {e}")
-                return {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0}, 0
-            except Exception as e:
-                logger.error(f"External engine self-play failed: {e}")
-                return {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0}, 0
+                        if stop_event: stop_event.set()
+                        infer_proc.join(timeout=5)
+                    except Exception:
+                        pass
+            return stats, done
 
         # Retry loop for self-play
         attempt = 0
@@ -223,141 +470,127 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 logger.warning(f"Self-play failed: {e}. Retrying in {backoff}s...")
                 sleep(backoff)
                 attempt += 1
-
-        # Run external engine self-play
-        external_stats, external_done = run_external_engine_selfplay()
-        
-        # Combine stats
-        total_done = done + external_done
-        combined_stats = {
-            "moves": stats["moves"] + external_stats["moves"],
-            "time": stats["time"] + external_stats["time"],
-            "win": stats["win"] + external_stats["win"],
-            "loss": stats["loss"] + external_stats["loss"],
-            "draw": stats["draw"] + external_stats["draw"]
-        }
-        
-        avg_moves = combined_stats["moves"] / max(1, total_done)
-        avg_time = combined_stats["time"] / max(1, total_done)
-        logger.info(f"Self-play done: games={total_done} (internal={done}, external={external_done}), avg_moves={avg_moves:.1f}, avg_time={avg_time:.1f}s, W/L/D={combined_stats['win']}/{combined_stats['loss']}/{combined_stats['draw']}")
-
-        # Report directory and resource stats
-        sp_stats = dir_stats(sp_cfg["selfplay"]["buffer_dir"])
-        logger.info(f"Self-play buffer: files={sp_stats.files} size={sp_stats.bytes/1e6:.1f}MB")
-        df = disk_free(".")
-        if df is not None:
-            logger.info(f"Disk free: {df/1e9:.1f}GB")
-        mu = memory_usage_bytes()
-        if mu is not None:
-            logger.info(f"Memory usage: {mu/1024/1024:.1f}MB")
-
-        # Compact self-play to replay
-        logger.info("Compacting self-play to replay (DataManager)")
+        # Post self-play: compact data, validate/quarantine if requested
+        logger.info("Compacting self-play data into replay buffer")
         dm = DataManager(base_dir=cfg.get("data_dir", "data"))
-        dm.compact_selfplay_to_replay()
-        
-        replay_stats = dir_stats(cfg.training().get("replay_dir", "data/replays"))
-        logger.info(f"Replay buffer after compaction: {replay_stats.files} shards, {replay_stats.bytes / 1e6:.1f}MB")
+        try:
+            dm.compact_selfplay_to_replay()
+        except Exception as e:
+            logger.warning(f"Data compaction failed: {e}")
 
-        # Data integrity check
         if run_doctor_fix:
-            logger.info("Running data integrity check")
-            dm = DataManager(base_dir=cfg.get("data_dir", "data"))
-            valid, corrupted = dm.validate_data_integrity()
-            logger.info(f"Doctor: valid={valid} corrupted={corrupted}")
-            if corrupted > 0:
-                quarantined_count = dm.quarantine_corrupted_shards()
-                logger.info(f"Quarantined {quarantined_count} corrupted shards.")
-
-        # Training
-        # Retry loop for training
-        attempt = 0
-        while True:
             try:
-                logger.info("Starting training")
-                t0 = perf_counter()
-                # Optional epochs-per-cycle override via env
-                try:
-                    os.environ["MATRIX0_TRAIN_EPOCHS"] = str(int(orch.get("train_epochs_per_cycle", 1)))
-                except Exception:
-                    pass
-                train_main()
-                train_secs = perf_counter() - t0
-                logger.info(f"Training finished in {train_secs:.1f}s")
-                break
+                valid, corrupted = dm.validate_data_integrity()
+                logger.info(f"Data integrity: valid={valid} corrupted={corrupted}")
+                if corrupted > 0:
+                    qn = dm.quarantine_corrupted_shards()
+                    logger.info(f"Quarantined {qn} corrupted shards")
             except Exception as e:
-                if attempt >= max_retries:
-                    raise
-                logger.warning(f"Training failed: {e}. Retrying in {backoff}s...")
-                sleep(backoff)
-                attempt += 1
+                logger.warning(f"Doctor fix failed: {e}")
 
-        # Memory cleanup
-        gc.collect()
+        # Import extra replay dirs (e.g., Lichess) into the DB for training
         try:
-            if torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
+            extra_dirs = cfg.training().get("extra_replay_dirs", []) or []
+            if isinstance(extra_dirs, list) and extra_dirs:
+                imported_total = 0
+                for d in extra_dirs:
+                    try:
+                        n = dm.import_replay_dir(d, source="external", move_files=False)
+                        imported_total += int(n)
+                    except Exception as e:
+                        logger.warning(f"Import of extra replay dir {d} failed: {e}")
+                if imported_total:
+                    logger.info(f"Imported {imported_total} external shards from extra_replay_dirs for training")
+        except Exception as e:
+            logger.warning(f"Loading extra replay dirs failed: {e}")
 
-        # Promote new checkpoint if better
+        # Train phase
+        logger.info("Starting training phase")
+        try:
+            train_main(cfg_path)
+        except Exception as e:
+            logger.error(f"Training failed: {e}")
+            raise
+
+        # Determine candidate checkpoint produced by training
         ckpt_dir = Path(cfg.training().get("checkpoint_dir", "checkpoints"))
-        latest = ckpt_dir / "model.pt"
-        if not best_ckpt.exists():
-            logger.info("No best checkpoint found; promoting latest as best.")
-            best_ckpt.write_bytes(latest.read_bytes())
+        candidate = ckpt_dir / "enhanced_best.pt"
+        if not candidate.exists():
+            # Fallback to any *_best.pt excluding best.pt
+            cand_list = [p for p in ckpt_dir.glob("*_best.pt") if p.name != "best.pt"]
+            cand_list.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if cand_list:
+                candidate = cand_list[0]
+            else:
+                # Last resort: use enhanced_final.pt
+                alt = ckpt_dir / "enhanced_final.pt"
+                candidate = alt if alt.exists() else None
+
+        if candidate is None or not Path(candidate).exists():
+            logger.warning("No candidate checkpoint produced by training; skipping evaluation.")
             return
-        logger.info("Evaluating latest vs best")
-        # Retry loop for evaluation
-        attempt = 0
-        while True:
+
+        # If there is no best checkpoint yet, promote immediately
+        if not best_ckpt.exists():
+            import shutil
             try:
-                score = play_match(str(latest), str(best_ckpt), eval_games, cfg, seed=seed)
-                break
+                shutil.copy2(candidate, best_ckpt)
+                logger.info(f"Promoted initial best checkpoint: {best_ckpt}")
             except Exception as e:
-                if attempt >= max_retries:
-                    raise
-                logger.warning(f"Evaluation failed: {e}. Retrying in {backoff}s...")
-                sleep(backoff)
-                attempt += 1
-        win_rate = score / float(eval_games)
-        logger.info(f"Eval result: win_rate={win_rate:.3f} over {eval_games} games")
+                logger.error(f"Failed to set initial best checkpoint: {e}")
+            return
+
+        # Evaluate candidate vs current best
+        logger.info(f"Evaluating candidate {candidate} vs best {best_ckpt}")
+        # Parallelize eval games if configured
+        eval_workers = int(cfg.eval().get("workers", 1))
+        score = play_match(
+            ckpt_a=str(candidate),
+            ckpt_b=str(best_ckpt),
+            games=eval_games,
+            cfg=cfg,
+            seed=seed or int(time.time()),
+            workers=eval_workers
+        )
+        win_rate = score / float(max(1, eval_games))
+        logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
+
+        # Promotion and top-k management
         if win_rate >= promote_thr:
-            logger.info("Promoting latest to best")
-            best_ckpt.write_bytes(latest.read_bytes())
-
-        # Per-cycle JSONL summary
-        try:
-            import json
-            summary = {
-                "type": "cycle_summary",
-                "games_target": games_target,
-                "games_internal": int(done),
-                "games_external": int(external_done),
-                "replay_files": int(dir_stats(cfg.training().get("replay_dir", "data/replays")).files),
-                "train_secs": float(train_secs),
-                "eval_games": int(eval_games),
-                "win_rate": float(win_rate),
-                "timestamp": int(__import__("time").time()),
-            }
-            logs_dir = Path(cfg.training().get("log_dir", "logs"))
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            with (logs_dir / "cycle_summary.jsonl").open("a") as f:
-                f.write(json.dumps(summary) + "\n")
-        except Exception:
-            pass
-
-        # Prune old checkpoints if desired
-        ckpts = sorted(glob.glob(str(ckpt_dir / "model_*.pt")))
-        if len(ckpts) > keep_top_k:
-            for p in ckpts[:-keep_top_k]:
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-
+            import shutil
+            try:
+                # Archive current best
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                archive = ckpt_dir / f"best_archive_{ts}.pt"
+                shutil.copy2(best_ckpt, archive)
+            except Exception:
+                pass
+            try:
+                shutil.copy2(candidate, best_ckpt)
+                logger.info(f"Promoted candidate to best: {best_ckpt}")
+            except Exception as e:
+                logger.error(f"Failed to promote candidate: {e}")
+            # Enforce keep_top_k archives
+            try:
+                arch = sorted(ckpt_dir.glob("best_archive_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+                for p in arch[keep_top_k:]:
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            logger.info("Candidate did not meet promotion threshold; keeping current best.")
 
 def main():
+    # Force spawn start method for torch/multiprocessing compatibility on macOS
+    import torch.multiprocessing as mp
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass # Can only be set once
+
     ap = argparse.ArgumentParser(description="Matrix0 Training Orchestrator - Flexible command-line configuration")
     
     # Core configuration
@@ -395,6 +628,7 @@ def main():
     ap.add_argument("--seed", type=int, default=None, help="Deterministic seed for self-play/eval")
     ap.add_argument("--max-retries", type=int, default=None, help="Override max retries for failed operations")
     ap.add_argument("--backoff-seconds", type=int, default=None, help="Override backoff delay between retries")
+    ap.add_argument("--tui", type=str, default=None, choices=["bars", "table"], help="Progress UI: bars or table")
     
     args = ap.parse_args()
     
@@ -407,6 +641,10 @@ def main():
     except Exception:
         pass
     
+    # Determine TUI mode: CLI overrides config; if CLI not provided, use config default
+    tui_cfg = Config.load(args.config).orchestrator().get("tui", "bars")
+    chosen_tui = args.tui or tui_cfg
+
     orchestrate(
         args.config, 
         games_override=args.games, 
@@ -432,7 +670,8 @@ def main():
         max_retries_override=args.max_retries,
         backoff_seconds_override=args.backoff_seconds,
         doctor_fix=args.doctor_fix, 
-        seed=args.seed
+        seed=args.seed,
+        tui_mode=chosen_tui
     )
 
 

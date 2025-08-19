@@ -91,12 +91,20 @@ eval:
 
 ### Orchestrator Configuration
 
-Enable external engine integration in training cycles:
+External engine integration is disabled by default. Enable when engines are installed:
 
 ```yaml
 orchestrator:
   external_engine_integration: true
 ```
+
+Notes (macOS):
+- Matrix0 uses spawn-safe process targets for external workers on macOS.
+- The orchestrator sets MPS stability env vars when device=mps:
+  - `PYTORCH_ENABLE_MPS_FALLBACK=1`
+  - `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8`
+  - `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.6`
+  to avoid memory watermark errors in child processes.
 
 ## Usage
 
@@ -117,7 +125,7 @@ python -m azchess.orchestrator --external-engines
 Evaluate Matrix0's strength against external engines:
 
 ```bash
-# Evaluate against all configured external engines
+# Evaluate against all configured external engines (engines must be installed and enabled)
 python -m azchess.eval --external-engines --games 50
 
 # Or use the multi-engine evaluator directly
@@ -143,7 +151,7 @@ for engine_name, result in results.items():
     print(f"{engine_name}: {result.win_rate:.3f} win rate")
 ```
 
-### 4. External Engine Self-Play
+### 4. External Engine Self-Play (advanced)
 
 Generate training data using external engines:
 

@@ -49,6 +49,8 @@ def _bitboard_to_plane(bb: chess.Bitboard) -> np.ndarray:
 
 # --- 4672-action mapping ---
 
+POLICY_SHAPE = (8, 8, 73)
+
 RAY_DIRS: Tuple[Tuple[int, int], ...] = (
     (1, 0),   # north (toward higher rank)
     (-1, 0),  # south
@@ -143,9 +145,22 @@ def move_to_index(board: chess.Board, move: chess.Move) -> int:
 @dataclass
 class MoveEncoder:
     """Helper with encode/decode utilities and masks."""
+    
+    def __post_init__(self):
+        self._cache: Dict[Tuple[str, chess.Move], int] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def encode_move(self, board: chess.Board, move: chess.Move) -> int:
-        return move_to_index(board, move)
+        cache_key = (board.fen(), move)
+        if cache_key in self._cache:
+            self._cache_hits += 1
+            return self._cache[cache_key]
+        
+        self._cache_misses += 1
+        result = move_to_index(board, move)
+        self._cache[cache_key] = result
+        return result
 
     def decode_move(self, board: chess.Board, action_idx: int) -> chess.Move:
         if not (0 <= action_idx < 4672):
@@ -200,6 +215,18 @@ class MoveEncoder:
             if lm.from_square == from_sq:
                 return lm
         return chess.Move.null()
+    
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Get cache performance statistics."""
+        total_requests = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / max(total_requests, 1)
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'total': total_requests,
+            'hit_rate': hit_rate,
+            'cache_size': len(self._cache)
+        }
 
     def get_legal_actions(self, board: chess.Board) -> np.ndarray:
         mask = np.zeros(4672, dtype=bool)

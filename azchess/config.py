@@ -35,21 +35,43 @@ class Config:
     def eval(self) -> Dict[str, Any]:
         return self.raw.get("eval", {})
 
+    def mcts(self) -> Dict[str, Any]:
+        return self.raw.get("mcts", {})
+
     def engines(self) -> Dict[str, Any]:
         return self.raw.get("engines", {})
+
+    def openings(self) -> Dict[str, Any]:
+        return self.raw.get("openings", {})
+
+    def external_data(self) -> Dict[str, Any]:
+        return self.raw.get("external_data", {})
 
     def orchestrator(self) -> Dict[str, Any]:
         return self.raw.get("orchestrator", {})
 
 
 def select_device(cfg_device: str = "auto") -> str:
+    """Select best available device string: cuda|mps|cpu.
+
+    - "auto": prefer CUDA, then MPS, else CPU
+    - explicit "cuda"/"mps"/"cpu" honored when available
+    """
     try:
         import torch
+        # Honor explicit request if possible
+        if cfg_device == "cuda" and torch.cuda.is_available():
+            return "cuda"
         if cfg_device == "mps" and torch.backends.mps.is_available():
             return "mps"
-        if cfg_device == "auto" and torch.backends.mps.is_available():
-            return "mps"
+        if cfg_device == "cpu":
+            return "cpu"
+        # Auto selection
+        if cfg_device == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            if torch.backends.mps.is_available():
+                return "mps"
     except Exception:
         pass
     return "cpu"
-

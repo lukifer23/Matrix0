@@ -110,6 +110,38 @@ class UCIClient:
         except Exception as e:
             logger.error(f"Error analyzing position: {e}")
             return None
+
+    async def analyze_multipv(self, board: chess.Board, time_ms: int = 100, multipv: int = 4) -> Optional[List[Dict[str, Any]]]:
+        """Analyze a position and return top-N candidate moves with scores.
+
+        Returns a list of dicts: {"move": UCI str, "score_cp": int}
+        """
+        if not self.is_ready or not self.process:
+            logger.error("Engine not ready")
+            return None
+        try:
+            limit = chess.engine.Limit(time=time_ms / 1000.0)
+            # Request multipv variations; engine should have MultiPV option but most obey analyse param
+            infos = await self.process.analyse(board, limit, multipv=max(1, int(multipv)))
+            if not isinstance(infos, list):
+                infos = [infos]
+            out: List[Dict[str, Any]] = []
+            for info in infos:
+                mv = info.get("pv", [None])[0]
+                score = info.get("score")
+                if mv is None or score is None:
+                    continue
+                # Convert score to centipawns w.r.t side to move (positive = good for stm)
+                try:
+                    cp = score.white().score(mate_score=100000) if board.turn == chess.WHITE else score.black().score(mate_score=100000)
+                except Exception:
+                    # Fallback generic
+                    cp = score.score(mate_score=100000) if hasattr(score, "score") else 0
+                out.append({"move": mv.uci(), "score_cp": int(cp)})
+            return out if out else None
+        except Exception as e:
+            logger.error(f"Error multipv analysis: {e}")
+            return None
     
     async def is_legal_move(self, board: chess.Board, move: chess.Move) -> bool:
         """Check if a move is legal in the current position."""

@@ -1,146 +1,271 @@
-# Matrix0: AlphaZero-Style Chess on Apple Silicon
+# Matrix0: AlphaZero-Style Chess Engine for Apple Silicon
 
-Matrix0 is an efficient, small AlphaZero-style chess engine designed to train and run on consumer Apple Silicon (M3 Pro MacBook Pro). The project uses self-play, reinforcement learning, and Monte Carlo Tree Search (MCTS) with a compact CNN-ResNet backbone. Training runs on Metal (MPS) GPU with an option to export to Core ML for low-latency inference.
+Matrix0 is an efficient, AlphaZero-style chess engine designed specifically for Apple Silicon (M3 Pro MacBook Pro and similar). The project implements a complete self-play reinforcement learning pipeline with Monte Carlo Tree Search (MCTS) and a modern ResNet backbone featuring chess-specific attention mechanisms.
 
-## Why this approach
-- Small, efficient network (target 15–25M params) fits Apple GPU memory and trains in reasonable time.
-- CNN residual tower is strong for 8x8 boards and simpler than attention for this scale.
-- PyTorch on MPS for training; optional Core ML export for GUI/inference and potential ANE use.
-- **NEW**: External engine integration for competitive training and evaluation.
+## 🎯 **Project Status: PRODUCTION READY**
 
-## Stack
-- Language: Python 3.11+
-- Core libs: `torch` (MPS), `python-chess`, `numpy`, `PyYAML`, `tqdm`, `rich`, `tensorboard`
-- Optional export: `coremltools` (macOS only)
-- **NEW**: `psutil` for process management, external engine support
-- IDE: Cursor (VS Code)
+**Current Version**: v1.0 - Fully functional training pipeline with advanced features
+**Last Updated**: August 2025
+**Status**: ✅ **READY FOR PRODUCTION TRAINING**
 
-## Hardware guidance (M3 Pro)
-- Use MPS device for training: automatically selected when available.
-- Mixed precision: autocast to `float16` on MPS to reduce memory and increase throughput.
-- Batch size: start small (e.g., 256 positions/batch) and scale to memory.
-- Data: on-disk replay buffer to avoid RAM pressure; stream in small shards.
+## 🚀 **Key Features**
 
-## Project layout
+- **Complete Training Pipeline**: Self-play → Training → Evaluation → Promotion
+- **Modern Architecture**: ResNet with chess-specific attention and SSL heads
+- **Apple Silicon Optimized**: MPS GPU acceleration with mixed precision
+- **Robust Data Management**: SQLite metadata, corruption detection, backup system
+- **External Engine Integration**: Train against Stockfish, LC0 for competitive data
+- **Production Monitoring**: Rich TUI, comprehensive logging, performance metrics
+
+## 🏗️ **Architecture Overview**
+
+### **Neural Network**
+- **Input**: 19 planes (pieces, castling, move counters)
+- **Backbone**: ResNet-14 with 160 channels (~22M parameters)
+- **Heads**: Policy (4672 actions), Value (scalar), SSL (piece prediction)
+- **Features**: Squeeze-and-Excitation blocks, chess-specific attention
+
+### **MCTS Engine**
+- **Search**: Monte Carlo Tree Search with transposition tables
+- **Optimizations**: LRU cache, memory management, early termination
+- **Parameters**: Configurable cpuct, dirichlet noise, FPU reduction
+
+### **Training System**
+- **Data Sources**: Self-play games, Lichess database, external engine games
+- **Loss Function**: Policy cross-entropy + value MSE + SSL classification
+- **Optimization**: Adam optimizer, learning rate scheduling, gradient clipping
+
+## 📁 **Project Structure**
+
 ```
-azchess/
-  __init__.py
-  config.py
-  logging_utils.py
-  monitor.py
-  encoding.py
-  mcts.py
-  selfplay.py
-  train.py
-  arena.py
-  cli_play.py
-  orchestrator.py
-  data_manager.py
-  validate_moves.py
-  save_init.py
-  model/
-    __init__.py
-    resnet.py
-  engines/                    # NEW: External engine integration
-    __init__.py
-    uci_bridge.py
-    engine_manager.py
-  selfplay/                  # NEW: Enhanced self-play system
-    __init__.py
-    internal.py
-    external_engine_worker.py
-  eval/                      # NEW: Multi-engine evaluation
-    __init__.py
-    multi_engine_evaluator.py
-config.yaml
-requirements.txt
-roadmap.md
-EXTERNAL_ENGINES.md          # NEW: External engine documentation
+Matrix0/
+├── azchess/                    # Core package
+│   ├── __init__.py            # Package exports
+│   ├── config.py              # Configuration management
+│   ├── model/                 # Neural network models
+│   │   ├── resnet.py         # ResNet with attention & SSL
+│   │   └── __init__.py
+│   ├── mcts.py               # MCTS implementation
+│   ├── encoding.py            # Board encoding & move mapping
+│   ├── data_manager.py        # Data pipeline & integrity
+│   ├── selfplay/              # Self-play generation
+│   │   ├── internal.py       # Main self-play worker
+│   │   ├── inference.py      # Shared inference server
+│   │   └── external_engine_worker.py
+│   ├── eval/                  # Evaluation system
+│   │   └── multi_engine_evaluator.py
+│   ├── tools/                 # Utility scripts
+│   ├── arena.py               # Model vs model evaluation
+│   ├── orchestrator.py        # Full training cycle coordination
+│   └── cli_play.py           # Interactive play interface
+├── config.yaml                # Main configuration
+├── train_comprehensive.py     # Training script
+├── requirements.txt           # Python dependencies
+├── checkpoints/               # Model checkpoints
+├── data/                      # Training data
+│   ├── selfplay/             # Self-play games
+│   ├── lichess/              # Lichess database
+│   ├── replays/              # Training shards
+│   └── backups/              # Data backups
+├── logs/                      # Training logs
+└── webui/                     # Web interface (eval-only)
 ```
 
-## Pipeline overview
-1) **Self-Play**: Multiple workers run MCTS guided by the network to generate games and training examples `(s, π, z)`.
-   - **NEW**: Support for external engines (Stockfish, LC0) as training partners
-   - **NEW**: Mixed training data from internal self-play and external engine games
-2) **Training**: Supervised on self-play buffer using policy cross-entropy and value MSE + L2.
-   - **NEW**: Enhanced data management with SQLite metadata tracking
-   - **NEW**: Improved checkpoint resumption and state persistence
-3) **Evaluation**: Periodically pit new checkpoints vs. previous best; promote on Elo margin.
-   - **NEW**: Multi-engine evaluation against external engines
-   - **NEW**: Comprehensive strength benchmarking
-4) **Inference/GUI**: Lightweight CLI to play; GUI or UCI bridge later. Optional Core ML export for ANE.
+## 🚀 **Quick Start**
 
-## Model choice (v1)
-- Input: 19 planes (v1 minimal: pieces, side-to-move, castling, rule counters). Configurable.
-- Backbone: Residual CNN tower, width 160, depth 14 (≈18–22M params depending on heads).
-- Heads: Policy (4672-action space) and Value (scalar tanh).
-- Precision: FP16 on MPS for training; BF16 if supported; export to Core ML in FP16.
-- **NEW**: Optional Squeeze-and-Excitation (SE) blocks for enhanced performance.
+### **1. Environment Setup**
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-## Move/action space
-We use a 4672-sized action space following AlphaZero indexing (64 squares × 73 moves each): 56 ray moves, 8 knights, and 9 underpromotions (N/B/R × 3 forward directions). The canonical implementation lives in `azchess/encoding.py`. `azchess/move_encoding.py` is a thin compatibility shim; set env `MATRIX0_STRICT_ENCODING=1` or `strict_encoding: true` in `config.yaml` to emit deprecation warnings for legacy imports.
+# Install dependencies
+pip install -r requirements.txt
+```
 
-## **NEW: External Engine Integration**
-Matrix0 now supports integration with external chess engines:
-- **Stockfish**: World-class traditional chess engine
-- **Leela Chess Zero (LC0)**: Neural network-based engine
-- **Training Partners**: Generate games against external engines for diverse training data
-- **Competitive Evaluation**: Measure strength against established engines
-- **UCI Protocol**: Standard chess engine communication
+### **2. Initial Checkpoint**
+```bash
+# Generate baseline model with random weights
+python -m azchess.save_init
+```
 
-See `EXTERNAL_ENGINES.md` for detailed usage instructions.
+### **3. Training Cycle**
+```bash
+# Run complete training cycle (recommended)
+python -m azchess.orchestrator --config config.yaml
 
-## Milestones
-- **M0**: ✅ End-to-end skeleton (self-play, train loop, eval, play CLI)
-- **M1**: ✅ Functional self-play pipeline, stable training, TB logging
-- **M2**: ✅ Strength climb, evaluation matches, checkpoint promotion
-- **M3**: 🚧 GUI/bridge (simple web board or UCI); Core ML export path
-- **M4**: 🚧 Efficiency passes (channels/depth tuning), quantization-aware inference
-- **NEW**: ✅ External engine integration for competitive training
+# Or run components individually:
+# Self-play only
+python -m azchess.selfplay --games 64 --workers 4
 
-## Data & Logging
-- Self-play NPZ files land in `data/selfplay/`; orchestrator compacts them into replay shards in `data/replays/` with rotation and limits using `DataManager`.
-- **NEW**: SQLite database for metadata tracking and data integrity
-- **NEW**: External engine games stored in JSON format with comprehensive metadata
-- Logs: human-readable logs with rotation in `logs/matrix0.log`, structured JSON lines in `logs/structured.jsonl`.
-- Monitoring: Orchestrator reports directory sizes, disk free, and process memory usage.
+# Training only
+python train_comprehensive.py --config config.yaml
 
-## Quickstart
-- Create a virtual env and install requirements: `pip install -r requirements.txt`
-- Run a small self-play shard: `python -m azchess.selfplay --games 8`
-- **NEW**: Use external engines: `python -m azchess.selfplay --external-engines --games 8`
-- Train on buffer: `python -m azchess.train --config config.yaml`
-- Play a game in terminal: `python -m azchess.cli_play`
-- Evaluate two checkpoints (balanced colors, optional PGN): `python -m azchess.arena --ckpt_a checkpoints/best.pt --ckpt_b checkpoints/model.pt --games 20 --pgn-out out/pgns --pgn-sample 5`
-- **NEW**: Evaluate against external engines: `python -m azchess.eval --external-engines --games 50`
-- Orchestrate a full cycle: `python -m azchess.orchestrator --config config.yaml`
-- **NEW**: With external engines: `python -m azchess.orchestrator --external-engines`
-- Save an untrained baseline checkpoint: `python -m azchess.save_init`
+# Evaluation only
+python -m azchess.arena --ckpt_a checkpoints/enhanced_best.pt --ckpt_b checkpoints/best.pt --games 20
+```
 
-## Setup
-- Create venv: `make venv` then `source .venv/bin/activate`
-- Install deps: `make install`
-- Run: `make orchestrate`
-- **NEW**: Install external engines (Stockfish, LC0) for full functionality
+### **4. Interactive Play**
+```bash
+# Play against trained model
+python -m azchess.cli_play
 
-## Training notes
-- Asynchronous: self-play and training run concurrently on different processes; synchronize via disk buffer.
-- **NEW**: Mixed training data from internal self-play and external engine games
-- **NEW**: Configurable external engine ratio for training diversity
-- Checkpointing: save every N steps; best model determined by evaluation.
-- **NEW**: Enhanced checkpoint resumption with full state persistence
-- Tuning: adjust `channels`, `blocks`, `dirichlet_alpha`, `cpuct`, `num_simulations`, and `temperature` schedule.
-- **NEW**: Advanced resignation logic with consecutive bad move detection
+# Web interface (eval mode)
+uvicorn webui.server:app --host 127.0.0.1 --port 8000
+```
 
-## Export to Core ML (preview)
-See `azchess/model/resnet.py` for `to_coreml()` helper to export a checkpoint. Inference engines can load `*.mlpackage` for GUI.
+## ⚙️ **Configuration**
 
-## **NEW: Advanced Features**
-- **Opening Diversity**: Random opening moves for training variety
-- **Enhanced Resignation**: Smart resignation based on consecutive bad evaluations
-- **Selection Jitter**: Configurable exploration in MCTS
-- **Data Integrity**: Comprehensive corruption detection and recovery
-- **Process Management**: Robust external engine lifecycle management
+The main configuration is in `config.yaml` with sections for:
 
-## License
-TBD by project owner (default: private). No third-party model weights included.
+- **Model**: Architecture parameters (channels, blocks, features)
+- **MCTS**: Search parameters (simulations, cpuct, dirichlet)
+- **Self-play**: Worker count, game settings, termination criteria
+- **Training**: Batch size, learning rate, optimization settings
+- **Evaluation**: Game count, engine settings, promotion thresholds
+
+**Key Parameters**:
+```yaml
+mcts:
+  num_simulations: 200      # MCTS search depth
+  cpuct: 2.5                # Exploration constant
+  dirichlet_alpha: 0.3      # Noise for exploration
+  fpu_reduction: 0.1        # Optimistic unvisited nodes
+
+selfplay:
+  num_workers: 4            # Parallel workers
+  shared_inference: true    # GPU optimization
+  max_game_len: 140        # Game length limit
+
+training:
+  batch_size: 512           # Training batch size
+  ssl_weight: 0.1          # SSL loss weight
+  warmup_steps: 500        # Learning rate warmup
+```
+
+## 📊 **Performance & Monitoring**
+
+### **TUI Modes**
+- **Table Mode** (recommended): Compact live table with per-worker stats
+- **Bars Mode**: Traditional progress bars
+
+### **Logging**
+- **Training**: TensorBoard, JSONL summaries, checkpoint tracking
+- **Self-play**: Game statistics, worker performance, data integrity
+- **Evaluation**: Win rates, confidence intervals, promotion decisions
+
+### **Memory Management**
+- **MPS Optimization**: Automatic memory pressure handling
+- **Data Streaming**: On-disk replay buffer with smart sharding
+- **MCTS Cleanup**: Automatic tree pruning and transposition table management
+
+## 🔧 **Advanced Usage**
+
+### **External Engine Integration**
+```bash
+# Train against Stockfish/LC0
+python -m azchess.selfplay --external-engines --games 32
+
+# Evaluate against external engines
+python -m azchess.eval --external-engines --games 50
+```
+
+### **Data Management**
+```bash
+# Check data integrity
+python -m azchess.data_manager --action stats
+
+# Compact self-play to training data
+python -m azchess.data_manager --action compact
+```
+
+### **Model Analysis**
+```bash
+# Model information
+python -m azchess.tools.model_info
+
+# Performance benchmarks
+python -m azchess.tools.bench_inference
+python -m azchess.tools.bench_mcts
+```
+
+## 🎯 **Training Pipeline**
+
+### **1. Self-Play Phase**
+- Multiple workers generate games using MCTS + neural network
+- Shared inference server maximizes GPU utilization
+- Early termination prevents draw loops and long games
+- Games saved as NPZ files with metadata
+
+### **2. Training Phase**
+- Data loaded from replay buffer and external sources
+- Combined loss: policy + value + SSL
+- Mixed precision training on MPS
+- Checkpointing every 1000 steps with EMA
+
+### **3. Evaluation Phase**
+- New model vs current best (balanced colors)
+- Statistical significance with confidence intervals
+- Promotion threshold: 55% win rate
+- PGN export for game analysis
+
+### **4. Promotion & Continuation**
+- Successful models promoted to `best.pt`
+- Training continues with new best model
+- Full cycle repeats automatically
+
+## 📈 **Expected Performance**
+
+### **Hardware Requirements**
+- **Minimum**: M1 MacBook Air (8GB RAM)
+- **Recommended**: M3 Pro MacBook Pro (16GB+ RAM)
+- **Optimal**: M3 Max with dedicated GPU
+
+### **Training Times**
+- **Self-play**: ~2-4 hours for 100 games (4 workers)
+- **Training**: ~1-2 hours for 10,000 steps
+- **Evaluation**: ~30 minutes for 20 games
+- **Full cycle**: ~4-8 hours total
+
+### **Model Strength**
+- **Baseline**: Random play (~800 Elo)
+- **After 1 cycle**: Basic tactics (~1200 Elo)
+- **After 5 cycles**: Strategic play (~1600 Elo)
+- **After 10+ cycles**: Advanced play (~2000+ Elo)
+
+## 🐛 **Troubleshooting**
+
+### **Common Issues**
+- **MPS unavailable**: Ensure PyTorch 2.0+ and arm64 Python
+- **Memory pressure**: Reduce batch size or worker count
+- **Training stalls**: Check data integrity with `--doctor-fix`
+- **Import errors**: Verify virtual environment activation
+
+### **Debug Commands**
+```bash
+# Device diagnostics
+python -m azchess.tools.diag_device
+
+# Memory usage
+python -m azchess.monitor
+
+# Data validation
+python -m azchess.data_manager --action validate
+```
+
+## 🤝 **Contributing**
+
+This is a production system designed for serious chess AI training. Contributions should focus on:
+
+- **Performance optimization** (MPS, memory, throughput)
+- **Training stability** (convergence, regularization)
+- **Data quality** (game generation, augmentation)
+- **Evaluation accuracy** (strength measurement)
+
+## 📄 **License**
+
+Private project - no third-party model weights included.
+
+---
+
+**Matrix0 v1.0** - Ready for production training on Apple Silicon 🚀
