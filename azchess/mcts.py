@@ -49,6 +49,16 @@ class MCTSConfig:
     fpu: float = 0.5  # First-Play Urgency
     parent_q_init: bool = True # Initialize child Q with parent Q
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
+        """Create config from dict, warning on unknown keys."""
+        known = set(cls.__dataclass_fields__.keys())
+        unknown = set(data.keys()) - known
+        if unknown:
+            logger.warning(f"Unknown MCTSConfig keys: {sorted(unknown)}")
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)
+
 
 class Node:
     __slots__ = ("parent", "prior", "n", "w", "q", "children", "move", "expanded")

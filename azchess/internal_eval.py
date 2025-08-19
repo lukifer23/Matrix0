@@ -14,7 +14,7 @@ def play_match(ckpt_a: str, ckpt_b: str, games: int, cfg: Config) -> float:
     Returns the score of model A.
     """
     device = select_device(cfg.get("device", "auto"))
-    mcfg = MCTSConfig(**cfg.eval())
+    mcfg = MCTSConfig.from_dict(cfg.eval())
     
     model_a = PolicyValueNet.from_config(cfg.model()).to(device)
     model_b = PolicyValueNet.from_config(cfg.model()).to(device)

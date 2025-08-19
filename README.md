@@ -28,7 +28,7 @@ Matrix0 is an efficient, AlphaZero-style chess engine designed specifically for 
 ### **MCTS Engine**
 - **Search**: Monte Carlo Tree Search with transposition tables
 - **Optimizations**: LRU cache, memory management, early termination
-- **Parameters**: Configurable cpuct, dirichlet noise, FPU reduction
+- **Parameters**: Configurable cpuct, dirichlet noise, FPU
 
 ### **Training System**
 - **Data Sources**: Self-play games, Lichess database, external engine games
@@ -130,7 +130,8 @@ mcts:
   num_simulations: 200      # MCTS search depth
   cpuct: 2.5                # Exploration constant
   dirichlet_alpha: 0.3      # Noise for exploration
-  fpu_reduction: 0.1        # Optimistic unvisited nodes
+  dirichlet_frac: 0.25      # Noise impact fraction
+  fpu: 0.5                  # First-play urgency for unvisited nodes
 
 selfplay:
   num_workers: 4            # Parallel workers
