@@ -62,8 +62,6 @@ class DataManager:
         # Version tracking
         self.version = "1.0.0"
         
-    from __future__ import annotations
-
 import os
 import json
 import hashlib
