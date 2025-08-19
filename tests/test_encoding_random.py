@@ -4,8 +4,9 @@ import numpy as np
 from azchess.encoding import move_to_index
 
 
-def random_board(plies: int = 20, seed: int = 0) -> chess.Board:
-    rng = np.random.default_rng(seed)
+def random_board(plies: int = 20) -> chess.Board:
+    """Generate a random chess board by playing a number of random plies."""
+    rng = np.random.default_rng()
     b = chess.Board()
     for _ in range(plies):
         if b.is_game_over():
@@ -18,10 +19,10 @@ def random_board(plies: int = 20, seed: int = 0) -> chess.Board:
     return b
 
 
-def test_random_uniqueness():
-    # Ensure legal moves map to unique indices on random boards
+def test_random_move_indices_unique():
+    """Ensure legal moves map to unique indices on random boards."""
     for s in range(5):
-        b = random_board(plies=10 + s, seed=1234 + s)
+        b = random_board(plies=10 + s)
         legals = list(b.legal_moves)
         idxs = [move_to_index(b, m) for m in legals]
         assert len(set(idxs)) == len(idxs)
