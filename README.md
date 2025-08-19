@@ -120,6 +120,18 @@ python -m azchess.cli_play
 uvicorn webui.server:app --host 127.0.0.1 --port 8000
 ```
 
+### **5. Analyze Self-Play Games**
+```bash
+python analyze_games.py --directory data/selfplay --date-pattern "2025-08-16T15:*"
+```
+
+- `--directory` &mdash; Location of self-play game files (default: `data/selfplay`)
+- `--date-pattern` &mdash; Glob fragment used to match game files, appended after
+  `selfplay_w*_g*_` (default: `2025-08-16T15:*`)
+
+When run without arguments the script behaves as before, analyzing games in
+`data/selfplay` that match the default pattern.
+
 ## ⚙️ **Configuration**
 
 The main configuration is in `config.yaml` with sections for:
