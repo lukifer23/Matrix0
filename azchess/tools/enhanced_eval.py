@@ -197,7 +197,7 @@ class EnhancedEvaluator:
     
     def _play_game(self, mcts_a: MCTS, mcts_b: MCTS, temperature: float, table: Table = None, game_num: int = None) -> Tuple[float, List[str], str, Dict]:
         """Play a complete game between two models."""
-        self.logger.info(f"Starting new game with temperature {temperature}, max moves 100")
+        self.logger.info(f"Starting new game with temperature {temperature}, max moves 150")
         
         # Test model forward passes before game start
         self.logger.info("Testing model forward passes before game start")
@@ -232,7 +232,7 @@ class EnhancedEvaluator:
                 "Calculating..."
             )
         
-        while move_count < 100 and not board.is_game_over():
+        while move_count < 150 and not board.is_game_over():
             move_start = time.time()
             
             # Determine which model's turn
@@ -291,11 +291,11 @@ class EnhancedEvaluator:
             
             self.logger.debug(f"Move {move_count + 1}: Recorded choice for {model_key} - move: {move}, visits: {visits.get(move, 0)}, value: {vroot:.3f}")
             
-            # Check for resignation based on position evaluation
-            if move_count >= 20:  # Require minimum moves before resignation
-                resign_threshold = -0.8 if temperature > 1.0 else -0.9
+            # Check for resignation based on position evaluation - much stricter now
+            if move_count >= 35:  # Require 35+ moves before resignation
+                resign_threshold = -0.95 if temperature > 1.0 else -0.98  # Much stricter threshold
                 if vroot < resign_threshold:
-                    self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to bad position (value: {vroot:.3f} < {resign_threshold})")
+                    self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to truly hopeless position (value: {vroot:.3f} < {resign_threshold})")
                     # Determine winner based on whose turn it is
                     if board.turn == chess.WHITE:  # Black's turn, so White resigned
                         result = 0.0  # Black wins
