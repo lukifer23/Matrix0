@@ -13,6 +13,10 @@ build/
 logs/
 checkpoints/
 data/selfplay/
-data/replays/
+# Allow replay data but exclude very large files
+data/replays/*.tmp.npz
+data/replays/selfplay_*.npz
+# Exclude large backup files that change frequently
+data/backups/selfplay_w*_20250820_*.npz
 artifacts/
 chessData.csv
