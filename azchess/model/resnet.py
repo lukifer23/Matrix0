@@ -45,14 +45,22 @@ class ResidualBlock(nn.Module):
 
 class ChessAttention(nn.Module):
     """Chess-specific attention mechanism for capturing spatial relationships."""
-    
-    def __init__(self, channels: int, heads: int = 8, dropout: float = 0.1, unmasked_mix: float = 0.2, relbias: bool = False):
+
+    def __init__(
+        self,
+        channels: int,
+        heads: int = 8,
+        dropout: float = 0.1,
+        unmasked_mix: float = 0.2,
+        relbias: bool = False,
+        piece_type_bias: bool = False,
+    ):
         super().__init__()
         self.channels = channels
         self.heads = heads
         self.head_dim = channels // heads
         assert channels % heads == 0, "Channels must be divisible by heads"
-        
+
         self.qkv = nn.Conv2d(channels, channels * 3, kernel_size=1, bias=False)
         self.proj = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
         self.dropout = nn.Dropout(dropout)
@@ -73,8 +81,13 @@ class ChessAttention(nn.Module):
         self.use_relbias = bool(relbias)
         if self.use_relbias:
             self.rel_bias = nn.Parameter(torch.zeros(1, self.heads, n * n, n * n))
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Optional piece-type bias embeddings
+        self.use_piece_type_bias = bool(piece_type_bias)
+        if self.use_piece_type_bias:
+            self.piece_embed = nn.Parameter(torch.zeros(12, self.head_dim))
+            nn.init.normal_(self.piece_embed, std=0.02)
+
+    def forward(self, x: torch.Tensor, board: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size, channels, height, width = x.shape
         n = height * width  # 64 on chess boards
 
@@ -83,12 +96,22 @@ class ChessAttention(nn.Module):
         qkv = qkv.permute(1, 0, 2, 4, 3).contiguous()  # (3, B, H, N, D)
         q, k, v = qkv[0], qkv[1], qkv[2]  # Each: (B, H, N, D)
 
+        if self.use_piece_type_bias and board is not None:
+            # board: (B, 12, 8, 8) one-hot piece planes
+            piece_idx = board.argmax(dim=1)  # (B,8,8)
+            piece_mask = board.sum(dim=1) > 0  # (B,8,8)
+            emb = self.piece_embed[piece_idx.long()]  # (B,8,8,D)
+            emb = emb * piece_mask.unsqueeze(-1)
+            emb = emb.view(batch_size, n, self.head_dim).unsqueeze(1)  # (B,1,N,D)
+            q = q + emb
+            k = k + emb
+
         # Compute attention scores
         scores_base = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, N, N)
         if self.use_relbias:
             scores_base = scores_base + self.rel_bias
         # Masked attention branch (line-of-sight)
-        scores_masked = scores_base.masked_fill(self.attn_mask == 0, float('-inf'))
+        scores_masked = scores_base.masked_fill(self.attn_mask == 0, float("-inf"))
         attn_masked = F.softmax(scores_masked, dim=-1)
         attn_masked = self.dropout(attn_masked)
         out_masked = torch.matmul(attn_masked, v)
@@ -179,6 +202,7 @@ class NetConfig:
     attention_heads: int = 8
     attention_unmasked_mix: float = 0.2
     attention_relbias: bool = True
+    piece_type_bias: bool = False  # Bias attention by piece type
     chess_features: bool = True  # Enable chess-specific features
     self_supervised: bool = True  # Enable self-supervised learning
     piece_square_tables: bool = True  # Enable piece-square table features
@@ -209,12 +233,20 @@ class PolicyValueNet(nn.Module):
         for i in range(cfg.blocks):
             # Add residual block with SE
             tower_layers.append(ResidualBlock(C, se=cfg.se, se_ratio=cfg.se_ratio))
-            
+
             # Add attention every few blocks for efficiency
             if cfg.attention and i % 3 == 2:  # Every 3rd block
-                tower_layers.append(ChessAttention(C, cfg.attention_heads, unmasked_mix=cfg.attention_unmasked_mix, relbias=getattr(cfg, 'attention_relbias', False)))
-        
-        self.tower = nn.Sequential(*tower_layers)
+                tower_layers.append(
+                    ChessAttention(
+                        C,
+                        cfg.attention_heads,
+                        unmasked_mix=cfg.attention_unmasked_mix,
+                        relbias=getattr(cfg, "attention_relbias", False),
+                        piece_type_bias=getattr(cfg, "piece_type_bias", False),
+                    )
+                )
+
+        self.tower = nn.ModuleList(tower_layers)
         
         # Self-supervised learning head (if enabled)
         if cfg.self_supervised:
@@ -298,10 +330,15 @@ class PolicyValueNet(nn.Module):
                     nn.init.constant_(m.bias, 0.0)
 
     def _forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        board = x[:, :12, :, :]
         x = self.stem(x)
         if self.chess_features is not None:
             x = self.chess_features(x)
-        x = self.tower(x)
+        for layer in self.tower:
+            if isinstance(layer, ChessAttention):
+                x = layer(x, board)
+            else:
+                x = layer(x)
         return x
 
     def forward(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -371,11 +408,8 @@ class PolicyValueNet(nn.Module):
             raise RuntimeError("SSL head not enabled in model configuration")
         
         # Get SSL output directly from the SSL head
-        x_processed = self.stem(x)
-        if self.chess_features is not None:
-            x_processed = self.chess_features(x_processed)
-        x_processed = self.tower(x_processed)
-        
+        x_processed = self._forward_features(x)
+
         ssl_output = self.ssl_head(x_processed)
         ssl_output = ssl_output.contiguous().reshape(ssl_output.size(0), -1)  # (B, 64)
         

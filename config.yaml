@@ -17,6 +17,7 @@ model:
   attention: true  # Enable attention mechanisms
   attention_heads: 8
   attention_unmasked_mix: 0.2  # Blend some unmasked attention for knight/tactics
+  piece_type_bias: true  # Bias attention by piece type
   chess_features: true  # Enable chess-specific features
   self_supervised: true  # Enable self-supervised learning
   piece_square_tables: true  # Enable piece-square table features

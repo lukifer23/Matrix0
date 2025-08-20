@@ -24,6 +24,7 @@ Matrix0 is an efficient, AlphaZero-style chess engine designed specifically for 
 - **Backbone**: ResNet-14 with 160 channels (~22M parameters)
 - **Heads**: Policy (4672 actions), Value (scalar), SSL (piece prediction)
 - **Features**: Squeeze-and-Excitation blocks, chess-specific attention
+  with optional piece-type bias
 
 ### **MCTS Engine**
 - **Search**: Monte Carlo Tree Search with transposition tables
@@ -136,7 +137,7 @@ When run without arguments the script behaves as before, analyzing games in
 
 The main configuration is in `config.yaml` with sections for:
 
-- **Model**: Architecture parameters (channels, blocks, features)
+- **Model**: Architecture parameters (channels, blocks, features, `piece_type_bias`)
 - **MCTS**: Search parameters (simulations, cpuct, dirichlet)
 - **Self-play**: Worker count, game settings, termination criteria
 - **Training**: Batch size, learning rate, optimization settings
