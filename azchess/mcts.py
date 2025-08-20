@@ -190,16 +190,24 @@ class MCTS:
         if board.is_game_over():
             return {}, np.zeros(4672, dtype=np.float32), self._terminal_value(board)
 
-        root = self._tt_get(board._transposition_key())
+        key = board._transposition_key()
+        root = self._tt_get(key)
         if root is None:
             root = Node()
             p_logits, v = self._infer(board)
             root.expand(board, p_logits)
             self._prune_children(root)
-            self._tt_put(board._transposition_key(), root)
+            self._tt_put(key, root)
         else:
-            # Use cached value if root is already evaluated
-            _, v = self.nn_cache.get(board._transposition_key()) or (None, 0.0)
+            cached = self.nn_cache.get(key)
+            if cached is None:
+                # Cache miss: recompute value without expanding existing root
+                p_logits, v = self._infer(board)
+                # Ensure recomputed result is stored for future lookups
+                self.nn_cache.put(key, (p_logits, v))
+            else:
+                # Use cached value when available
+                _, v = cached
 
         # Optionally gate Dirichlet noise by ply (apply in early game only)
         dirichlet_plies = getattr(self.cfg, 'dirichlet_plies', None)
