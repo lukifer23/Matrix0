@@ -33,19 +33,16 @@ def analyze_single_game(ckpt_a_path: str, ckpt_b_path: str, game_idx: int = 0,
     from azchess.config import select_device
     
     device = select_device(device)
-    mcfg = MCTSConfig(
-        num_simulations=num_sims,
-        cpuct=float(cfg.mcts().get("cpuct", 1.5)),
-        dirichlet_alpha=float(cfg.mcts().get("dirichlet_alpha", 0.3)),
-        dirichlet_frac=float(cfg.mcts().get("dirichlet_frac", 0.25)),
-        tt_capacity=int(cfg.mcts().get("tt_capacity", 200000)),
-        selection_jitter=float(cfg.selfplay().get("selection_jitter", 0.0)),
-        batch_size=batch_size,
-        fpu=float(cfg.mcts().get("fpu", 0.5)),
-        parent_q_init=bool(cfg.mcts().get("parent_q_init", True)),
-        tt_cleanup_frequency=int(cfg.mcts().get("tt_cleanup_frequency", 500)),
-        draw_penalty=float(cfg.mcts().get("draw_penalty", -0.1)),
+    mcfg_dict = dict(cfg.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": num_sims,
+            "selection_jitter": float(cfg.selfplay().get("selection_jitter", 0.0)),
+            "batch_size": batch_size,
+            "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
+        }
     )
+    mcfg = MCTSConfig.from_dict(mcfg_dict)
     
     # Load models
     model_a = PolicyValueNet.from_config(cfg.model()).to(device)

@@ -54,7 +54,16 @@ def bench_mcts(cfg_path: str, sims: int, boards: int, shared: bool) -> None:
         except Exception:
             pass
 
-    mcts = MCTS(model, MCTSConfig(num_simulations=sims, batch_size=32, cpuct=float(cfg.selfplay().get('cpuct', 2.5))), device, inference_backend=backend)
+    mcfg_dict = dict(cfg.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": sims,
+            "batch_size": 32,
+            "cpuct": float(cfg.selfplay().get('cpuct', mcfg_dict.get('cpuct', 2.5))),
+            "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
+        }
+    )
+    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device, inference_backend=backend)
 
     # Generate boards
     bs = [random_board() for _ in range(boards)]
