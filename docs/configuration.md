@@ -26,7 +26,7 @@ training:
   warmup_steps: 500         # Learning rate warmup
 ```
 
-## Draw adjudication
+## Draw Adjudication
 
 - `mcts.draw_penalty` applies a small penalty to drawn outcomes.
 - `selfplay.resign_threshold`, `min_resign_plies`, and `resign_consecutive_bad` control when games are resigned to avoid long draws.

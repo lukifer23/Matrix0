@@ -2,7 +2,7 @@
 
 Matrix0 includes a lightweight FastAPI-based web interface for viewing evaluation games and interacting with trained models.
 
-## Running the server
+## Running the Server
 
 ```bash
 uvicorn webui.server:app --host 127.0.0.1 --port 8000

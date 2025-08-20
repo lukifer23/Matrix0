@@ -1,19 +1,19 @@
 # Matrix0: AlphaZero-Style Chess Engine for Apple Silicon
 
-Matrix0 is an efficient, AlphaZero-style chess engine designed for Apple Silicon.
-It provides a complete self-play reinforcement learning pipeline with Monte Carlo
+Matrix0 is an experimental AlphaZero-style chess engine designed for Apple Silicon.
+It provides a self-play reinforcement learning pipeline with Monte Carlo
 Tree Search (MCTS) and a modern ResNet backbone with chess-specific attention.
 
 ## Project Status
-Production ready. See the [status report](docs/status.md) and
+Development in progress. See the [status report](docs/status.md) and
 [development roadmap](docs/roadmap.md) for details.
 
 ## Key Features
 
-- Complete training pipeline: self-play → training → evaluation → promotion
+- Training pipeline: self-play → training → evaluation → promotion
 - ResNet-14 architecture with chess-specific attention and SSL head
 - Optimized for MPS with mixed precision
-- Robust data management and monitoring
+- Data management and monitoring
 - External engine integration (Stockfish, LC0)
 
 ## Project Structure
@@ -77,4 +77,4 @@ Private project - no third-party model weights included.
 
 ---
 
-**Matrix0 v1.0**
+**Matrix0 v1.0 - Development Version**
