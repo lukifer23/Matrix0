@@ -114,15 +114,19 @@ def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, dev
         model.load_state_dict(state.get("model_ema", state.get("model", {})))
     _matrix0_model = model.to(_device)
     e = cfg.eval()
-    mcfg = MCTSConfig(
-        num_simulations=int(e.get("num_simulations", 200)),
-        cpuct=float(e.get("cpuct", 1.5)),
-        dirichlet_alpha=float(e.get("dirichlet_alpha", 0.3)),
-        dirichlet_frac=0.0,
-        tt_capacity=int(e.get("tt_capacity", 200000)) if "tt_capacity" in e else 200000,
-        selection_jitter=0.0,
+    mcfg_dict = dict(cfg.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": int(e.get("num_simulations", mcfg_dict.get("num_simulations", 200))),
+            "cpuct": float(e.get("cpuct", mcfg_dict.get("cpuct", 1.5))),
+            "dirichlet_alpha": float(e.get("dirichlet_alpha", mcfg_dict.get("dirichlet_alpha", 0.3))),
+            "dirichlet_frac": 0.0,
+            "tt_capacity": int(e.get("tt_capacity", mcfg_dict.get("tt_capacity", 200000))),
+            "selection_jitter": 0.0,
+            "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
+        }
     )
-    _matrix0_mcts = MCTS(_matrix0_model, mcfg, _device)
+    _matrix0_mcts = MCTS(_matrix0_model, MCTSConfig.from_dict(mcfg_dict), _device)
 
 
 def _load_stockfish() -> Optional["chess.engine.SimpleEngine"]:

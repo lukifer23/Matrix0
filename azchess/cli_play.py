@@ -39,7 +39,16 @@ def main():
             model.load_state_dict(state["model_ema"])
         else:
             model.load_state_dict(state["model"])
-    mcts = MCTS(model, MCTSConfig(num_simulations=args.sims, cpuct=cfg.selfplay().get("cpuct", 1.5), dirichlet_alpha=0.3, dirichlet_frac=0.0), device=device)
+    mcfg_dict = dict(cfg.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": args.sims,
+            "cpuct": cfg.selfplay().get("cpuct", mcfg_dict.get("cpuct", 1.5)),
+            "dirichlet_frac": 0.0,
+            "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
+        }
+    )
+    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device=device)
 
     board = chess.Board()
     print("Play vs engine. Enter moves in UCI (e.g., e2e4, e7e8q). Type 'quit' to exit.")

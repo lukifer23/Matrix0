@@ -88,15 +88,19 @@ def main():
         model.load_state_dict(state.get("model_ema", state.get("model", {})))
     model = model.to(device)
     e = cfg.eval()
-    mcfg = MCTSConfig(
-        num_simulations=int(e.get("num_simulations", 200)),
-        cpuct=float(e.get("cpuct", 1.5)),
-        dirichlet_alpha=float(e.get("dirichlet_alpha", 0.3)),
-        dirichlet_frac=0.0,
-        tt_capacity=int(e.get("tt_capacity", 200000)) if "tt_capacity" in e else 200000,
-        selection_jitter=0.0,
+    mcfg_dict = dict(cfg.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": int(e.get("num_simulations", mcfg_dict.get("num_simulations", 200))),
+            "cpuct": float(e.get("cpuct", mcfg_dict.get("cpuct", 1.5))),
+            "dirichlet_alpha": float(e.get("dirichlet_alpha", mcfg_dict.get("dirichlet_alpha", 0.3))),
+            "dirichlet_frac": 0.0,
+            "tt_capacity": int(e.get("tt_capacity", mcfg_dict.get("tt_capacity", 200000))),
+            "selection_jitter": 0.0,
+            "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
+        }
     )
-    mcts = MCTS(model, mcfg, device)
+    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device)
 
     # Stockfish
     import chess.engine

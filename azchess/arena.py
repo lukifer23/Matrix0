@@ -35,19 +35,19 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
     global _P_DEVICE, _P_CFG, _P_MCFG, _P_MCTS_A, _P_MCTS_B
     _P_CFG = Config(cfg_dict)
     _P_DEVICE = select_device(_P_CFG.get("device", "auto"))
-    _P_MCFG = MCTSConfig(
-        num_simulations=int(num_sims_inner),
-        cpuct=float(_P_CFG.mcts().get("cpuct", 1.5)),
-        dirichlet_alpha=float(_P_CFG.mcts().get("dirichlet_alpha", 0.3)),
-        dirichlet_frac=float(_P_CFG.mcts().get("dirichlet_frac", 0.25)),
-        tt_capacity=int(_P_CFG.mcts().get("tt_capacity", 200000)),
-        selection_jitter=float(_P_CFG.selfplay().get("selection_jitter", 0.0)),
-        batch_size=int(batch_size_inner or 1),
-        fpu=float(_P_CFG.mcts().get("fpu", 0.5)),
-        parent_q_init=bool(_P_CFG.mcts().get("parent_q_init", True)),
-        tt_cleanup_frequency=int(_P_CFG.mcts().get("tt_cleanup_frequency", 500)),
-        draw_penalty=float(_P_CFG.mcts().get("draw_penalty", -0.1)),
+    mcfg_dict = dict(_P_CFG.mcts())
+    mcfg_dict.update(
+        {
+            "num_simulations": int(num_sims_inner),
+            "selection_jitter": float(_P_CFG.selfplay().get("selection_jitter", 0.0)),
+            "batch_size": int(batch_size_inner or 1),
+            "fpu": float(_P_CFG.mcts().get("fpu", 0.5)),
+            "parent_q_init": bool(_P_CFG.mcts().get("parent_q_init", True)),
+            "tt_cleanup_frequency": int(_P_CFG.mcts().get("tt_cleanup_frequency", 500)),
+            "draw_penalty": float(_P_CFG.mcts().get("draw_penalty", -0.1)),
+        }
     )
+    _P_MCFG = MCTSConfig.from_dict(mcfg_dict)
     model_a_local = PolicyValueNet.from_config(_P_CFG.model()).to(_P_DEVICE)
     model_b_local = PolicyValueNet.from_config(_P_CFG.model()).to(_P_DEVICE)
     import numpy
@@ -130,19 +130,19 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
         # Initialize models/MCTS per worker
         cfg_local = Config(cfg_dict)
         device_local = select_device(cfg_local.get("device", "auto"))
-        mcfg_local = MCTSConfig(
-            num_simulations=int(num_sims_inner),
-            cpuct=float(cfg_local.mcts().get("cpuct", 1.5)),
-            dirichlet_alpha=float(cfg_local.mcts().get("dirichlet_alpha", 0.3)),
-            dirichlet_frac=float(cfg_local.mcts().get("dirichlet_frac", 0.25)),
-            tt_capacity=int(cfg_local.mcts().get("tt_capacity", 200000)),
-            selection_jitter=float(cfg_local.selfplay().get("selection_jitter", 0.0)),
-            batch_size=int(batch_size_inner or 1),
-            fpu=float(cfg_local.mcts().get("fpu", 0.5)),
-            parent_q_init=bool(cfg_local.mcts().get("parent_q_init", True)),
-            tt_cleanup_frequency=int(cfg_local.mcts().get("tt_cleanup_frequency", 500)),
-            draw_penalty=float(cfg_local.mcts().get("draw_penalty", -0.1)),
+        mcfg_dict = dict(cfg_local.mcts())
+        mcfg_dict.update(
+            {
+                "num_simulations": int(num_sims_inner),
+                "selection_jitter": float(cfg_local.selfplay().get("selection_jitter", 0.0)),
+                "batch_size": int(batch_size_inner or 1),
+                "fpu": float(cfg_local.mcts().get("fpu", 0.5)),
+                "parent_q_init": bool(cfg_local.mcts().get("parent_q_init", True)),
+                "tt_cleanup_frequency": int(cfg_local.mcts().get("tt_cleanup_frequency", 500)),
+                "draw_penalty": float(cfg_local.mcts().get("draw_penalty", -0.1)),
+            }
         )
+        mcfg_local = MCTSConfig.from_dict(mcfg_dict)
         if shared_res_a is not None and shared_res_b is not None:
             # Use shared inference servers (no per-process models)
             infer_a = InferenceClient(shared_res_a)
@@ -323,24 +323,24 @@ def play_match(
     # num_sims is already passed as parameter
     
     # Align MCTS config with self-play and config.yaml for consistency
-    mcts_cfg = cfg.mcts()
+    mcfg_dict = dict(cfg.mcts())
     selfplay_cfg = cfg.selfplay()
-    
+
     # For evaluation, default to no Dirichlet noise unless overridden under eval section
     dirichlet_eval = float(cfg.eval().get("dirichlet_frac", 0.0))
-    mcfg = MCTSConfig(
-        num_simulations=num_sims,
-        cpuct=float(mcts_cfg.get("cpuct", 1.5)),
-        dirichlet_alpha=float(mcts_cfg.get("dirichlet_alpha", 0.3)),
-        dirichlet_frac=dirichlet_eval,
-        tt_capacity=int(mcts_cfg.get("tt_capacity", 200000)),
-        selection_jitter=float(selfplay_cfg.get("selection_jitter", 0.0)),
-        batch_size=int(batch_size or 1),
-        fpu=float(mcts_cfg.get("fpu", 0.5)),
-        parent_q_init=bool(mcts_cfg.get("parent_q_init", True)),
-        tt_cleanup_frequency=int(mcts_cfg.get("tt_cleanup_frequency", 500)),
-        draw_penalty=float(mcts_cfg.get("draw_penalty", -0.1)),
+    mcfg_dict.update(
+        {
+            "num_simulations": num_sims,
+            "dirichlet_frac": dirichlet_eval,
+            "selection_jitter": float(selfplay_cfg.get("selection_jitter", 0.0)),
+            "batch_size": int(batch_size or 1),
+            "fpu": float(mcfg_dict.get("fpu", 0.5)),
+            "parent_q_init": bool(mcfg_dict.get("parent_q_init", True)),
+            "tt_cleanup_frequency": int(mcfg_dict.get("tt_cleanup_frequency", 500)),
+            "draw_penalty": float(mcfg_dict.get("draw_penalty", -0.1)),
+        }
     )
+    mcfg = MCTSConfig.from_dict(mcfg_dict)
     
     # Parallel execution path: spawn worker processes to play games concurrently with heartbeats
     if workers and workers > 1:
