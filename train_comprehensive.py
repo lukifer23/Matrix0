@@ -83,8 +83,15 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
     if pi.shape[1] != np.prod(POLICY_SHAPE):
         raise RuntimeError(f"Policy tensor shape mismatch: expected {np.prod(POLICY_SHAPE)}, got {pi.shape[1]}")
-    if z.shape[1] != 1:
-        raise RuntimeError(f"Value tensor shape mismatch: expected 1, got {z.shape[1]}")
+    # Value tensor can be 1D (batch_size,) or 2D (batch_size, 1) - both are valid
+    if len(z.shape) == 1:
+        # 1D tensor: (batch_size,) - this is correct
+        pass
+    elif len(z.shape) == 2 and z.shape[1] == 1:
+        # 2D tensor: (batch_size, 1) - this is also correct
+        pass
+    else:
+        raise RuntimeError(f"Value tensor shape mismatch: expected (batch_size,) or (batch_size, 1), got {z.shape}")
 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
