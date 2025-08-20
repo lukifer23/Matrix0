@@ -2,6 +2,8 @@
 
 This document describes how to integrate and use external chess engines (Stockfish, Leela Chess Zero) with Matrix0 for training, evaluation, and competition.
 
+See [docs/configuration.md](docs/configuration.md) for general configuration details including draw adjudication settings.
+
 ## Overview
 
 Matrix0 now supports integration with external chess engines through the UCI protocol, enabling:
@@ -394,11 +396,12 @@ selfplay:
   external_engine_ratio: 0.5  # 50% external engine games
   engine_strength_curriculum: true
   opening_random_plies: 4     # Random opening moves
-  resign_threshold: -0.95     # Resign threshold
-  resign_min_moves: 60        # Minimum moves before resign
-  resign_consecutive: 3       # Consecutive bad moves to resign
   selection_jitter: 0.1       # MCTS exploration parameter
+
 ```
+
+For draw adjudication and resignation settings, see [Configuration Guide](docs/configuration.md)
+
 
 ## Support
 
