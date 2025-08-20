@@ -15,6 +15,7 @@ from datetime import datetime
 from .config import Config, select_device
 from .model import PolicyValueNet
 from .mcts import MCTS, MCTSConfig
+from .elo import EloBook, update_elo
 from multiprocessing import Process, Queue
 from .selfplay.inference import (
     setup_shared_memory_for_worker,
@@ -544,6 +545,26 @@ def play_match(
         print("=" * 60)
         print(f"📊 Final Score: {score:.1f} / {games} games")
         print(f"🎯 Win Rate: {win_rate:.1%}")
+        try:
+            elopath = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+            book = EloBook(elopath)
+            state = book.load()
+            r_cand = float(state.get("candidate", 1500.0))
+            r_base = float(state.get("baseline", 1500.0))
+            r_cand_new, r_base_new = update_elo(r_cand, r_base, win_rate)
+            state["candidate"] = r_cand_new
+            state["baseline"] = r_base_new
+            state.setdefault("history", []).append({
+                "ts": int(time.time()),
+                "candidate": r_cand_new,
+                "baseline": r_base_new,
+                "score": float(score),
+                "games": int(games),
+            })
+            book.save(state)
+            print(f"📈 Updated Elo: candidate={r_cand_new:.1f}, baseline={r_base_new:.1f}")
+        except Exception as e:
+            print(f"⚠️ Elo update failed: {e}")
         if win_rate >= 0.55:
             print(f"\n🎉 PROMOTION CRITERIA MET! Win rate {win_rate:.1%} >= 55%")
         else:
@@ -770,6 +791,26 @@ def play_match(
     print("=" * 60)
     print(f"📊 Final Score: {score:.1f} / {games} games")
     print(f"🎯 Win Rate: {win_rate:.1%}")
+    try:
+        elopath = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+        book = EloBook(elopath)
+        state = book.load()
+        r_cand = float(state.get("candidate", 1500.0))
+        r_base = float(state.get("baseline", 1500.0))
+        r_cand_new, r_base_new = update_elo(r_cand, r_base, win_rate)
+        state["candidate"] = r_cand_new
+        state["baseline"] = r_base_new
+        state.setdefault("history", []).append({
+            "ts": int(time.time()),
+            "candidate": r_cand_new,
+            "baseline": r_base_new,
+            "score": float(score),
+            "games": int(games),
+        })
+        book.save(state)
+        print(f"📈 Updated Elo: candidate={r_cand_new:.1f}, baseline={r_base_new:.1f}")
+    except Exception as e:
+        print(f"⚠️ Elo update failed: {e}")
     print(f"⏱️  Total Time: {total_time:.1f}s")
     print(f"⚡ Average Time per Game: {total_time/games:.1f}s")
     
