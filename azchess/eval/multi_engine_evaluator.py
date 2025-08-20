@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -15,6 +16,7 @@ from ..config import Config, select_device
 from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
 from ..engines import EngineManager
+from ..elo import EloBook, update_elo
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ class EvaluationResult:
     matrix0_draws: int
     total_games: int
     win_rate: float
+    matrix0_rating: float
+    opponent_rating: float
     engine_name: str
     time_control: str
     games: List[Dict[str, Any]]
@@ -88,10 +92,13 @@ class MultiEngineEvaluator:
                 result = await self._evaluate_against_engine(
                     engine_manager, engine_name, games_per_engine
                 )
-                
+
                 if result:
                     results[engine_name] = result
-                    logger.info(f"Evaluation against {engine_name}: {result.win_rate:.3f} win rate")
+                    logger.info(
+                        f"Evaluation against {engine_name}: {result.win_rate:.3f} win rate, "
+                        f"Elo Matrix0={result.matrix0_rating:.1f}, {engine_name}={result.opponent_rating:.1f}"
+                    )
                 
         finally:
             await engine_manager.cleanup()
@@ -148,18 +155,47 @@ class MultiEngineEvaluator:
         if total_games == 0:
             logger.warning(f"No valid games completed against {engine_name}")
             return None
-        
+
         win_rate = matrix0_wins / total_games
-        
+
+        # Update Elo ratings
+        try:
+            elopath = Path(self.config.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+            book = EloBook(elopath)
+            state = book.load()
+            r_matrix = float(state.get("matrix0", 1500.0))
+            r_engine = float(state.get(engine_name, 1500.0))
+            r_matrix_new, r_engine_new = update_elo(r_matrix, r_engine, win_rate)
+            state["matrix0"] = r_matrix_new
+            state[engine_name] = r_engine_new
+            state.setdefault("history", []).append({
+                "ts": int(time.time()),
+                "matrix0": r_matrix_new,
+                engine_name: r_engine_new,
+                "score": float(matrix0_wins),
+                "games": int(total_games),
+                "opponent": engine_name,
+            })
+            book.save(state)
+            logger.info(
+                f"Elo updated: Matrix0={r_matrix_new:.1f}, {engine_name}={r_engine_new:.1f}"
+            )
+        except Exception as e:
+            logger.warning(f"Elo update failed: {e}")
+            r_matrix_new = float('nan')
+            r_engine_new = float('nan')
+
         # Get time control from config
         time_control = self.engine_configs.get(engine_name, {}).get("time_control", "100ms")
-        
+
         return EvaluationResult(
             matrix0_wins=matrix0_wins,
             matrix0_losses=matrix0_losses,
             matrix0_draws=matrix0_draws,
             total_games=total_games,
             win_rate=win_rate,
+            matrix0_rating=r_matrix_new,
+            opponent_rating=r_engine_new,
             engine_name=engine_name,
             time_control=time_control,
             games=game_results
@@ -342,6 +378,10 @@ def main():
             print(f"  Draws: {result.matrix0_draws}")
             print(f"  Win Rate: {result.win_rate:.3f}")
             print(f"  Time Control: {result.time_control}")
+            print(
+                f"  Elo Ratings: Matrix0 {result.matrix0_rating:.1f} vs "
+                f"{engine_name} {result.opponent_rating:.1f}"
+            )
     
     asyncio.run(run_evaluation())
 
