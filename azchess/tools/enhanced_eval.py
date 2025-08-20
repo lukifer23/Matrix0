@@ -73,7 +73,7 @@ class EnhancedEvaluator:
     def _setup_logging(self):
         """Setup comprehensive logging for debugging."""
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler('data/eval_debug.log'),
@@ -81,6 +81,15 @@ class EnhancedEvaluator:
             ]
         )
         self.logger = logging.getLogger(__name__)
+        
+        # Filter out the noisy "Policy too uniform" debug messages from MCTS
+        class PolicyUniformFilter(logging.Filter):
+            def filter(self, record):
+                return not ("Policy too uniform" in record.getMessage())
+        
+        # Apply filter to all handlers
+        for handler in logging.root.handlers:
+            handler.addFilter(PolicyUniformFilter())
         
     def _load_models(self):
         """Load both models with proper PyTorch 2.6 compatibility."""
@@ -140,17 +149,19 @@ class EnhancedEvaluator:
         # Add aggressive settings to force decisive games
         if temperature > 1.0:  # Fast/Medium configs
             mcfg_dict.update({
-                "cpuct": 1.5,  # Lower exploration for more decisive play
-                "fpu": 0.3,    # Lower first play urgency
-                "draw_penalty": -0.5,  # Stronger draw penalty
-                "selection_jitter": 0.1,  # Add some randomness
+                "cpuct": 1.2,  # Much lower exploration for decisive play
+                "fpu": 0.2,    # Lower first play urgency
+                "draw_penalty": -1.0,  # Very strong draw penalty
+                "selection_jitter": 0.2,  # More randomness
+                "resign_threshold": -0.8,  # Resign earlier
             })
         else:  # Precise config
             mcfg_dict.update({
-                "cpuct": 2.0,  # Balanced exploration
-                "fpu": 0.4,
-                "draw_penalty": -0.3,
-                "selection_jitter": 0.05,
+                "cpuct": 1.5,  # Lower exploration
+                "fpu": 0.3,
+                "draw_penalty": -0.8,  # Strong draw penalty
+                "selection_jitter": 0.1,
+                "resign_threshold": -0.9,  # Resign earlier
             })
         
         mcfg = MCTSConfig.from_dict(mcfg_dict)
@@ -182,7 +193,7 @@ class EnhancedEvaluator:
     
     def _play_game(self, mcts_a: MCTS, mcts_b: MCTS, temperature: float, table: Table = None, game_num: int = None) -> Tuple[float, List[str], str, Dict]:
         """Play a complete game between two models."""
-        self.logger.info(f"Starting new game with temperature {temperature}, max moves 200")
+        self.logger.info(f"Starting new game with temperature {temperature}, max moves 100")
         
         # Test model forward passes before game start
         self.logger.info("Testing model forward passes before game start")
@@ -217,7 +228,7 @@ class EnhancedEvaluator:
                 "Calculating..."
             )
         
-        while move_count < 200 and not board.is_game_over():
+        while move_count < 100 and not board.is_game_over():
             move_start = time.time()
             
             # Determine which model's turn
