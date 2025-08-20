@@ -221,7 +221,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             if ckpt_for_sp:
                 try:
                     logger.info(f"Loading checkpoint from: {ckpt_for_sp}")
-                    state = torch.load(ckpt_for_sp, map_location='cpu')
+                    state = torch.load(ckpt_for_sp, map_location='cpu', weights_only=False)
                     logger.info(f"Checkpoint keys: {list(state.keys())}")
                     model_state_dict = state.get("model_ema", state.get("model", state))
                     if "model_ema" in state:
