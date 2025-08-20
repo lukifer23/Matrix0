@@ -10,7 +10,7 @@ import time
 import chess
 import chess.pgn
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -146,6 +146,78 @@ def _load_stockfish() -> Optional["chess.engine.SimpleEngine"]:
 
 # In-memory games (local only)
 GAMES: Dict[str, GameState] = {}
+# Active websocket connections per game_id
+WS_CONNECTIONS: Dict[str, List[WebSocket]] = {}
+
+
+async def _broadcast(game_id: str, payload: Dict[str, object]) -> None:
+    """Send a JSON payload to all websockets for a given game."""
+    if game_id not in WS_CONNECTIONS:
+        return
+    data = json.dumps(payload)
+    dead: List[WebSocket] = []
+    for ws in WS_CONNECTIONS.get(game_id, []):
+        try:
+            await ws.send_text(data)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        for ws in dead:
+            try:
+                WS_CONNECTIONS[game_id].remove(ws)
+            except ValueError:
+                pass
+        if not WS_CONNECTIONS[game_id]:
+            WS_CONNECTIONS.pop(game_id, None)
+
+
+async def _send_state(game_id: str) -> None:
+    """Broadcast current board state for a game."""
+    gs = GAMES.get(game_id)
+    if not gs:
+        return
+    finished = gs.board.is_game_over(claim_draw=True)
+    payload = {
+        "type": "state",
+        "fen": gs.board.fen(),
+        "turn": "w" if gs.board.turn == chess.WHITE else "b",
+        "game_over": finished,
+        "result": gs.board.result(claim_draw=True) if finished else None,
+    }
+    await _broadcast(game_id, payload)
+
+
+async def _send_eval(game_id: str, mat_v: Optional[float], sf_cp: Optional[int]) -> None:
+    """Broadcast evaluation information for a game."""
+    await _broadcast(
+        game_id,
+        {
+            "type": "eval",
+            "fen": GAMES[game_id].board.fen() if game_id in GAMES else None,
+            "matrix0_value": mat_v,
+            "stockfish_cp": sf_cp,
+        },
+    )
+
+
+@app.websocket("/ws/{game_id}")
+async def ws_endpoint(websocket: WebSocket, game_id: str):
+    await websocket.accept()
+    WS_CONNECTIONS.setdefault(game_id, []).append(websocket)
+    # Send current state if game exists
+    if game_id in GAMES:
+        await _send_state(game_id)
+    try:
+        while True:
+            # Keep the connection open; incoming messages are ignored
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        try:
+            WS_CONNECTIONS[game_id].remove(websocket)
+            if not WS_CONNECTIONS[game_id]:
+                WS_CONNECTIONS.pop(game_id, None)
+        except Exception:
+            pass
 
 
 @app.on_event("shutdown")
@@ -179,7 +251,7 @@ def new_game(req: NewGameRequest):
 
 
 @app.post("/move")
-def play_move(req: MoveRequest):
+async def play_move(req: MoveRequest):
     if req.game_id not in GAMES:
         raise HTTPException(status_code=404, detail="game not found")
     gs = GAMES[req.game_id]
@@ -192,11 +264,17 @@ def play_move(req: MoveRequest):
     gs.board.push(mv)
     gs.moves.append(req.uci)
     _jsonl_write(WEBUI_LOG, {"ts": _now_ts(), "type": "human_move", "game_id": gs.game_id, "uci": req.uci, "fen": gs.board.fen()})
-    return {"fen": gs.board.fen(), "turn": "w" if gs.board.turn == chess.WHITE else "b", "game_over": gs.board.is_game_over(claim_draw=True), "result": gs.board.result(claim_draw=True) if gs.board.is_game_over(claim_draw=True) else None}
+    await _send_state(gs.game_id)
+    return {
+        "fen": gs.board.fen(),
+        "turn": "w" if gs.board.turn == chess.WHITE else "b",
+        "game_over": gs.board.is_game_over(claim_draw=True),
+        "result": gs.board.result(claim_draw=True) if gs.board.is_game_over(claim_draw=True) else None,
+    }
 
 
 @app.post("/engine-move")
-def engine_move(req: EngineMoveRequest):
+async def engine_move(req: EngineMoveRequest):
     if req.game_id not in GAMES:
         raise HTTPException(status_code=404, detail="game not found")
     gs = GAMES[req.game_id]
@@ -230,11 +308,18 @@ def engine_move(req: EngineMoveRequest):
     finished = gs.board.is_game_over(claim_draw=True)
     if finished:
         _save_pgn(gs)
-    return {"uci": mv.uci(), "fen": gs.board.fen(), "turn": "w" if gs.board.turn == chess.WHITE else "b", "game_over": finished, "result": gs.board.result(claim_draw=True) if finished else None}
+    await _send_state(gs.game_id)
+    return {
+        "uci": mv.uci(),
+        "fen": gs.board.fen(),
+        "turn": "w" if gs.board.turn == chess.WHITE else "b",
+        "game_over": finished,
+        "result": gs.board.result(claim_draw=True) if finished else None,
+    }
 
 
 @app.post("/eval")
-def eval_position(req: EvalRequest):
+async def eval_position(req: EvalRequest):
     if req.game_id not in GAMES:
         raise HTTPException(status_code=404, detail="game not found")
     gs = GAMES[req.game_id]
@@ -266,6 +351,7 @@ def eval_position(req: EvalRequest):
                 sf_cp = None
 
     _jsonl_write(WEBUI_LOG, {"ts": _now_ts(), "type": "eval", "game_id": gs.game_id, "fen": gs.board.fen(), "matrix0_v": mat_v, "stockfish_cp": sf_cp})
+    await _send_eval(gs.game_id, mat_v, sf_cp)
     return {"fen": gs.board.fen(), "matrix0_value": mat_v, "stockfish_cp": sf_cp}
 
 

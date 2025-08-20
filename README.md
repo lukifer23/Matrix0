@@ -116,9 +116,14 @@ python -m azchess.arena --ckpt_a checkpoints/enhanced_best.pt --ckpt_b checkpoin
 # Play against trained model
 python -m azchess.cli_play
 
-# Web interface (eval mode)
+# Web interface with real-time updates
 uvicorn webui.server:app --host 127.0.0.1 --port 8000
 ```
+
+Launch the server and open <http://127.0.0.1:8000> in your browser. The
+frontend connects to `ws://localhost:8000/ws/{game_id}` for live FEN,
+evaluation and result updates. Multiple concurrent games can be managed via
+tabs at the top of the page.
 
 ### **5. Analyze Self-Play Games**
 ```bash
