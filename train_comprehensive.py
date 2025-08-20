@@ -112,9 +112,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # Mixed Precision Forward Pass
     device_type = device.split(':')[0]
-    # Disable autocast on MPS to avoid stride/view issues; keep it only for CUDA
-    use_autocast = (scaler is not None) and (device_type == 'cuda')
-    with torch.autocast(device_type=device_type, enabled=use_autocast):
+    use_autocast = scaler is not None
+    with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_autocast):
         # Channels-last can speed up on MPS
         try:
             s = s.contiguous(memory_format=torch.channels_last)
@@ -300,9 +299,16 @@ def train_comprehensive(
     scheduler = get_lr_scheduler(optimizer, total_steps, warmup_steps)
     ema = EMA(model, ema_decay)
     
-    # Initialize GradScaler for mixed precision
-    scaler = torch.cuda.amp.GradScaler() if use_amp and device.startswith("cuda") else None
-    if scaler:
+    # Initialize GradScaler for mixed precision in a device-agnostic way
+    if use_amp:
+        device_type = device.split(":")[0]
+        if device_type == "cuda":
+            scaler = torch.cuda.amp.GradScaler()
+        else:
+            scaler = torch.amp.GradScaler(device="mps")
+    else:
+        scaler = None
+    if scaler is not None:
         logger.info("Using Automatic Mixed Precision (AMP).")
 
     # Load optimizer and scheduler state if resuming
