@@ -52,8 +52,14 @@ class EnhancedEvaluator:
         # ELO tracking - initialize with default values if file doesn't exist
         self.elo_book = EloBook(Path("data/elo_ratings.json"))
         try:
-            self.elo_data = self.elo_book.load()
-            self.logger.info(f"Loaded ELO data: {self.elo_data}")
+            loaded_data = self.elo_book.load()
+            # Check if loaded data has the expected structure
+            if isinstance(loaded_data, dict) and "enhanced_best" in loaded_data and "best" in loaded_data:
+                self.elo_data = loaded_data
+                self.logger.info(f"Loaded ELO data: {self.elo_data}")
+            else:
+                self.logger.warning(f"Loaded ELO data missing required keys, using defaults")
+                self.elo_data = {"enhanced_best": 1500.0, "best": 1500.0}
         except Exception as e:
             self.logger.warning(f"Could not load ELO data, using defaults: {e}")
             self.elo_data = {"enhanced_best": 1500.0, "best": 1500.0}
@@ -587,6 +593,10 @@ class EnhancedEvaluator:
                     # Update ELO ratings
                     self.logger.info(f"Game {self.current_game}: Updating ELO ratings")
                     elo_a, elo_b = self._update_elo_ratings(result)
+                    
+                    # Debug: Log the actual ELO values being used
+                    self.logger.info(f"Game {self.current_game}: ELO values after update - A: {elo_a:.1f}, B: {elo_b:.1f}")
+                    self.logger.info(f"Game {self.current_game}: Current elo_data state: {self.elo_data}")
                     
                     # Save game
                     self.logger.info(f"Game {self.current_game}: Saving game")
