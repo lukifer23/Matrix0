@@ -33,8 +33,9 @@ class ResidualBlock(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
         if self.use_se:
-            # Squeeze
-            w = F.adaptive_avg_pool2d(out, 1).flatten(1)
+            # Squeeze (avoid view-related stride issues by using reshape)
+            pool = F.adaptive_avg_pool2d(out, 1)
+            w = pool.reshape(pool.size(0), -1).contiguous()
             w = F.relu(self.se_fc1(w), inplace=True)
             w = torch.sigmoid(self.se_fc2(w)).unsqueeze(-1).unsqueeze(-1)
             out = out * w
@@ -179,10 +180,13 @@ class NetConfig:
     attention_heads: int = 8
     attention_unmasked_mix: float = 0.2
     attention_relbias: bool = True
+    attention_every_k: int = 3
     chess_features: bool = True  # Enable chess-specific features
     self_supervised: bool = True  # Enable self-supervised learning
     piece_square_tables: bool = True  # Enable piece-square table features
     wdl: bool = False  # Optional WDL auxiliary head
+    # V2 toggles (safe defaults keep legacy behavior)
+    policy_factor_rank: int = 0
 
 
 class PolicyValueNet(nn.Module):
@@ -206,12 +210,13 @@ class PolicyValueNet(nn.Module):
         
         # Enhanced tower with attention and SE blocks
         tower_layers = []
+        _att_every = int(getattr(cfg, 'attention_every_k', 3))
         for i in range(cfg.blocks):
             # Add residual block with SE
             tower_layers.append(ResidualBlock(C, se=cfg.se, se_ratio=cfg.se_ratio))
             
             # Add attention every few blocks for efficiency
-            if cfg.attention and i % 3 == 2:  # Every 3rd block
+            if cfg.attention and _att_every > 0 and (i % _att_every) == (_att_every - 1):
                 tower_layers.append(ChessAttention(C, cfg.attention_heads, unmasked_mix=cfg.attention_unmasked_mix, relbias=getattr(cfg, 'attention_relbias', False)))
         
         self.tower = nn.Sequential(*tower_layers)
@@ -236,8 +241,16 @@ class PolicyValueNet(nn.Module):
         )
         # Spatial conv branch: per-square 73 logits
         self.policy_conv_out = nn.Conv2d(64, 73, kernel_size=1, bias=True)
-        # Dense branch: preserves original capacity (4096 → 4672)
-        self.policy_fc = nn.Linear(64 * 8 * 8, cfg.policy_size)
+        # Dense branch: preserves original capacity (4096 → 4672) or factorized when enabled
+        _rank = int(getattr(cfg, 'policy_factor_rank', 0))
+        if _rank and _rank > 0:
+            self.policy_fc1 = nn.Linear(64 * 8 * 8, _rank)
+            self.policy_fc2 = nn.Linear(_rank, cfg.policy_size)
+            self.policy_fc = None
+        else:
+            self.policy_fc = nn.Linear(64 * 8 * 8, cfg.policy_size)
+            self.policy_fc1 = None
+            self.policy_fc2 = None
         
         # Enhanced value head
         self.value_head = nn.Sequential(
@@ -271,8 +284,14 @@ class PolicyValueNet(nn.Module):
         nn.init.kaiming_normal_(self.policy_head[0].weight, mode='fan_out', nonlinearity='relu')
         nn.init.xavier_uniform_(self.policy_conv_out.weight, gain=1.0)
         nn.init.constant_(self.policy_conv_out.bias, 0.0)
-        nn.init.xavier_uniform_(self.policy_fc.weight, gain=1.0)
-        nn.init.constant_(self.policy_fc.bias, 0.0)
+        if self.policy_fc is not None:
+            nn.init.xavier_uniform_(self.policy_fc.weight, gain=1.0)
+            nn.init.constant_(self.policy_fc.bias, 0.0)
+        if self.policy_fc1 is not None and self.policy_fc2 is not None:
+            nn.init.xavier_uniform_(self.policy_fc1.weight, gain=1.0)
+            nn.init.constant_(self.policy_fc1.bias, 0.0)
+            nn.init.xavier_uniform_(self.policy_fc2.weight, gain=1.0)
+            nn.init.constant_(self.policy_fc2.bias, 0.0)
         
         # Value head initialization
         nn.init.kaiming_normal_(self.value_head[0].weight, mode='fan_out', nonlinearity='relu')
@@ -288,7 +307,8 @@ class PolicyValueNet(nn.Module):
         # Scale policy output weights to ensure reasonable logit magnitudes
         with torch.no_grad():
             self.policy_conv_out.weight.data *= 1.5
-            self.policy_fc.weight.data *= 1.5
+            if self.policy_fc is not None:
+                self.policy_fc.weight.data *= 1.5
 
         # WDL head init
         if self.wdl_head is not None:
@@ -313,7 +333,11 @@ class PolicyValueNet(nn.Module):
         p_conv = self.policy_conv_out(pfeat)
         p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
         # Dense branch - ensure contiguity
-        p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
+        _pflat = pfeat.contiguous().reshape(pfeat.size(0), -1)
+        if self.policy_fc is not None:
+            p_fc = self.policy_fc(_pflat)
+        else:
+            p_fc = self.policy_fc2(F.relu(self.policy_fc1(_pflat), inplace=True))
         # Combine logits and ensure final policy tensor is contiguous
         p = (p_conv + p_fc).contiguous()
 
@@ -339,7 +363,11 @@ class PolicyValueNet(nn.Module):
         pfeat = self.policy_head(feats)
         p_conv = self.policy_conv_out(pfeat)
         p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
-        p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
+        _pflat = pfeat.contiguous().reshape(pfeat.size(0), -1)
+        if self.policy_fc is not None:
+            p_fc = self.policy_fc(_pflat)
+        else:
+            p_fc = self.policy_fc2(F.relu(self.policy_fc1(_pflat), inplace=True))
         p = (p_conv + p_fc).contiguous()
         # Value - ensure contiguity throughout
         v = self.value_head(feats)

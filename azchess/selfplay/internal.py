@@ -196,7 +196,20 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     sims = sp_cfg.get("num_simulations", 50)  # Default to 50 instead of 800
     logger.info(f"Worker {proc_id}: sims={sims} games={games}")
 
-    mcfg_dict = dict(cfg_dict["mcts"])
+    # Build MCTS config with robust fallbacks
+    base_mcts = dict(cfg_dict.get("mcts", {}))
+    if not base_mcts:
+        # Fallback to defaults section if provided
+        base_mcts = dict(cfg_dict.get("mcts_defaults", {}))
+    # Final safety: ensure minimal keys exist
+    base_mcts.setdefault("num_simulations", int(sp_cfg.get("num_simulations", 800)))
+    base_mcts.setdefault("cpuct", float(sp_cfg.get("cpuct", 2.5)))
+    base_mcts.setdefault("dirichlet_alpha", float(sp_cfg.get("dirichlet_alpha", 0.3)))
+    base_mcts.setdefault("dirichlet_frac", float(sp_cfg.get("dirichlet_frac", 0.25)))
+    base_mcts.setdefault("batch_size", int(sp_cfg.get("batch_size", 32)))
+    base_mcts.setdefault("selection_jitter", float(sp_cfg.get("selection_jitter", 0.01)))
+
+    mcfg_dict = dict(base_mcts)
     mcfg_dict.update(
         {
             "num_simulations": int(sp_cfg.get("num_simulations", mcfg_dict.get("num_simulations", 800))),
@@ -573,5 +586,4 @@ def game_result(board: chess.Board) -> float:
     if res == "0-1":
         return -1.0
     return 0.0
-
 

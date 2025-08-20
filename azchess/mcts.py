@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - exercised in tests via patching
 
 logger = logging.getLogger(__name__)
 
-from .encoding import encode_board, move_to_index
+from .encoding import encode_board, move_to_index, MoveEncoder
 
 
 class LRUCache:
@@ -66,6 +66,11 @@ class MCTSConfig:
     # Child pruning
     max_children: int = 0            # keep top-K children by prior; 0 disables
     min_child_prior: float = 0.0     # drop children with prior < threshold after normalization
+    # Optional optimizations
+    legal_softmax: bool = False      # softmax over legal moves only
+    encoder_cache: bool = True       # use MoveEncoder caching
+    tt_cleanup_interval_s: int = 5   # periodic TT cleanup interval (seconds)
+    no_instant_backtrack: bool = True
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -91,7 +96,7 @@ class Node:
         self.move = move
         self.expanded = False
 
-    def expand(self, board: chess.Board, p_logits: np.ndarray) -> None:
+    def expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False) -> None:
         """Expand this node with children for all legal moves."""
         if self.is_expanded():
             return
@@ -108,8 +113,18 @@ class Node:
             lp = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
         else:
             # Convert logits to probabilities
-            probs = torch.from_numpy(logits)
-            probs = torch.softmax(probs, dim=-1).numpy()
+            if legal_only:
+                # Softmax over legal indices only
+                if encoder is not None:
+                    idxs = [encoder.encode_move(board, m) for m in legal_moves]
+                else:
+                    idxs = [move_to_index(board, m) for m in legal_moves]
+                sel = torch.from_numpy(logits[idxs])
+                sel = torch.softmax(sel, dim=-1).numpy()
+                probs = None
+            else:
+                probs = torch.from_numpy(logits)
+                probs = torch.softmax(probs, dim=-1).numpy()
 
             # Check if policy is too uniform (degenerate case)
             policy_entropy = -np.sum(probs * np.log(probs + 1e-8))
@@ -126,10 +141,13 @@ class Node:
                 probs = probs / probs.sum()  # Renormalize
 
             legal_priors: List[float] = []
-            for move in legal_moves:
+            for i, move in enumerate(legal_moves):
                 try:
-                    idx = move_to_index(board, move)
-                    prior = float(probs[idx])
+                    if legal_only:
+                        prior = float(sel[i])
+                    else:
+                        idx = encoder.encode_move(board, move) if encoder is not None else move_to_index(board, move)
+                        prior = float(probs[idx])
                     # Ensure prior is valid
                     if np.isnan(prior) or np.isinf(prior) or prior < 0:
                         prior = 0.0
@@ -184,6 +202,9 @@ class MCTS:
         self._last_root: Optional[Node] = None
         # Guard to defer cleanup during bulk inserts into TT
         self._in_bulk_put: bool = False
+        # Move encoder cache
+        self._enc: Optional[MoveEncoder] = MoveEncoder() if bool(cfg.encoder_cache) else None
+        self._last_cleanup_wall: float = time.time()
 
     @torch.no_grad()
     def run(self, board: chess.Board, num_simulations: Optional[int] = None, ply: Optional[int] = None) -> Tuple[Dict[chess.Move, int], np.ndarray, float]:
@@ -195,7 +216,7 @@ class MCTS:
         if root is None:
             root = Node()
             p_logits, v = self._infer(board)
-            root.expand(board, p_logits)
+            root.expand(board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
             self._prune_children(root)
             self._tt_put(key, root)
         else:
@@ -255,7 +276,7 @@ class MCTS:
             for i, (node, path, leaf_board) in enumerate(leaves):
                 p_logits, v_leaf = p_list[i], v_list[i]
                 if not node.is_expanded():
-                    node.expand(leaf_board, p_logits)
+                    node.expand(leaf_board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
                     self._prune_children(node)
                     self._register_children_in_tt(node, leaf_board)
                 
@@ -349,6 +370,12 @@ class MCTS:
                 eff_cpuct = self._cpuct_at(base_ply + depth)
                 u = eff_cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
                 score = q + u
+                # Avoid instant backtracking at shallow depths if configured
+                if self.cfg.no_instant_backtrack and len(path) >= 2 and child.move is not None and path[-1].move is not None:
+                    prev = path[-1].move
+                    mv = child.move
+                    if mv.from_square == prev.to_square and mv.to_square == prev.from_square:
+                        score -= 0.01
                 # Apply virtual loss penalty if this edge is in-flight in current batch
                 if inflight_counts is not None and self.cfg.virtual_loss > 0.0:
                     score -= float(inflight_counts.get(child, 0)) * float(self.cfg.virtual_loss)
@@ -580,9 +607,11 @@ class MCTS:
         large trees, causing workers to stall or appear unresponsive. We keep cleanup
         cheap and frequent: trim LRU entries to ~80% capacity and check memory pressure.
         """
-        if self.simulations_run - self._last_cleanup < 500:
+        # Frequency-based and wall-clock based cleanup
+        if (self.simulations_run - self._last_cleanup < 500) and (time.time() - self._last_cleanup_wall < max(1, int(self.cfg.tt_cleanup_interval_s))):
             return
         self._last_cleanup = self.simulations_run
+        self._last_cleanup_wall = time.time()
         # Trim LRU to 80% of capacity if exceeded
         target = int(self.cfg.tt_capacity * 0.8)
         if len(self.tt) > target:

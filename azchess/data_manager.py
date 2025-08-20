@@ -255,6 +255,11 @@ class DataManager:
                     policies = data['pi']
                     values = data['z']
 
+                    # Normalize common shape variants proactively
+                    # values can be (N,) or (N,1); normalize to (N,)
+                    if values.ndim == 2 and values.shape[1] == 1:
+                        values = values.reshape(values.shape[0])
+
                     if not self._validate_shapes(states, policies, values, shard_path):
                         self._mark_shard_corrupted(shard_path)
                         continue
@@ -270,6 +275,21 @@ class DataManager:
                         batch_states = states[i:i+batch_size]
                         batch_policies = policies[i:i+batch_size]
                         batch_values = values[i:i+batch_size]
+
+                        # Ensure batch arrays are standard C-contiguous float32
+                        if not batch_states.flags['C_CONTIGUOUS']:
+                            batch_states = np.ascontiguousarray(batch_states)
+                        if not batch_policies.flags['C_CONTIGUOUS']:
+                            batch_policies = np.ascontiguousarray(batch_policies)
+                        if not batch_values.flags['C_CONTIGUOUS']:
+                            batch_values = np.ascontiguousarray(batch_values)
+
+                        if batch_states.dtype != np.float32:
+                            batch_states = batch_states.astype(np.float32, copy=False)
+                        if batch_policies.dtype != np.float32:
+                            batch_policies = batch_policies.astype(np.float32, copy=False)
+                        if batch_values.dtype != np.float32:
+                            batch_values = batch_values.astype(np.float32, copy=False)
 
                         if len(batch_states) == batch_size:
                             yield batch_states, batch_policies, batch_values
@@ -892,7 +912,7 @@ class DataManager:
         Expected shapes:
             states: (N, 19, 8, 8)
             policies: (N, 4672)
-            values: (N,)
+            values: (N,) or (N,1)
 
         Args:
             states: State tensor
@@ -904,9 +924,10 @@ class DataManager:
             True if shapes match expectations, False otherwise.
         """
         n = states.shape[0]
-        if (states.shape != (n, 19, 8, 8) or
-                policies.shape != (n, 4672) or
-                values.shape != (n,)):
+        ok_states = (states.shape == (n, 19, 8, 8))
+        ok_policies = (policies.shape == (n, 4672))
+        ok_values = (values.shape == (n,)) or (values.ndim == 2 and values.shape == (n, 1))
+        if not (ok_states and ok_policies and ok_values):
             logger.warning(
                 f"Shape mismatch in {source}: states {states.shape}, policies {policies.shape}, values {values.shape}"
             )

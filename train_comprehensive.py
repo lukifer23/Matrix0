@@ -69,6 +69,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     s = torch.from_numpy(s).to(device).contiguous()
     pi = torch.from_numpy(pi).to(device).contiguous()
     z = torch.from_numpy(z).to(device).contiguous()
+    # Normalize common shape variant for values: (N,) or (N,1) → (N,)
+    if z.dim() == 2 and z.size(1) == 1:
+        z = z.reshape(z.size(0)).contiguous()
     
     # Validate tensor properties to catch issues early
     if not s.is_contiguous():
@@ -148,12 +151,20 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Mixed Precision Forward Pass
     device_type = device.split(':')[0]
     use_autocast = scaler is not None
-    with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_autocast):
-        # Channels-last can speed up on MPS
-        try:
-            s = s.contiguous(memory_format=torch.channels_last)
-        except Exception:
-            pass
+    # Autocast dtype from config (bf16|fp16)
+    from azchess.config import Config as _Cfg
+    try:
+        _cfg = _Cfg.load(config_path) if 'config_path' in locals() else None
+        _dtype_str = (_cfg.training().get('autocast_dtype', 'fp16') if _cfg else 'fp16').lower()
+    except Exception:
+        _dtype_str = 'fp16'
+    _amp_dtype = torch.bfloat16 if _dtype_str == 'bf16' else torch.float16
+    # Disable GradScaler for bf16 (not needed/used)
+    if _dtype_str == 'bf16':
+        scaler = None
+    with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
+        # Keep standard contiguous format during training to avoid MPS view/stride issues
+        s = s.contiguous()
         if use_wdl and hasattr(model, 'forward_with_features'):
             p, v, ssl_out, feats = model.forward_with_features(s, return_ssl=True)
         else:
@@ -164,7 +175,11 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         p = p.contiguous()
         v = v.contiguous()
         if ssl_out is not None:
-            ssl_out = ssl_out.contiguous()
+            # Force standard contiguous (NCHW) to avoid channels_last view issues in CrossEntropy backward (MPS)
+            try:
+                ssl_out = ssl_out.contiguous(memory_format=torch.contiguous_format)
+            except Exception:
+                ssl_out = ssl_out.contiguous()
         
         # Validate model outputs to catch any contiguity issues
         if not p.is_contiguous():
@@ -234,7 +249,19 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 ramp = min(1.0, float(current_step) / float(ssl_warmup_steps))
             else:
                 ramp = 1.0
-            ssl_loss = nn.functional.cross_entropy(ssl_out, ssl_target)
+            # Ensure logits are standard contiguous layout for CE backward on MPS
+            try:
+                ssl_logits = ssl_out.contiguous(memory_format=torch.contiguous_format)
+            except Exception:
+                ssl_logits = ssl_out.contiguous()
+            # SSL label smoothing (if configured)
+            try:
+                from azchess.config import Config as _Cfg2
+                _cfg2 = _Cfg2.load(config_path) if 'config_path' in locals() else None
+                _ls = float(_cfg2.training().get('ssl_label_smoothing', 0.0)) if _cfg2 else 0.0
+            except Exception:
+                _ls = 0.0
+            ssl_loss = nn.functional.cross_entropy(ssl_logits, ssl_target, label_smoothing=_ls if _ls > 0 else 0.0)
             # Ensure all loss components are contiguous before arithmetic operations
             policy_loss = policy_loss.contiguous()
             policy_reg_loss = policy_reg_loss.contiguous()
@@ -272,10 +299,34 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Ensure loss tensor is contiguous before backward pass
         if not loss.is_contiguous():
             loss = loss.contiguous()
-        if scaler is not None:
-            scaler.scale(loss / accum_steps).backward()
-        else:
-            (loss / accum_steps).backward()
+        try:
+            if scaler is not None:
+                scaler.scale(loss / accum_steps).backward()
+            else:
+                (loss / accum_steps).backward()
+        except RuntimeError as e:
+            msg = str(e)
+            if 'view size is not compatible' in msg or 'contiguous subspaces' in msg:
+                # Emit targeted diagnostics to help trace offending tensors
+                try:
+                    logger.error(
+                        "Backward view/stride error. Diagnostics: p(%s,%s), v(%s,%s), ssl_out(%s,%s)",
+                        tuple(p.shape) if 'p' in locals() else None,
+                        tuple(p.stride()) if 'p' in locals() and hasattr(p, 'stride') else None,
+                        tuple(v.shape) if 'v' in locals() else None,
+                        tuple(v.stride()) if 'v' in locals() and hasattr(v, 'stride') else None,
+                        tuple(ssl_out.shape) if 'ssl_out' in locals() and ssl_out is not None else None,
+                        tuple(ssl_out.stride()) if 'ssl_out' in locals() and ssl_out is not None and hasattr(ssl_out, 'stride') else None,
+                    )
+                    logger.error(
+                        "Inputs: s(%s,%s), pi(%s,%s), z(%s,%s)",
+                        tuple(s.shape), tuple(s.stride()),
+                        tuple(pi.shape), tuple(pi.stride()),
+                        tuple(z.shape), tuple(z.stride()),
+                    )
+                except Exception:
+                    pass
+            raise
     else:
         logger.warning("Non-finite loss encountered; skipping backward for this batch")
     
