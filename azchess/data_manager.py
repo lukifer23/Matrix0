@@ -254,19 +254,23 @@ class DataManager:
                     states = data['s']
                     policies = data['pi']
                     values = data['z']
-                    
+
+                    if not self._validate_shapes(states, policies, values, shard_path):
+                        self._mark_shard_corrupted(shard_path)
+                        continue
+
                     # Shuffle within shard
                     indices = np.random.permutation(len(states))
                     states = states[indices]
                     policies = policies[indices]
                     values = values[indices]
-                    
+
                     # Yield batches
                     for i in range(0, len(states), batch_size):
                         batch_states = states[i:i+batch_size]
                         batch_policies = policies[i:i+batch_size]
                         batch_values = values[i:i+batch_size]
-                        
+
                         if len(batch_states) == batch_size:
                             yield batch_states, batch_policies, batch_values
                             
@@ -336,10 +340,15 @@ class DataManager:
         try:
             with np.load(tactical_path) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                batch_states = data['positions'][indices]
+                batch_policies = data['policy_targets'][indices]
+                batch_values = data['value_targets'][indices]
+                if not self._validate_shapes(batch_states, batch_policies, batch_values, tactical_path):
+                    return None
                 return {
-                    's': data['positions'][indices],
-                    'pi': data['policy_targets'][indices],
-                    'z': data['value_targets'][indices]
+                    's': batch_states,
+                    'pi': batch_policies,
+                    'z': batch_values
                 }
         except Exception as e:
             logger.error(f"Error loading tactical data: {e}")
@@ -355,10 +364,15 @@ class DataManager:
         try:
             with np.load(openings_path) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                batch_states = data['positions'][indices]
+                batch_policies = data['policy_targets'][indices]
+                batch_values = data['value_targets'][indices]
+                if not self._validate_shapes(batch_states, batch_policies, batch_values, openings_path):
+                    return None
                 return {
-                    's': data['positions'][indices],
-                    'pi': data['policy_targets'][indices],
-                    'z': data['value_targets'][indices]
+                    's': batch_states,
+                    'pi': batch_policies,
+                    'z': batch_values
                 }
         except Exception as e:
             logger.error(f"Error loading openings data: {e}")
@@ -388,7 +402,9 @@ class DataManager:
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
-        
+
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'mixed external'):
+            return None
         return combined_batch
     
     def _get_curriculum_openings_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -411,7 +427,8 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 openings_batch[key], tactical_batch[key]
             ], axis=0)
-        
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum openings'):
+            return None
         return combined_batch
     
     def _get_curriculum_tactics_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -434,7 +451,8 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
-        
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum tactics'):
+            return None
         return combined_batch
     
     def _get_curriculum_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -474,7 +492,8 @@ class DataManager:
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
-        
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum mixed'):
+            return None
         return combined_batch
     
     def get_external_data_stats(self) -> Dict[str, int]:
@@ -866,7 +885,34 @@ class DataManager:
             
         except Exception:
             return False
-    
+
+    def _validate_shapes(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
+        """Ensure training data has expected shapes.
+
+        Expected shapes:
+            states: (N, 19, 8, 8)
+            policies: (N, 4672)
+            values: (N,)
+
+        Args:
+            states: State tensor
+            policies: Policy tensor
+            values: Value tensor
+            source: Optional identifier for logging
+
+        Returns:
+            True if shapes match expectations, False otherwise.
+        """
+        n = states.shape[0]
+        if (states.shape != (n, 19, 8, 8) or
+                policies.shape != (n, 4672) or
+                values.shape != (n,)):
+            logger.warning(
+                f"Shape mismatch in {source}: states {states.shape}, policies {policies.shape}, values {values.shape}"
+            )
+            return False
+        return True
+
     def _mark_shard_corrupted(self, path: str):
         """Mark a shard as corrupted in the database."""
         conn = self._connect()

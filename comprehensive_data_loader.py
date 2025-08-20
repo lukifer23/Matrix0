@@ -78,6 +78,18 @@ class ComprehensiveDataLoader:
         # Summary
         total_samples = self.tactical_samples + self.openings_samples
         logger.info(f"📊 Total external training samples: {total_samples}")
+
+    def _validate_shapes(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
+        """Validate that data arrays have expected shapes."""
+        n = states.shape[0]
+        if (states.shape != (n, 19, 8, 8) or
+                policies.shape != (n, 4672) or
+                values.shape != (n,)):
+            logger.warning(
+                f"Shape mismatch in {source}: states {states.shape}, policies {policies.shape}, values {values.shape}"
+            )
+            return False
+        return True
     
     def get_mixed_batch(self, batch_size: int, 
                        tactical_ratio: float = 0.3,
@@ -146,14 +158,20 @@ class ComprehensiveDataLoader:
         combined_positions = np.concatenate(batch_positions, axis=0)
         combined_policies = np.concatenate(batch_policies, axis=0)
         combined_values = np.concatenate(batch_values, axis=0)
-        
+
         # Shuffle the combined batch
         indices = np.random.permutation(len(combined_positions))
-        
+        shuffled_positions = combined_positions[indices]
+        shuffled_policies = combined_policies[indices]
+        shuffled_values = combined_values[indices]
+
+        if not self._validate_shapes(shuffled_positions, shuffled_policies, shuffled_values, 'mixed batch'):
+            return None
+
         return {
-            's': combined_positions[indices],
-            'pi': combined_policies[indices],
-            'z': combined_values[indices]
+            's': shuffled_positions,
+            'pi': shuffled_policies,
+            'z': shuffled_values
         }
     
     def get_curriculum_batch(self, batch_size: int, phase: str = "openings") -> Optional[Dict[str, np.ndarray]]:
@@ -203,18 +221,28 @@ class ComprehensiveDataLoader:
         """
         if source == "tactical" and self.tactical_data is not None:
             indices = np.random.choice(self.tactical_samples, batch_size, replace=False)
+            batch_states = self.tactical_data['positions'][indices]
+            batch_policies = self.tactical_data['policy_targets'][indices]
+            batch_values = self.tactical_data['value_targets'][indices]
+            if not self._validate_shapes(batch_states, batch_policies, batch_values, 'pure tactical'):
+                return None
             return {
-                's': self.tactical_data['positions'][indices],
-                'pi': self.tactical_data['policy_targets'][indices],
-                'z': self.tactical_data['value_targets'][indices]
+                's': batch_states,
+                'pi': batch_policies,
+                'z': batch_values
             }
-        
+
         elif source == "openings" and self.openings_data is not None:
             indices = np.random.choice(self.openings_samples, batch_size, replace=False)
+            batch_states = self.openings_data['positions'][indices]
+            batch_policies = self.openings_data['policy_targets'][indices]
+            batch_values = self.openings_data['value_targets'][indices]
+            if not self._validate_shapes(batch_states, batch_policies, batch_values, 'pure openings'):
+                return None
             return {
-                's': self.openings_data['positions'][indices],
-                'pi': self.openings_data['policy_targets'][indices],
-                'z': self.openings_data['value_targets'][indices]
+                's': batch_states,
+                'pi': batch_policies,
+                'z': batch_values
             }
         
         else:
