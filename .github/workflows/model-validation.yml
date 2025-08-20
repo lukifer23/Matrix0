@@ -1,0 +1,88 @@
+name: Model Validation
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'azchess/model/**'
+      - 'azchess/encoding.py'
+      - 'checkpoints/**'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  model-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Download latest checkpoint (if available)
+      run: |
+        # This would download from your releases or artifacts
+        # For now, we'll test with a minimal model
+        echo "Testing model architecture without checkpoint"
+        
+    - name: Test model architecture
+      run: |
+        python -c "
+        from azchess.model.resnet import PolicyValueNet
+        from azchess.config import Config
+        from azchess.encoding import encode_board
+        import chess
+        import torch
+        
+        print('✅ Testing model architecture...')
+        
+        # Load config and create model
+        cfg = Config.load('config.yaml')
+        model = PolicyValueNet.from_config(cfg.model())
+        print('✅ Model created successfully')
+        
+        # Test encoding
+        board = chess.Board()
+        encoded = encode_board(board)
+        print(f'✅ Encoding successful: {encoded.shape}')
+        
+        # Test forward pass (CPU only for CI)
+        model.eval()
+        x = torch.from_numpy(encoded).unsqueeze(0)
+        
+        with torch.no_grad():
+            policy, value = model(x)
+            print(f'✅ Forward pass successful: policy {policy.shape}, value {value.shape}')
+            
+        print('✅ All model tests passed!')
+        "
+        
+    - name: Test encoding functions
+      run: |
+        python -c "
+        from azchess.encoding import encode_board, move_to_index
+        import chess
+        
+        print('✅ Testing encoding functions...')
+        
+        board = chess.Board()
+        encoded = encode_board(board)
+        print(f'Board encoding: {encoded.shape}')
+        
+        # Test move encoding
+        legal_moves = list(board.legal_moves)
+        if legal_moves:
+            move = legal_moves[0]
+            idx = move_to_index(board, move)
+            print(f'Move encoding: {move} -> {idx}')
+            
+        print('✅ Encoding tests passed!')
+        "
