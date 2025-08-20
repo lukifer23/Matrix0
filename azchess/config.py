@@ -33,6 +33,10 @@ class Config:
         """Self-play configuration section."""
         return self.raw.get("selfplay", {})
 
+    def draw(self) -> Dict[str, Any]:
+        """Draw adjudication configuration section."""
+        return self.raw.get("draw", {})
+
     def training(self) -> Dict[str, Any]:
         """Training configuration section."""
         return self.raw.get("training", {})
