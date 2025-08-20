@@ -46,7 +46,7 @@ class ResidualBlock(nn.Module):
 class ChessAttention(nn.Module):
     """Chess-specific attention mechanism for capturing spatial relationships."""
     
-    def __init__(self, channels: int, heads: int = 8, dropout: float = 0.1):
+    def __init__(self, channels: int, heads: int = 8, dropout: float = 0.1, unmasked_mix: float = 0.2, relbias: bool = False):
         super().__init__()
         self.channels = channels
         self.heads = heads
@@ -57,6 +57,8 @@ class ChessAttention(nn.Module):
         self.proj = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(channels)
+        # Blend ratio between masked and unmasked attention (0.0 → only unmasked, 1.0 → only masked)
+        self.unmasked_mix = float(unmasked_mix)
         # Precompute chess attention mask for 8x8 boards (N=64) and register as buffer
         n = 8
         rows = torch.arange(n).repeat_interleave(n)
@@ -67,6 +69,10 @@ class ChessAttention(nn.Module):
         mask = (same_row | same_col | diag).to(torch.bool)  # (64, 64)
         mask = mask.view(1, 1, n * n, n * n)  # (1,1,N,N)
         self.register_buffer("attn_mask", mask, persistent=False)
+        # Optional learnable relative bias over (N,N)
+        self.use_relbias = bool(relbias)
+        if self.use_relbias:
+            self.rel_bias = nn.Parameter(torch.zeros(1, self.heads, n * n, n * n))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, channels, height, width = x.shape
@@ -78,17 +84,29 @@ class ChessAttention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]  # Each: (B, H, N, D)
 
         # Compute attention scores
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, N, N)
-
-        # Apply chess-specific attention mask (broadcast over batch and heads)
-        scores = scores.masked_fill(self.attn_mask == 0, float('-inf'))
-
-        # Apply softmax and dropout
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to values
-        out = torch.matmul(attn_weights, v)  # (B, H, N, D)
+        scores_base = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, N, N)
+        if self.use_relbias:
+            scores_base = scores_base + self.rel_bias
+        # Masked attention branch (line-of-sight)
+        scores_masked = scores_base.masked_fill(self.attn_mask == 0, float('-inf'))
+        attn_masked = F.softmax(scores_masked, dim=-1)
+        attn_masked = self.dropout(attn_masked)
+        out_masked = torch.matmul(attn_masked, v)
+        # Unmasked branch for knight-like/tactical patterns
+        if self.unmasked_mix > 0.0 and self.unmasked_mix < 1.0:
+            attn_unmasked = F.softmax(scores_base, dim=-1)
+            attn_unmasked = self.dropout(attn_unmasked)
+            out_unmasked = torch.matmul(attn_unmasked, v)
+            # Blend outputs: majority masked by default (1 - unmasked_mix is masked weight)
+            blend = float(1.0 - self.unmasked_mix)
+            out = blend * out_masked + (1.0 - blend) * out_unmasked
+        elif self.unmasked_mix >= 1.0:
+            out = out_masked
+        else:
+            # Only unmasked
+            attn_unmasked = F.softmax(scores_base, dim=-1)
+            attn_unmasked = self.dropout(attn_unmasked)
+            out = torch.matmul(attn_unmasked, v)
 
         # Merge heads -> (B, N, C) -> (B, C, H, W)
         # Ensure tensors are contiguous before view operations
@@ -159,9 +177,12 @@ class NetConfig:
     se_ratio: float = 0.25
     attention: bool = True  # Enable attention mechanisms
     attention_heads: int = 8
+    attention_unmasked_mix: float = 0.2
+    attention_relbias: bool = True
     chess_features: bool = True  # Enable chess-specific features
     self_supervised: bool = True  # Enable self-supervised learning
     piece_square_tables: bool = True  # Enable piece-square table features
+    wdl: bool = False  # Optional WDL auxiliary head
 
 
 class PolicyValueNet(nn.Module):
@@ -191,7 +212,7 @@ class PolicyValueNet(nn.Module):
             
             # Add attention every few blocks for efficiency
             if cfg.attention and i % 3 == 2:  # Every 3rd block
-                tower_layers.append(ChessAttention(C, cfg.attention_heads))
+                tower_layers.append(ChessAttention(C, cfg.attention_heads, unmasked_mix=cfg.attention_unmasked_mix, relbias=getattr(cfg, 'attention_relbias', False)))
         
         self.tower = nn.Sequential(*tower_layers)
         
@@ -228,6 +249,18 @@ class PolicyValueNet(nn.Module):
         self.value_fc1 = nn.Linear(64 * 8 * 8, C)
         self.value_fc2 = nn.Linear(C, C // 2)
         self.value_fc3 = nn.Linear(C // 2, 1)
+
+        # Optional WDL auxiliary head
+        if cfg.wdl:
+            self.wdl_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),  # (B, C, 1, 1)
+                nn.Flatten(),             # (B, C)
+                nn.Linear(C, max(32, C // 2)),
+                nn.ReLU(inplace=True),
+                nn.Linear(max(32, C // 2), 3),  # [loss, draw, win]
+            )
+        else:
+            self.wdl_head = None
         
         # Initialize weights properly for training
         self._init_weights()
@@ -257,14 +290,22 @@ class PolicyValueNet(nn.Module):
             self.policy_conv_out.weight.data *= 1.5
             self.policy_fc.weight.data *= 1.5
 
-    def forward(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        # WDL head init
+        if self.wdl_head is not None:
+            for m in self.wdl_head.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight, gain=1.0)
+                    nn.init.constant_(m.bias, 0.0)
+
+    def _forward_features(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        
-        # Apply chess-specific features if enabled
         if self.chess_features is not None:
             x = self.chess_features(x)
-        
         x = self.tower(x)
+        return x
+
+    def forward(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        x = self._forward_features(x)
 
         # Policy head branches combined
         pfeat = self.policy_head(x)
@@ -291,6 +332,31 @@ class PolicyValueNet(nn.Module):
         if return_ssl:
             return p, v.squeeze(-1), ssl_output
         return p, v.squeeze(-1)
+
+    def forward_with_features(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        feats = self._forward_features(x)
+        # Policy
+        pfeat = self.policy_head(feats)
+        p_conv = self.policy_conv_out(pfeat)
+        p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
+        p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
+        p = p_conv + p_fc
+        # Value
+        v = self.value_head(feats)
+        v = v.contiguous().reshape(v.size(0), -1)
+        v = F.relu(self.value_fc1(v), inplace=True)
+        v = F.relu(self.value_fc2(v), inplace=True)
+        v = torch.tanh(self.value_fc3(v))
+        # SSL
+        ssl_output = None
+        if self.ssl_head is not None and return_ssl:
+            ssl_output = self.ssl_head(feats)
+        return p, v.squeeze(-1), ssl_output, feats
+
+    def compute_wdl_logits(self, feats: torch.Tensor) -> Optional[torch.Tensor]:
+        if self.wdl_head is None:
+            return None
+        return self.wdl_head(feats)
 
     @staticmethod
     def from_config(d: dict) -> "PolicyValueNet":
@@ -391,18 +457,3 @@ class PolicyValueNet(nn.Module):
         
         # Convert to class indices for cross-entropy
         return torch.argmax(target, dim=1)
-    
-    def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute enhanced self-supervised learning loss with multiple tasks."""
-        if self.ssl_head is None:
-            raise RuntimeError("SSL head not enabled in model configuration")
-        
-        _, _, ssl_output = self.forward(x, return_ssl=True)
-        
-        # Piece presence prediction loss
-        presence_loss = F.binary_cross_entropy(ssl_output, targets['piece_presence'], reduction='mean')
-        
-        # Add other SSL tasks here as needed
-        total_loss = presence_loss
-        
-        return total_loss

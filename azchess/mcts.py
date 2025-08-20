@@ -46,6 +46,7 @@ class MCTSConfig:
     cpuct: float = 2.5
     dirichlet_alpha: float = 0.3
     dirichlet_frac: float = 0.25
+    dirichlet_plies: int = 16
     tt_capacity: int = 2_000_000
     selection_jitter: float = 0.01
     tt_cleanup_frequency: int = 5000
@@ -54,6 +55,17 @@ class MCTSConfig:
     fpu: float = 0.5  # First-Play Urgency
     parent_q_init: bool = True # Initialize child Q with parent Q
     draw_penalty: float = -0.1  # Slight draw penalty to reduce draws
+    virtual_loss: float = 1.0  # Penalty applied to in-flight edges during batched selection
+    # Optional cpuct schedule by ply (linear from start to end over cpuct_plies)
+    cpuct_start: Optional[float] = None
+    cpuct_end: Optional[float] = None
+    cpuct_plies: int = 0
+    # If True, NN value is from absolute White's perspective and must be flipped
+    # to side-to-move perspective for MCTS/backprop/resign logic
+    value_from_white: bool = False
+    # Child pruning
+    max_children: int = 0            # keep top-K children by prior; 0 disables
+    min_child_prior: float = 0.0     # drop children with prior < threshold after normalization
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -104,9 +116,9 @@ class Node:
             max_entropy = np.log(len(legal_moves))
             entropy_ratio = policy_entropy / max_entropy
             
-            # If policy is too uniform, add noise to encourage exploration
+            # If policy is too uniform, add noise to encourage exploration (quiet log)
             if entropy_ratio > 0.9:
-                logger.warning(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
+                logger.debug(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
                 # Add small random noise to break uniformity
                 noise = np.random.normal(0, 0.1, probs.shape)
                 probs = probs + noise
@@ -183,6 +195,7 @@ class MCTS:
             root = Node()
             p_logits, v = self._infer(board)
             root.expand(board, p_logits)
+            self._prune_children(root)
             self._tt_put(board._transposition_key(), root)
         else:
             # Use cached value if root is already evaluated
@@ -199,10 +212,23 @@ class MCTS:
         while sims_run_this_turn < sims_to_run:
             batch_size = min(self.cfg.batch_size, sims_to_run - sims_run_this_turn)
             leaves: List[Tuple[Node, List[Node], chess.Board]] = []
+            selected_leaf_keys = set()
+            # Track in-flight edges within this batch to implement virtual loss
+            inflight_counts: Dict[Node, int] = {}
             
             # 1. Select leaves to expand
             for i in range(batch_size):
-                node, path, leaf_board = self._select(board.copy(), root)
+                # Try to pick distinct leaves within a batch to improve diversity
+                attempts = 0
+                while True:
+                    node, path, leaf_board = self._select(
+                        board.copy(), root, inflight_counts=inflight_counts, base_ply=(ply or 0)
+                    )
+                    leaf_key = leaf_board._transposition_key()
+                    if leaf_board.is_game_over() or (leaf_key not in selected_leaf_keys) or attempts >= 2:
+                        selected_leaf_keys.add(leaf_key)
+                        break
+                    attempts += 1
                 if leaf_board.is_game_over():
                     v_leaf = self._terminal_value(leaf_board)
                     self._backpropagate(path, v_leaf)
@@ -222,6 +248,7 @@ class MCTS:
                 p_logits, v_leaf = p_list[i], v_list[i]
                 if not node.is_expanded():
                     node.expand(leaf_board, p_logits)
+                    self._prune_children(node)
                     self._register_children_in_tt(node, leaf_board)
                 
                 self._backpropagate(path, v_leaf)
@@ -229,12 +256,9 @@ class MCTS:
 
         # Preserve root.n from backpropagations; do not overwrite with sims_run_this_turn
         
-        # Debug: Log what happened during MCTS
+        # Debug: Log what happened during MCTS (quiet)
         if sims_run_this_turn == 0:
-            logger.warning(f"MCTS ran {sims_to_run} simulations but no simulations completed!")
-            logger.warning(f"Root children: {len(root.children)}")
-            for move, child in root.children.items():
-                logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
+            logger.debug(f"MCTS ran {sims_to_run} simulations but no simulations completed! root_children={len(root.children)}")
         
         # Properly handle unvisited root children without corrupting the tree
         # Only update children that were actually visited during backpropagation
@@ -251,6 +275,28 @@ class MCTS:
         # Expose last root for external inspection (e.g., debug prints)
         self._last_root = root
         return visit_counts, policy, float(v)
+
+    def _prune_children(self, node: "Node") -> None:
+        """Prune low-prior children to limit branching, if configured.
+
+        - Keep only top-K by prior if max_children > 0
+        - Drop children with prior < min_child_prior
+        """
+        try:
+            if not node.children:
+                return
+            items = list(node.children.items())
+            # Drop by min prior first
+            if self.cfg.min_child_prior > 0.0:
+                items = [(m, c) for (m, c) in items if float(c.prior) >= float(self.cfg.min_child_prior)]
+            # Keep top-K by prior
+            if self.cfg.max_children and self.cfg.max_children > 0 and len(items) > self.cfg.max_children:
+                items.sort(key=lambda mc: float(mc[1].prior), reverse=True)
+                items = items[: int(self.cfg.max_children)]
+            # Rebuild dict if changed
+            node.children = {m: c for (m, c) in items}
+        except Exception:
+            pass
 
     def _policy_from_root(self, root: Node, board: chess.Board) -> np.ndarray:
         pi = np.zeros(4672, dtype=np.float32)
@@ -269,7 +315,7 @@ class MCTS:
                     pi[idx] = uniform_prob
         return pi
 
-    def _select(self, board: chess.Board, root: Node) -> Tuple[Node, List[Node], chess.Board]:
+    def _select(self, board: chess.Board, root: Node, inflight_counts: Optional[Dict[Node, int]] = None, base_ply: int = 0) -> Tuple[Node, List[Node], chess.Board]:
         node = root
         path = [root]
         
@@ -290,8 +336,14 @@ class MCTS:
                 else:
                     q = child.q
 
-                u = self.cfg.cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
+                # Effective cpuct can be scheduled by ply (linear)
+                depth = max(0, len(path) - 1)
+                eff_cpuct = self._cpuct_at(base_ply + depth)
+                u = eff_cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
                 score = q + u
+                # Apply virtual loss penalty if this edge is in-flight in current batch
+                if inflight_counts is not None and self.cfg.virtual_loss > 0.0:
+                    score -= float(inflight_counts.get(child, 0)) * float(self.cfg.virtual_loss)
                 
                 # Always add small jitter to break ties when UCB scores are identical
                 if self.cfg.selection_jitter > 0:
@@ -322,8 +374,23 @@ class MCTS:
             board.push(best_child.move)
             node = self._tt_get(board._transposition_key()) or best_child
             path.append(node)
+            # Mark this edge as in-flight for the batch to diversify subsequent selections
+            if inflight_counts is not None:
+                inflight_counts[best_child] = inflight_counts.get(best_child, 0) + 1
 
         return node, path, board
+
+    def _cpuct_at(self, ply: int) -> float:
+        try:
+            start = self.cfg.cpuct_start
+            end = self.cfg.cpuct_end
+            span = int(self.cfg.cpuct_plies)
+            if start is None or end is None or span <= 0:
+                return float(self.cfg.cpuct)
+            t = min(max(ply, 0), span) / float(span)
+            return float(start) + (float(end) - float(start)) * t
+        except Exception:
+            return float(self.cfg.cpuct)
 
     def _backpropagate(self, path: List[Node], value: float) -> None:
         v = max(-1.0, min(1.0, float(value)))
@@ -356,6 +423,9 @@ class MCTS:
             p_b, v_b = self.inference_backend.infer_np(arr)
             p_np = p_b[0]
             v_np = float(v_b[0])
+            # Adjust value orientation if model outputs from White's perspective
+            if self.cfg.value_from_white and board.turn == chess.BLACK:
+                v_np = -v_np
             out = (p_np, v_np)
             self.nn_cache.put(key, out)
             return out
@@ -375,6 +445,9 @@ class MCTS:
         # Convert outputs to float32 numpy arrays
         p_np = p[0].detach().cpu().to(torch.float32).numpy() if self.inference_backend is None else p_np
         v_np = float(v.item()) if self.inference_backend is None else v_np
+        # Adjust value orientation if model outputs from White's perspective
+        if self.inference_backend is None and self.cfg.value_from_white and board.turn == chess.BLACK:
+            v_np = -v_np
         
         # Validate outputs and handle invalid cases properly
         if np.any(np.isnan(p_np)) or np.any(np.isinf(p_np)):
@@ -411,6 +484,11 @@ class MCTS:
             arr = np.stack([encode_board(b) for b in to_eval_boards], axis=0)
             if self.inference_backend is not None:
                 p_np, v_np = self.inference_backend.infer_np(arr)
+                # Flip values for black-to-move if needed
+                if self.cfg.value_from_white:
+                    for j, b in enumerate(to_eval_boards):
+                        if b.turn == chess.BLACK:
+                            v_np[j] = -float(v_np[j])
             else:
                 x = torch.from_numpy(arr).to(self.device)
                 try:
@@ -426,6 +504,10 @@ class MCTS:
 
                 p_np = p.detach().cpu().to(torch.float32).numpy()
                 v_np = v.detach().cpu().to(torch.float32).numpy().flatten()
+                if self.cfg.value_from_white:
+                    for j, b in enumerate(to_eval_boards):
+                        if b.turn == chess.BLACK:
+                            v_np[j] = -float(v_np[j])
             
             for j, original_idx in enumerate(to_eval_indices):
                 key = to_eval_boards[j]._transposition_key()
@@ -484,15 +566,25 @@ class MCTS:
         return False
     
     def _cleanup_tt(self) -> None:
-        """Clean up transposition table and tree branches."""
-        # Clean up every 500 simulations instead of 1000
-        if self.simulations_run - self._last_cleanup >= 500:
-            self._last_cleanup = self.simulations_run
-            self._cleanup_deep_branches(max_depth=30)  # Reduced from 50
-            while len(self.tt) > self.cfg.tt_capacity * 0.6:  # More aggressive TT cleanup
-                self.tt.popitem(last=False)
-        
-        # Also check memory pressure on every cleanup
+        """Lightweight TT cleanup: favor LRU trimming; avoid deep recursion.
+
+        Rationale: deep branch recursion can be very heavy under multiprocessing and
+        large trees, causing workers to stall or appear unresponsive. We keep cleanup
+        cheap and frequent: trim LRU entries to ~80% capacity and check memory pressure.
+        """
+        if self.simulations_run - self._last_cleanup < 500:
+            return
+        self._last_cleanup = self.simulations_run
+        # Trim LRU to 80% of capacity if exceeded
+        target = int(self.cfg.tt_capacity * 0.8)
+        if len(self.tt) > target:
+            excess = len(self.tt) - target
+            for _ in range(excess):
+                try:
+                    self.tt.popitem(last=False)
+                except Exception:
+                    break
+        # Check memory pressure opportunistically
         self._check_memory_pressure()
     
     def _cleanup_deep_branches(self, max_depth: int = 30):
@@ -522,12 +614,17 @@ class MCTS:
         self._in_bulk_put = True
         try:
             for m, child in node.children.items():
-                b2 = board.copy(); b2.push(m)
+                # Avoid copying move stack to reduce overhead
+                try:
+                    b2 = board.copy(stack=False)
+                except TypeError:
+                    # Fallback for older python-chess versions without stack parameter
+                    b2 = board.copy()
+                b2.push(m)
                 self._tt_put(b2._transposition_key(), child)
         finally:
             self._in_bulk_put = prev
-        # Single cleanup after bulk insert
-        self._cleanup_tt()
+        # Do not run heavy cleanup here; periodic cleanup will be triggered by _tt_put
     
     def _generate_prior_based_policy(self, board: chess.Board) -> np.ndarray:
         """Generate fallback policy based on move priors when NN output is invalid."""
@@ -554,10 +651,6 @@ class MCTS:
             for move in legal_moves:
                 policy[move_to_index(board, move)] = 1.0 / len(legal_moves)
         return policy.astype(np.float32, copy=False)
-        if total_weight > 0:
-            policy /= total_weight
-        
-        return policy
     
     def _get_move_weight(self, board: chess.Board, move: chess.Move) -> float:
         """Calculate move weight based on piece value and move characteristics."""

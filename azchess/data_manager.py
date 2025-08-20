@@ -157,12 +157,34 @@ class DataManager:
         # Use filesystem-safe timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"selfplay_w{worker_id}_g{game_id}_{timestamp}.npz"
+        # Ensure directory exists (defensive; created in __init__ but workers may run in fresh procs)
+        self.selfplay_dir.mkdir(parents=True, exist_ok=True)
         filepath = self.selfplay_dir / filename
         
-        # Save atomically: write to temp then move
-        tmp_path = filepath.with_suffix('.npz.tmp')
-        np.savez_compressed(tmp_path, **data)
-        tmp_path.replace(filepath)
+        # Save atomically with retries: write to temp then replace
+        attempts = 0
+        while True:
+            try:
+                # Create temporary file in the same directory and write to its handle
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(dir=str(self.selfplay_dir), suffix='.npz.tmp', delete=False) as tf:
+                    tmp_path = Path(tf.name)
+                    np.savez_compressed(tf, **data)  # write to the open handle to avoid suffix issues
+                os.replace(tmp_path, filepath)
+                break
+            except Exception as e:
+                attempts += 1
+                if attempts >= 3:
+                    logger.error(f"Failed to save selfplay data after {attempts} attempts: {e}")
+                    raise
+                logger.warning(f"Save attempt {attempts} failed, retrying: {e}")
+                time.sleep(0.1 * attempts)
+                # Clean up failed temp file if it exists
+                try:
+                    if 'tmp_path' in locals() and Path(tmp_path).exists():
+                        Path(tmp_path).unlink()
+                except Exception:
+                    pass
         
         # Calculate metadata
         file_size = filepath.stat().st_size
@@ -181,10 +203,28 @@ class DataManager:
         filename = f"replay_{shard_id:06d}_{timestamp}.npz"
         filepath = self.replays_dir / filename
         
-        # Save atomically
-        tmp_path = filepath.with_suffix('.npz.tmp')
-        np.savez_compressed(tmp_path, **data)
-        tmp_path.replace(filepath)
+        # Save atomically with retries
+        attempts = 0
+        while True:
+            try:
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(dir=str(self.replays_dir), suffix='.npz.tmp', delete=False) as tf:
+                    tmp_path = Path(tf.name)
+                    np.savez_compressed(tf, **data)
+                os.replace(tmp_path, filepath)
+                break
+            except Exception as e:
+                attempts += 1
+                if attempts >= 3:
+                    logger.error(f"Failed to save training data after {attempts} attempts: {e}")
+                    raise
+                logger.warning(f"Save attempt {attempts} failed, retrying: {e}")
+                time.sleep(0.1 * attempts)
+                try:
+                    if 'tmp_path' in locals() and Path(tmp_path).exists():
+                        Path(tmp_path).unlink()
+                except Exception:
+                    pass
         
         # Calculate metadata
         file_size = filepath.stat().st_size
@@ -585,11 +625,40 @@ class DataManager:
                 next_idx = len(existing)
 
         buf_s, buf_pi, buf_z = [], [], []
+        # Aggregates for dashboard
+        games_count = 0
+        sum_moves = 0
+        sum_entropy = 0.0
+        sum_avg_sims = 0.0
+        resigned_count = 0
+        draw_count = 0
         count = 0
         for f in sp_files:
             try:
                 with np.load(f) as data:
                     s, pi, z = data["s"], data["pi"], data["z"]
+                    # Collect per-game metadata if present (each file represents one game)
+                    games_count += 1
+                    try:
+                        sum_moves += int(data.get("meta_moves", np.array([len(s)], dtype=np.int32))[0])
+                    except Exception:
+                        sum_moves += int(len(s))
+                    try:
+                        resigned_count += int(data.get("meta_resigned", np.array([0], dtype=np.int8))[0])
+                    except Exception:
+                        pass
+                    try:
+                        draw_count += int(data.get("meta_draw", np.array([0], dtype=np.int8))[0])
+                    except Exception:
+                        pass
+                    try:
+                        sum_entropy += float(data.get("meta_avg_policy_entropy", np.array([0.0], dtype=np.float32))[0])
+                    except Exception:
+                        pass
+                    try:
+                        sum_avg_sims += float(data.get("meta_avg_sims", np.array([0.0], dtype=np.float32))[0])
+                    except Exception:
+                        pass
                 buf_s.append(s)
                 buf_pi.append(pi)
                 buf_z.append(z)
@@ -628,6 +697,39 @@ class DataManager:
 
         # Enforce max shards (keep most recent)
         self.cleanup_old_shards(keep_recent=self.max_shards)
+
+        # Write dashboard CSV summary
+        try:
+            logs_dir = Path("logs")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = logs_dir / "selfplay_summary.csv"
+            header = (
+                "timestamp,processed_files,games,avg_moves,draw_rate,resign_rate,avg_policy_entropy,avg_sims\n"
+            )
+            if not csv_path.exists():
+                csv_path.write_text(header)
+            processed_files = len(sp_files)
+            if games_count > 0:
+                avg_moves = sum_moves / float(games_count)
+                draw_rate = draw_count / float(games_count)
+                resign_rate = resigned_count / float(games_count)
+                avg_entropy = sum_entropy / float(games_count)
+                avg_sims = sum_avg_sims / float(games_count)
+            else:
+                avg_moves = 0.0
+                draw_rate = 0.0
+                resign_rate = 0.0
+                avg_entropy = 0.0
+                avg_sims = 0.0
+            line = f"{datetime.now().isoformat()},{processed_files},{games_count},{avg_moves:.3f},{draw_rate:.3f},{resign_rate:.3f},{avg_entropy:.3f},{avg_sims:.3f}\n"
+            with csv_path.open('a') as fcsv:
+                fcsv.write(line)
+            logger.info(
+                f"Self-play summary: files={processed_files} games={games_count} avg_moves={avg_moves:.1f} "
+                f"draw={draw_rate:.1%} resign={resign_rate:.1%} entropy={avg_entropy:.3f} avg_sims={avg_sims:.1f}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write selfplay summary: {e}")
 
     def import_replay_dir(self, src_dir: str, source: str = "external", move_files: bool = False) -> int:
         """Import existing NPZ shards from a directory into the replay buffer and DB.
@@ -809,62 +911,103 @@ class DataManager:
         conn.close()
         return count
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Matrix0 Data Manager CLI")
-    parser.add_argument("--base-dir", type=str, default="data", help="Base data directory")
-    parser.add_argument("--action", type=str, required=True,
-                        choices=["stats", "validate", "quarantine", "compact", "backup", "import"],
-                        help="Action to perform")
-    parser.add_argument("--path", type=str, default=None, help="Path for import action")
-    args = parser.parse_args()
+    def validate_all_data_sources(self) -> Dict[str, Dict[str, any]]:
+        """Validate all data sources and return comprehensive status."""
+        validation_results = {}
+        
+        # Validate selfplay data
+        try:
+            selfplay_files = list(self.selfplay_dir.glob("*.npz"))
+            validation_results['selfplay'] = {
+                'count': len(selfplay_files),
+                'total_size_mb': sum(f.stat().st_size for f in selfplay_files) / (1024 * 1024),
+                'status': 'ok' if selfplay_files else 'empty'
+            }
+        except Exception as e:
+            validation_results['selfplay'] = {'status': 'error', 'error': str(e)}
+        
+        # Validate replay data
+        try:
+            replay_files = list(self.replays_dir.glob("*.npz"))
+            validation_results['replays'] = {
+                'count': len(replay_files),
+                'total_size_mb': sum(f.stat().st_size for f in replay_files) / (1024 * 1024),
+                'status': 'ok' if replay_files else 'empty'
+            }
+        except Exception as e:
+            validation_results['replays'] = {'status': 'error', 'error': str(e)}
+        
+        # Validate tactical data
+        try:
+            tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
+            if tactical_path.exists():
+                with np.load(tactical_path) as data:
+                    validation_results['tactical'] = {
+                        'count': len(data['positions']),
+                        'size_mb': tactical_path.stat().st_size / (1024 * 1024),
+                        'keys': list(data.keys()),
+                        'status': 'ok'
+                    }
+            else:
+                validation_results['tactical'] = {'status': 'missing'}
+        except Exception as e:
+            validation_results['tactical'] = {'status': 'error', 'error': str(e)}
+        
+        # Validate openings data
+        try:
+            openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
+            if openings_path.exists():
+                with np.load(openings_path) as data:
+                    validation_results['openings'] = {
+                        'count': len(data['positions']),
+                        'size_mb': openings_path.stat().st_size / (1024 * 1024),
+                        'keys': list(data.keys()),
+                        'status': 'ok'
+                    }
+            else:
+                validation_results['openings'] = {'status': 'missing'}
+        except Exception as e:
+            validation_results['openings'] = {'status': 'error', 'error': str(e)}
+        
+        # Validate lichess data
+        try:
+            lichess_dir = Path(self.base_dir) / "lichess"
+            lichess_files = list(lichess_dir.glob("*.npz"))
+            if lichess_files:
+                # Sample one file to check format
+                sample_data = np.load(lichess_files[0])
+                validation_results['lichess'] = {
+                    'count': len(lichess_files),
+                    'total_size_mb': sum(f.stat().st_size for f in lichess_files) / (1024 * 1024),
+                    'sample_keys': list(sample_data.keys()),
+                    'status': 'ok'
+                }
+            else:
+                validation_results['lichess'] = {'status': 'empty'}
+        except Exception as e:
+            validation_results['lichess'] = {'status': 'error', 'error': str(e)}
+        
+        return validation_results
 
-    dm = DataManager(base_dir=args.base_dir)
-
-    if args.action == "stats":
-        stats = dm.get_stats()
-        print(json.dumps(asdict(stats), indent=2))
-    elif args.action == "validate":
-        valid, corrupted = dm.validate_data_integrity()
-        print(f"Validation complete. Valid shards: {valid}, Corrupted shards: {corrupted}")
-    elif args.action == "quarantine":
-        count = dm.quarantine_corrupted_shards()
-        print(f"Quarantined {count} corrupted shards.")
-    elif args.action == "compact":
-        dm.compact_selfplay_to_replay()
-        stats = dm.get_stats()
-        print(json.dumps(asdict(stats), indent=2))
-    elif args.action == "backup":
-        path = dm.create_backup()
-        print(json.dumps({"backup": path}, indent=2))
-    elif args.action == "import":
-        if not args.path:
-            raise SystemExit("--path required for import action")
-        n = dm.import_replay_dir(args.path, source="external", move_files=False)
-        print(json.dumps({"imported": n, "from": args.path}, indent=2))
-
-    def quarantine_corrupted_shards(self, quarantine_dir: str | None = None) -> int:
-        """Move corrupted shards to a quarantine directory and remove their DB records.
-
-        Returns number of files quarantined.
-        """
-        qdir = Path(quarantine_dir or (self.backups_dir / "quarantine"))
-        qdir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT path FROM shards WHERE corrupted = TRUE")
-        rows = cursor.fetchall()
-        count = 0
-        for (pstr,) in rows:
-            p = Path(pstr)
-            try:
-                if p.exists():
-                    p.rename(qdir / p.name)
-                self._remove_shard_record(pstr)
-                count += 1
-            except Exception:
-                continue
-        conn.close()
-        return count
+    def get_data_summary(self) -> str:
+        """Get a human-readable summary of all data sources."""
+        validation = self.validate_all_data_sources()
+        summary = []
+        
+        for source, info in validation.items():
+            if info['status'] == 'ok':
+                if 'count' in info:
+                    summary.append(f"{source}: {info['count']} samples")
+                else:
+                    summary.append(f"{source}: available")
+            elif info['status'] == 'empty':
+                summary.append(f"{source}: empty")
+            elif info['status'] == 'missing':
+                summary.append(f"{source}: missing")
+            else:
+                summary.append(f"{source}: error - {info.get('error', 'unknown')}")
+        
+        return " | ".join(summary)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Matrix0 Data Manager CLI")

@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import json
+
+
+K_DEFAULT = 20.0
+
+
+def expected_score(ra: float, rb: float) -> float:
+    return 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+
+
+def update_elo(ra: float, rb: float, sa: float, k: float = K_DEFAULT) -> tuple[float, float]:
+    """Update Elo ratings for A and B.
+
+    ra, rb: pre-match ratings
+    sa: average score for A over games (1 win, 0.5 draw, 0 loss)
+    """
+    ea = expected_score(ra, rb)
+    delta = k * (sa - ea)
+    return ra + delta, rb - delta
+
+
+@dataclass
+class EloBook:
+    path: Path
+
+    def load(self) -> dict:
+        if self.path.exists():
+            try:
+                return json.loads(self.path.read_text())
+            except Exception:
+                pass
+        return {"best": 1500.0}
+
+    def save(self, data: dict) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
+

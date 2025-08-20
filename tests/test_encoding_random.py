@@ -1,7 +1,7 @@
 import chess
 import numpy as np
 
-from azchess.encoding import move_to_index
+from azchess.encoding import move_to_index, POLICY_SHAPE, build_horizontal_flip_permutation
 
 
 def random_board(plies: int = 20) -> chess.Board:
@@ -28,4 +28,14 @@ def test_random_move_indices_unique():
         assert len(set(idxs)) == len(idxs)
         for i in idxs:
             assert 0 <= i < 64 * 73
+
+
+def test_horizontal_flip_permutation_involution():
+    """Applying the permutation twice should return identity."""
+    perm = build_horizontal_flip_permutation()
+    assert perm.shape[0] == POLICY_SHAPE[2]
+    pi = np.arange(POLICY_SHAPE[2], dtype=np.int32)
+    pi1 = pi[perm]
+    pi2 = pi1[perm]
+    assert np.array_equal(pi, pi2)
 

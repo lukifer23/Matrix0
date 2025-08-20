@@ -43,8 +43,16 @@ def run_inference_server(
         model = PolicyValueNet.from_config(model_cfg).to(device)
         if model_state_dict:
             logger.info(f"Loading model from state_dict with {len(model_state_dict)} parameters")
-            model.load_state_dict(model_state_dict)
-            logger.info(f"Model loaded from state_dict successfully.")
+            try:
+                missing, unexpected = model.load_state_dict(model_state_dict, strict=False)
+                if missing:
+                    logger.warning(f"Missing keys during load (initialized from defaults): {sorted(list(missing))[:10]}{' ...' if len(missing)>10 else ''}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys during load (ignored): {sorted(list(unexpected))[:10]}{' ...' if len(unexpected)>10 else ''}")
+                logger.info("Model loaded from state_dict successfully (non-strict).")
+            except Exception as e:
+                logger.error(f"Strict load failed: {e}; attempting non-strict fallback.")
+                model.load_state_dict(model_state_dict, strict=False)
         else:
             logger.warning("No model state_dict provided, using random weights.")
         model.eval()
@@ -60,7 +68,8 @@ def run_inference_server(
         logger.debug("Inference server entering main processing loop.")
         while not stop_event.is_set():
             # Wait for any worker to signal a request
-            ready_workers = [event.wait(0.1) for event in worker_events] # Short timeout to check stop_event
+            # Poll workers with short timeout; keep loop responsive to stop_event
+            ready_workers = [event.wait(0.05) for event in worker_events]
             
             batch_indices = [i for i, is_ready in enumerate(ready_workers) if is_ready]
             if not batch_indices:
@@ -77,6 +86,12 @@ def run_inference_server(
                 if batch_size <= 0:
                     # Spurious wakeup or protocol error; ignore
                     continue
+                # Clamp to max capacity to avoid overflow
+                max_bs = res['request_tensor'].shape[0]
+                if batch_size > max_bs:
+                    logger.warning(f"Worker {worker_id} batch_size {batch_size} > capacity {max_bs}; clamping")
+                    batch_size = max_bs
+                    res['batch_size_tensor'][0] = max_bs
                 tensors_to_process.append(res['request_tensor'][:batch_size])
                 batch_sizes[worker_id] = batch_size
                 res['request_event'].clear() # Clear event after reading
@@ -134,18 +149,32 @@ class InferenceClient:
         self.res['request_tensor'][:batch_size].copy_(torch.from_numpy(arr_batch))
         
         # Signal server
-        self.res['response_event'].clear()
+        try:
+            self.res['response_event'].clear()
+        except Exception:
+            pass
         self.logger.debug(f"Client sending {batch_size} inference requests.")
         self.res['request_event'].set()
         
-        # Wait for response
-        if not self.res['response_event'].wait(timeout=10.0):
-            self.logger.error("Inference request timed out after 10 seconds.")
-            raise TimeoutError("Inference timeout after 10 seconds")
-            
+        # Wait for response with a slightly more forgiving timeout
+        if not self.res['response_event'].wait(timeout=30.0):
+            self.logger.error("Inference request timed out after 30 seconds.")
+            # Reset batch size to avoid server reading stale size in the future
+            try:
+                self.res['batch_size_tensor'][0] = 0
+            except Exception:
+                pass
+            raise TimeoutError("Inference timeout after 30 seconds")
+        
         self.logger.debug("Client received inference response.")
         # Read response from shared memory
         policy = self.res['response_policy_tensor'][:batch_size].numpy()
         value = self.res['response_value_tensor'][:batch_size].numpy().flatten()
+        # Mark slot as consumed
+        try:
+            self.res['batch_size_tensor'][0] = 0
+            self.res['response_event'].clear()
+        except Exception:
+            pass
         
         return policy, value

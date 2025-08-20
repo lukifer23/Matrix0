@@ -287,3 +287,80 @@ def action_map() -> Tuple[Dict[chess.Move, int], List[Tuple[int, int, Optional[i
             rev.append((from_sq, from_sq, None))
     assert len(rev) == 4672
     return {}, rev
+
+
+def build_horizontal_flip_permutation() -> np.ndarray:
+    """Permutation indices (length 73) to horizontally mirror the 73 move-type channels.
+
+    Ordering (per from-square):
+      - 56 ray channels in blocks of 7 for directions: N,S,E,W,NE,NW,SE,SW
+      - 8 knight channels
+      - 9 underpromotion channels (3 pieces × 3 directions, side-relative)
+    """
+    perm = list(range(73))
+    # Swap E<->W; NE<->NW; SE<->SW for each step (0..6)
+    for step in range(7):
+        base = step
+        # E (2) <-> W (3)
+        i_e = 2 * 7 + base
+        i_w = 3 * 7 + base
+        perm[i_e], perm[i_w] = perm[i_w], perm[i_e]
+        # NE (4) <-> NW (5)
+        i_ne = 4 * 7 + base
+        i_nw = 5 * 7 + base
+        perm[i_ne], perm[i_nw] = perm[i_nw], perm[i_ne]
+        # SE (6) <-> SW (7)
+        i_se = 6 * 7 + base
+        i_sw = 7 * 7 + base
+        perm[i_se], perm[i_sw] = perm[i_sw], perm[i_se]
+    # Knights swap mirrored pairs: (56<->57), (58<->59), (60<->61), (62<->63)
+    for off in (0, 2, 4, 6):
+        a = 56 + off
+        b = 56 + off + 1
+        perm[a], perm[b] = perm[b], perm[a]
+    # Underpromotions: swap right/left capture per piece block: (65<->66), (68<->69), (71<->72)
+    for piece_block in (64, 67, 70):
+        a = piece_block + 1
+        b = piece_block + 2
+        perm[a], perm[b] = perm[b], perm[a]
+    return np.array(perm, dtype=np.int64)
+
+
+def build_rotate180_permutation() -> np.ndarray:
+    """Permutation indices (length 73) to rotate the 73 move-type channels by 180 degrees.
+
+    Mapping:
+      - Rays: N<->S, E<->W, NE<->SW, NW<->SE (per step)
+      - Knights: (-2,-1)<->(2,1), (-2,1)<->(2,-1), (-1,-2)<->(1,2), (-1,2)<->(1,-2)
+      - Underpromotions: forward stays forward; left<->right per piece block
+    """
+    perm = list(range(73))
+    # Rays swap pairs for each step
+    for step in range(7):
+        base = step
+        # N (0) <-> S (1)
+        i_n = 0 * 7 + base
+        i_s = 1 * 7 + base
+        perm[i_n], perm[i_s] = perm[i_s], perm[i_n]
+        # E (2) <-> W (3)
+        i_e = 2 * 7 + base
+        i_w = 3 * 7 + base
+        perm[i_e], perm[i_w] = perm[i_w], perm[i_e]
+        # NE (4) <-> SW (7)
+        i_ne = 4 * 7 + base
+        i_sw = 7 * 7 + base
+        perm[i_ne], perm[i_sw] = perm[i_sw], perm[i_ne]
+        # NW (5) <-> SE (6)
+        i_nw = 5 * 7 + base
+        i_se = 6 * 7 + base
+        perm[i_nw], perm[i_se] = perm[i_se], perm[i_nw]
+    # Knights swap as 180-rotated pairs
+    pairs = ((56, 63), (57, 62), (58, 61), (59, 60))
+    for a, b in pairs:
+        perm[a], perm[b] = perm[b], perm[a]
+    # Underpromotions: forward unchanged; swap left/right per piece block
+    for piece_block in (64, 67, 70):
+        a = piece_block + 1  # left
+        b = piece_block + 2  # right
+        perm[a], perm[b] = perm[b], perm[a]
+    return np.array(perm, dtype=np.int64)

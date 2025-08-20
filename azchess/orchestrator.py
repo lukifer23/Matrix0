@@ -18,6 +18,7 @@ from .selfplay.inference import run_inference_server, setup_shared_memory_for_wo
 from .config import select_device
 from train_comprehensive import train_from_config as train_main
 from .arena import play_match
+from .elo import EloBook, update_elo
 import gc
 import torch
 from .data_manager import DataManager
@@ -46,7 +47,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 grad_clip_override: float | None = None, promotion_threshold_override: float | None = None,
                 device_override: str | None = None, max_retries_override: int | None = None,
                 backoff_seconds_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None,
-                tui_mode: str = "bars"):
+                tui_mode: str = "bars", no_shared_infer: bool | None = None):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
     try:
@@ -125,6 +126,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         sp_cfg["selfplay"]["resign_threshold"] = float(resign_threshold_override)
     if max_game_length_override is not None:
         sp_cfg["selfplay"]["max_game_len"] = int(max_game_length_override)
+    if no_shared_infer is True:
+        sp_cfg["selfplay"]["shared_inference"] = False
     
     # Apply command-line overrides to training config
     if lr_override is not None:
@@ -193,6 +196,13 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         # Self-play
         def run_selfplay_once():
             logger.info("Starting self-play")
+            # Reduce MCTS verbosity during self-play to keep TUI readable
+            try:
+                import logging as _logging
+                _mcts_logger = __import__('logging').getLogger('azchess.mcts')
+                _mcts_logger.setLevel(_logging.ERROR)
+            except Exception:
+                pass
             q: Queue = Queue()
             procs: List[Process] = []
             use_table = (tui_mode == "table")
@@ -202,6 +212,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 for i in range(workers):
                     worker_tasks[i] = progress.add_task(f"W{i}", total=games_per_worker)
                 stats_task = progress.add_task("W/L/D: 0/0/0", total=1)
+                hb_task = progress.add_task("HB", total=1)
             ckpt_for_sp = str(best_ckpt) if best_ckpt.exists() else None
             logger.info(f"Checkpoint path for self-play: {ckpt_for_sp}")
             
@@ -268,7 +279,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 p.start()
                 procs.append(p)
 
-            stats = {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0, "avg_ms_per_move_sum": 0.0, "avg_sims_sum": 0.0, "games_with_metrics": 0}
+            stats = {"moves": 0, "time": 0.0, "win": 0, "loss": 0, "draw": 0, "res_w": 0, "res_b": 0, "avg_ms_per_move_sum": 0.0, "avg_sims_sum": 0.0, "games_with_metrics": 0}
             done = 0
             # For table mode, track per-worker stats
             per_worker = {i: {"done": 0, "avg_ms": 0.0, "avg_sims": 0.0, "moves": 0, "hb_ts": 0.0} for i in range(workers)}
@@ -276,6 +287,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             # Helper: monitor, respawn or adjust targets if workers die
             def _check_and_respawn_workers(last_progress_ts: float,
                                           per_worker_done: Dict[int, int]) -> None:
+                nonlocal infer_proc, stop_event
                 now = time.time()
                 for i, p in enumerate(list(procs)):
                     if p.is_alive():
@@ -290,6 +302,25 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     new_p = Process(target=selfplay_worker, args=(i, sp_cfg, ckpt_for_sp, remaining, q, sm_res))
                     new_p.start()
                     procs[i] = new_p
+                # If using shared inference, ensure server is still alive; restart if needed
+                if shared_infer_enabled and infer_proc is not None and not infer_proc.is_alive():
+                    logger.warning("Inference server died; restarting.")
+                    try:
+                        # Attempt clean stop signal (in case it is in zombie state)
+                        if stop_event is not None:
+                            stop_event.set()
+                    except Exception:
+                        pass
+                    # Start a new server process
+                    stop_event = MPEvent()
+                    server_ready_event = MPEvent()
+                    infer_proc = Process(
+                        target=run_inference_server,
+                        args=(dev, sp_cfg["model"], model_state_dict, stop_event, server_ready_event, shared_memory_resources)
+                    )
+                    infer_proc.start()
+                    if not server_ready_event.wait(timeout=60):
+                        logger.error("Restarted inference server failed to start in time.")
 
             try:
                 if use_table:
@@ -314,6 +345,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     table.add_column("Moves", justify="right")
                     table.add_column("HB(s)", justify="right")
                     table.add_column("W/L/D", justify="right")
+                    table.add_column("Res W/B", justify="right")
                     
                     with Live(table, refresh_per_second=4, transient=False) as live:
                         for i in range(workers):
@@ -328,8 +360,14 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 f"{w['avg_sims']:.1f}",
                                 f"{w['moves']}",
                                 f"{hb_age:.0f}",
-                                f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                                f"{stats['win']}/{stats['loss']}/{stats['draw']}",
+                                f"{stats['res_w']}/{stats['res_b']}"
                             )
+                        # Ensure initial rows render before first message
+                        try:
+                            live.refresh()
+                        except Exception:
+                            pass
                         
                         last_msg_time = time.time()
                         total_target = workers * games_per_worker
@@ -345,12 +383,17 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 continue
                             # Any message counts as progress for stall detection
                             last_msg_time = time.time()
-                            # Heartbeat updates
+                            # Heartbeat updates (update in-place; don't print new lines)
                             if isinstance(msg, dict) and msg.get("type") == "heartbeat":
                                 wid = int(msg.get("proc", -1))
                                 if wid in per_worker:
                                     per_worker[wid]["moves"] = int(msg.get("moves", 0))
                                     per_worker[wid]["hb_ts"] = time.perf_counter()
+                                try:
+                                    # bump a dummy heartbeat task to redraw if present
+                                    progress.update(hb_task, completed=0)
+                                except Exception:
+                                    pass
                                 # Refresh table to reflect heartbeat and memory
                                 new_table = Table(title=mem_title())
                                 new_table.add_column("Worker", justify="left")
@@ -360,6 +403,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 new_table.add_column("Moves", justify="right")
                                 new_table.add_column("HB(s)", justify="right")
                                 new_table.add_column("W/L/D", justify="right")
+                                new_table.add_column("Res W/B", justify="right")
                                 for i in range(workers):
                                     w = per_worker[i]
                                     hb_age = 0.0
@@ -372,7 +416,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                         f"{w['avg_sims']:.1f}",
                                         f"{w['moves']}",
                                         f"{hb_age:.0f}",
-                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}",
+                                        f"{stats['res_w']}/{stats['res_b']}"
                                     )
                                 live.update(new_table)
                                 continue
@@ -396,6 +441,12 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 if res > 0: stats["win"] += 1
                                 elif res < 0: stats["loss"] += 1
                                 else: stats["draw"] += 1
+                                if bool(msg.get("resigned", False)):
+                                    rc = msg.get("resigner", None)
+                                    if rc == 'W':
+                                        stats['res_w'] += 1
+                                    elif rc == 'B':
+                                        stats['res_b'] += 1
                                 # Rebuild table with memory and heartbeat info
                                 new_table = Table(title=mem_title())
                                 new_table.add_column("Worker", justify="left")
@@ -405,6 +456,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 new_table.add_column("Moves", justify="right")
                                 new_table.add_column("HB(s)", justify="right")
                                 new_table.add_column("W/L/D", justify="right")
+                                new_table.add_column("Res W/B", justify="right")
                                 
                                 for i in range(workers):
                                     w = per_worker[i]
@@ -418,7 +470,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                         f"{w['avg_sims']:.1f}",
                                         f"{w['moves']}",
                                         f"{hb_age:.0f}",
-                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}"
+                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}",
+                                        f"{stats['res_w']}/{stats['res_b']}"
                                     )
                                 
                                 live.update(new_table)
@@ -514,11 +567,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         except Exception as e:
             logger.warning(f"Loading extra replay dirs failed: {e}")
 
-        # Ingest external CSV datasets if present
-        try:
-            _ingest_external_csvs(cfg, dm)
-        except Exception as e:
-            logger.warning(f"External CSV ingest failed: {e}")
+        # External CSV ingestion disabled per request (sufficient NPZ shards available)
 
         # Ensure all common NPZ directories are registered with the DB
         try:
@@ -589,6 +638,28 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         )
         win_rate = score / float(max(1, eval_games))
         logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
+
+        # Update Elo ratings for bookkeeping
+        try:
+            elopath = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+            book = EloBook(elopath)
+            state = book.load()
+            r_best = float(state.get("best", 1500.0))
+            r_cand = float(state.get("candidate", 1500.0))
+            r_cand_new, r_best_new = update_elo(r_cand, r_best, win_rate)
+            state["best"] = r_best_new
+            state["candidate"] = r_cand_new
+            state.setdefault("history", []).append({
+                "ts": int(time.time()),
+                "candidate": r_cand_new,
+                "best": r_best_new,
+                "score": float(score),
+                "games": int(eval_games),
+            })
+            book.save(state)
+            logger.info(f"Elo updated: candidate={r_cand_new:.1f}, best={r_best_new:.1f}")
+        except Exception as e:
+            logger.warning(f"Elo update failed: {e}")
 
         # Promotion and top-k management
         if win_rate >= promote_thr:
@@ -664,6 +735,7 @@ def main():
     ap.add_argument("--max-retries", type=int, default=None, help="Override max retries for failed operations")
     ap.add_argument("--backoff-seconds", type=int, default=None, help="Override backoff delay between retries")
     ap.add_argument("--tui", type=str, default=None, choices=["bars", "table"], help="Progress UI: bars or table")
+    ap.add_argument("--no-shared-infer", action="store_true", help="Disable shared inference server (debug/compat)")
     
     args = ap.parse_args()
     
@@ -706,7 +778,8 @@ def main():
         backoff_seconds_override=args.backoff_seconds,
         doctor_fix=args.doctor_fix, 
         seed=args.seed,
-        tui_mode=chosen_tui
+        tui_mode=chosen_tui,
+        no_shared_infer=bool(args.no_shared_infer)
     )
 
 def _ingest_external_csvs(cfg: Config, dm: DataManager) -> None:

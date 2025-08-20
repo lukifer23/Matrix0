@@ -16,9 +16,11 @@ model:
   se_ratio: 0.25
   attention: true  # Enable attention mechanisms
   attention_heads: 8
+  attention_unmasked_mix: 0.2  # Blend some unmasked attention for knight/tactics
   chess_features: true  # Enable chess-specific features
   self_supervised: true  # Enable self-supervised learning
   piece_square_tables: true  # Enable piece-square table features
+  wdl: true  # Enable WDL auxiliary head
 
 engines:
   stockfish:
@@ -53,12 +55,14 @@ engines:
 selfplay:
   num_workers: 2
   shared_inference: true  # Re-enabled after fixing the startup issue
-  book_path: "data/openings/lichess_elite.pgn" # PGN opening book for self-play
+  book_path: "" # Temporarily disable opening book to test for bias
+  opening_random_plies: 0  # Temporarily disable random opening plies to test bias
   temperature_start: 1.0
   temperature_end: 0.2
   temperature_moves: 20  # Lowered to reduce midgame stochasticity
-  resign_threshold: -0.98
+  resign_threshold: -0.30  # Much less strict resignation threshold
   max_game_len: 140
+  min_resign_plies: 50  # Require 50 moves before resignation
   batch_size: 32
   buffer_dir: "data/selfplay"
   early_draw_enabled: false  # Disable heuristic early draw adjudication by default
@@ -78,56 +82,77 @@ training:
   batch_size: 512  # Increased for better GPU utilization
   policy_masking: true
   ssl_warmup_steps: 1000
+  wdl_weight: 0.2
+  wdl_margin: 0.25
+  compile: false
+  compile_mode: default
+  augment_rotate180: true
+  # Added keys to unify training config (were previously under eval)
+  ssl_weight: 0.1
+  policy_label_smoothing: 0.0
+  value_loss: mse  # mse|huber
+  huber_delta: 1.0
+  checkpoint_save_freq: 1000
+  validation_freq: 500
+  use_curriculum: true
+  curriculum_phases:
+    - name: "openings"
+      steps: 2000
+      description: "Opening mastery phase"
+    - name: "tactics"
+      steps: 5000
+      description: "Tactical training phase"
+    - name: "mixed"
+      steps: 10000
+      description: "Balanced training with self-play"
 
-mcts:
-  # Gate Dirichlet to first K plies to avoid midgame chaos
+# MCTS defaults (legacy keys kept under a distinct namespace to avoid collisions)
+mcts_defaults:
   dirichlet_plies: 16
 
-eval:
-  # Ensure eval MCTS pulls from consistent keys
+eval_legacy:
+  # Migrated keys retained for reference; active eval config is defined later.
   num_simulations: 200
   cpuct: 1.5
   dirichlet_alpha: 0.3
   tt_capacity: 200000
   selection_jitter: 0.0
   epochs: 1
-  steps_per_epoch: 10000  # Increased to 10,000 steps
+  steps_per_epoch: 10000
   lr: 0.001
   weight_decay: 1.0e-4
   ema_decay: 0.999
   grad_clip_norm: 1.0
   accum_steps: 1
-  warmup_steps: 500  # Learning rate warmup steps
+  warmup_steps: 500
   replay_dir: data/replays
   validation_dir: data/validation
   backup_dir: data/backups
   replay_shard_size: 16384
   replay_max_shards: 128
   checkpoint_dir: checkpoints
-  checkpoint_prefix: "enhanced"  # New prefix to avoid overwriting best.pt
+  checkpoint_prefix: "enhanced"
   log_dir: logs
-  external_engine_ratio: 0.3  # 30% games vs external engines
+  external_engine_ratio: 0.3
   engine_strength_curriculum: true
   adversarial_training: true
-  ssl_weight: 0.1  # Self-supervised learning weight
-  chess_features_weight: 0.05  # Chess-specific features weight
-  policy_label_smoothing: 0.0  # Label smoothing for policy targets
-  value_loss: mse  # mse|huber
+  ssl_weight: 0.1
+  chess_features_weight: 0.05
+  policy_label_smoothing: 0.0
+  value_loss: mse
   huber_delta: 1.0
-  checkpoint_save_freq: 1000  # Save every 1000 steps
-  validation_freq: 500  # Validate every 500 steps
-  
-  # NEW: Curriculum Learning Configuration
-  use_curriculum: true  # Enable curriculum learning
+  checkpoint_save_freq: 1000
+  validation_freq: 500
+  use_curriculum: true
   curriculum_phases:
     - name: "openings"
-      steps: 2000  # First 2000 steps focus on openings
+      steps: 2000
       description: "Opening mastery phase"
-    - name: "tactics" 
-      steps: 5000  # Steps 2000-5000 focus on tactics
+    - name: "tactics"
+      steps: 5000
       description: "Tactical training phase"
     - name: "mixed"
-      steps: 10000  # Steps 5000+ use mixed data
+      steps: 10000
       description: "Balanced training with self-play"
   
   extra_replay_dirs:
@@ -193,8 +218,12 @@ external_data:
 mcts:
   num_simulations: 200
   cpuct: 2.5
+  cpuct_start: 2.8
+  cpuct_end: 1.6
+  cpuct_plies: 40
   dirichlet_alpha: 0.3
   dirichlet_frac: 0.3
+  dirichlet_plies: 16
   fpu: 0.5
   selection_jitter: 0.01
   parent_q_init: true

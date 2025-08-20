@@ -57,24 +57,49 @@ class EMA:
 
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
-               label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0):
+               label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0,
+               policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
+               use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     model.train()
     s, pi, z = batch
     s = torch.from_numpy(s).to(device)
     pi = torch.from_numpy(pi).to(device)
     z = torch.from_numpy(z).to(device)
+    # Ensure base tensors are contiguous early
+    s = s.contiguous()
+    pi = pi.contiguous()
+    z = z.contiguous()
 
-    # Data Augmentation: Random horizontal flip
-    if augment and torch.rand(1).item() > 0.5:
-        s = torch.flip(s, dims=[3])  # Flip along the width dimension (files)
-        # Use reshape instead of view to handle potential non-contiguous tensors after flip
-        pi = torch.flip(pi.reshape(-1, *POLICY_SHAPE), dims=[2]).reshape(-1, np.prod(POLICY_SHAPE))
+    # Data Augmentation: geometric transforms aligned with action space
+    if augment:
+        r = torch.rand(1).item()
+        if r < 0.5:
+            # Horizontal flip (mirror files)
+            s = torch.flip(s, dims=[3])
+            pi_sh = pi.reshape(-1, *POLICY_SHAPE)  # (B, 8, 8, 73)
+            pi_sh = torch.flip(pi_sh, dims=[2])
+            from azchess.encoding import build_horizontal_flip_permutation
+            perm = build_horizontal_flip_permutation()
+            perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
+            pi_sh = pi_sh.index_select(-1, perm_t)
+            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE))
+        elif r < 0.75 and bool(cfg.training().get('augment_rotate180', True)):
+            # 180-degree rotation (flip ranks and files)
+            s = torch.flip(s, dims=[2, 3])
+            pi_sh = pi.reshape(-1, *POLICY_SHAPE)
+            pi_sh = torch.flip(pi_sh, dims=[1, 2])
+            from azchess.encoding import build_rotate180_permutation
+            perm = build_rotate180_permutation()
+            perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
+            pi_sh = pi_sh.index_select(-1, perm_t)
+            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE))
 
     # Generate self-supervised learning targets (piece presence mask)
     ssl_target = None
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
         ssl_target = model.create_ssl_targets(s)
+        ssl_target = ssl_target.contiguous()
 
     # Ensure input data matches model precision
     if s.dtype != next(model.parameters()).dtype:
@@ -86,41 +111,55 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # Mixed Precision Forward Pass
     device_type = device.split(':')[0]
-    use_autocast = (scaler is not None) or (device_type == 'mps')
+    # Disable autocast on MPS to avoid stride/view issues; keep it only for CUDA
+    use_autocast = (scaler is not None) and (device_type == 'cuda')
     with torch.autocast(device_type=device_type, enabled=use_autocast):
         # Channels-last can speed up on MPS
         try:
             s = s.contiguous(memory_format=torch.channels_last)
         except Exception:
             pass
-        p, v, ssl_out = model(s, return_ssl=True)
+        if use_wdl and hasattr(model, 'forward_with_features'):
+            p, v, ssl_out, feats = model.forward_with_features(s, return_ssl=True)
+        else:
+            feats = None
+            p, v, ssl_out = model(s, return_ssl=True)
+
+        # Ensure contiguity to avoid view-related autograd errors on some backends
+        p = p.contiguous()
+        v = v.contiguous()
+        if ssl_out is not None:
+            ssl_out = ssl_out.contiguous()
 
         # Optional legality masking for stability: mask logits where target is zero
         # Assumes pi provides positive mass only on legal actions
-        try:
-            with torch.no_grad():
-                legal_mask = (pi > 0)
-                # If any row is all-zero (e.g., fallback), skip masking for that row
-                valid_rows = legal_mask.any(dim=1, keepdim=True)
-            masked_p = p.clone()
-            masked_p[valid_rows.expand_as(p) & (~legal_mask)] = -1e9
-            p_for_loss = masked_p
-        except Exception:
-            p_for_loss = p
+        if policy_masking:
+            try:
+                with torch.no_grad():
+                    legal_mask = (pi > 0)
+                    # If any row is all-zero (fallback), treat all as legal (no mask)
+                    valid_rows = legal_mask.any(dim=1, keepdim=True)
+                    # Build a keep mask: keep original logits where either row invalid or legal; else set to -1e9
+                    keep_mask = valid_rows & legal_mask
+                p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9)).contiguous()
+            except Exception:
+                p_for_loss = p.contiguous()
+        else:
+            p_for_loss = p.contiguous()
         # Policy loss with optional label smoothing
         if label_smoothing and label_smoothing > 0.0:
             num_actions = p.shape[1]
             smooth = label_smoothing / float(num_actions)
             pi_smooth = (1.0 - label_smoothing) * pi + smooth
-            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss.contiguous(), dim=1)
             policy_loss = -(pi_smooth * log_probs).sum(dim=1).mean()
         else:
-            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss.contiguous(), dim=1)
             policy_loss = -(pi * log_probs).sum(dim=1).mean()
         
         # Add policy regularization to prevent uniform outputs
         # This encourages the model to produce diverse, meaningful policies
-        policy_probs = torch.softmax(p_for_loss, dim=1)
+        policy_probs = torch.softmax(p_for_loss.contiguous(), dim=1)
         uniform_probs = torch.ones_like(policy_probs) / policy_probs.shape[1]
         policy_entropy = -(policy_probs * torch.log(policy_probs + 1e-8)).sum(dim=1).mean()
         max_entropy = torch.log(torch.tensor(policy_probs.shape[1], dtype=torch.float32, device=p.device))
@@ -138,19 +177,44 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         
         ssl_loss = 0.0
         if enable_ssl and ssl_target is not None and ssl_out is not None:
+            # SSL warmup: linearly ramp SSL weight over first ssl_warmup_steps
+            if ssl_warmup_steps and ssl_warmup_steps > 0:
+                ramp = min(1.0, float(current_step) / float(ssl_warmup_steps))
+            else:
+                ramp = 1.0
             ssl_loss = nn.functional.cross_entropy(ssl_out, ssl_target)
-            loss = policy_loss + policy_reg_loss + value_loss + ssl_weight * ssl_loss
+            loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         else:
             loss = policy_loss + policy_reg_loss + value_loss
+
+        # Optional WDL auxiliary head
+        wdl_loss = 0.0
+        if use_wdl and wdl_weight > 0.0 and feats is not None and hasattr(model, 'compute_wdl_logits'):
+            try:
+                wdl_logits = model.compute_wdl_logits(feats)
+                if wdl_logits is not None:
+                    # Build WDL targets from value targets z
+                    # 0: loss (z < -margin), 1: draw (|z| <= margin), 2: win (z > margin)
+                    with torch.no_grad():
+                        cls = torch.full_like(z, 1, dtype=torch.long)
+                        cls = torch.where(z > float(wdl_margin), torch.tensor(2, device=z.device, dtype=torch.long), cls)
+                        cls = torch.where(z < -float(wdl_margin), torch.tensor(0, device=z.device, dtype=torch.long), cls)
+                    wdl_loss = nn.functional.cross_entropy(wdl_logits, cls)
+                    loss = loss + (float(wdl_weight) * wdl_loss)
+            except Exception:
+                pass
     
-    # Scale loss and backward pass
-    if scaler is not None:
-        scaler.scale(loss / accum_steps).backward()
+    # Guard against NaN/Inf loss; skip backward if not finite
+    if torch.isfinite(loss):
+        if scaler is not None:
+            scaler.scale(loss / accum_steps).backward()
+        else:
+            (loss / accum_steps).backward()
     else:
-        (loss / accum_steps).backward()
+        logger.warning("Non-finite loss encountered; skipping backward for this batch")
     
     # Optimizer stepping and clipping are handled by the caller to support grad accumulation
-    return loss.item(), policy_loss.item(), value_loss.item(), ssl_loss if ssl_target is not None else 0.0
+    return loss.item(), policy_loss.item(), value_loss.item(), (ssl_loss if ssl_target is not None else 0.0), (wdl_loss if (use_wdl and wdl_weight > 0.0) else 0.0)
 
 def get_lr_scheduler(optimizer, total_steps: int, warmup_steps: int):
     """Creates a learning rate scheduler with linear warmup and cosine decay."""
@@ -201,6 +265,15 @@ def train_comprehensive(
         memory_stats = model.get_memory_usage()
         logger.info(f"Model memory usage: {memory_stats}")
     
+    # Optional compile for speed (PyTorch 2.1+)
+    try:
+        if bool(cfg.training().get('compile', False)):
+            # torch already imported at module scope; avoid local import that would shadow name
+            model = torch.compile(model, mode=cfg.training().get('compile_mode', 'default'))
+            logger.info("torch.compile enabled")
+    except Exception as _e:
+        logger.warning(f"torch.compile not enabled: {_e}")
+
     # Use AMP + channels_last for MPS/CUDA; avoid hard quantization of BatchNorm layers
     if device.startswith('mps'):
         logger.info("Using MPS with autocast; not forcing FP16 parameters to keep BatchNorm stable")
@@ -298,6 +371,7 @@ def train_comprehensive(
     running_policy_loss = 0.0
     running_value_loss = 0.0
     running_ssl_loss = 0.0
+    running_wdl_loss = 0.0
     
     start_time = time.time()
     optimizer.zero_grad()
@@ -359,18 +433,26 @@ def train_comprehensive(
                 continue
 
             tr_cfg = cfg.training()
-            loss, policy_loss, value_loss, ssl_loss = train_step(
+            loss, policy_loss, value_loss, ssl_loss, wdl_loss = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
-                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(tr_cfg.get('self_supervised', True)),
+                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(tr_cfg.get('self_supervised', False)),
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
                 huber_delta=float(tr_cfg.get('huber_delta', 1.0)),
+                policy_masking=bool(tr_cfg.get('policy_masking', True)),
+                ssl_warmup_steps=int(tr_cfg.get('ssl_warmup_steps', 0)),
+                current_step=int(current_step),
+                ssl_target_weight=float(tr_cfg.get('ssl_target_weight', 1.0)),
+                use_wdl=bool(cfg.model().get('wdl', False)),
+                wdl_weight=float(tr_cfg.get('wdl_weight', 0.0)),
+                wdl_margin=float(tr_cfg.get('wdl_margin', 0.25)),
             )
             
             running_loss = 0.98 * running_loss + 0.02 * loss
             running_policy_loss = 0.98 * running_policy_loss + 0.02 * policy_loss
             running_value_loss = 0.98 * running_value_loss + 0.02 * value_loss
             running_ssl_loss = 0.98 * running_ssl_loss + 0.02 * ssl_loss
+            running_wdl_loss = 0.98 * running_wdl_loss + 0.02 * wdl_loss
             
             if (current_step + 1) % accum_steps == 0:
                 if scaler:
@@ -397,6 +479,8 @@ def train_comprehensive(
                 writer.add_scalar('Loss/value', running_value_loss, current_step)
                 writer.add_scalar('Loss/ssl', running_ssl_loss, current_step)
                 writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], current_step)
+                if cfg.model().get('wdl', False) and float(tr_cfg.get('wdl_weight', 0.0)) > 0.0:
+                    writer.add_scalar('Loss/wdl', running_wdl_loss, current_step)
             
             if current_step % 100 == 0:
                 elapsed_time = time.time() - start_time

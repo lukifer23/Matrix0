@@ -55,8 +55,14 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
     add_safe_globals([numpy.core.multiarray.scalar])
     sa = torch.load(ckpt_a_path, map_location=_P_DEVICE, weights_only=False)
     sb = torch.load(ckpt_b_path, map_location=_P_DEVICE, weights_only=False)
-    model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)))
-    model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)))
+    try:
+        missing_a, unexpected_a = model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
+    except Exception:
+        model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
+    try:
+        missing_b, unexpected_b = model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
+    except Exception:
+        model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
     _P_MCTS_A = MCTS(model_a_local, _P_MCFG, _P_DEVICE)
     _P_MCTS_B = MCTS(model_b_local, _P_MCFG, _P_DEVICE)
 
@@ -75,7 +81,7 @@ def _arena_run_one_game(args_tuple):
         mcts = engines[0] if stm_white else engines[1]
         if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
             break
-        visits, pi, vroot = mcts.run(board)
+        visits, pi, vroot = mcts.run(board, ply=moves_count)
         if temp_local > 1e-3 and moves_count < temp_plies_local:
             moves = list(visits.keys())
             vis = np.array([visits[m] for m in moves], dtype=np.float32)
@@ -159,8 +165,8 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
                 pass
             sa = torch.load(ckpt_a_path, map_location=device_local, weights_only=False)
             sb = torch.load(ckpt_b_path, map_location=device_local, weights_only=False)
-            model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)))
-            model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)))
+            model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
+            model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
             mcts_a_local = MCTS(model_a_local, mcfg_local, device_local)
             mcts_b_local = MCTS(model_b_local, mcfg_local, device_local)
     except Exception as e:
@@ -184,7 +190,7 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
             if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
                 break
             try:
-                visits, pi, vroot = mcts_local.run(board)
+                visits, pi, vroot = mcts_local.run(board, ply=moves_count)
             except Exception as e:
                 try:
                     q_local.put({"type": "error", "msg": f"mcts_failed game={idx} move={moves_count}: {e}"})
@@ -658,7 +664,29 @@ def play_match(
                     move = random.choice(legal_moves)
                     print(f"  ⚠️  MCTS returned no visits, using random move")
                 else:
-                    move = max(visits.items(), key=lambda kv: kv[1])[0]
+                    # Low-visit fallback in eval: raise effective temperature when shallow
+                    max_visits = max(visits.values()) if visits else 0
+                    temp_eff = temp
+                    try:
+                        low_visit_thr = int(selfplay_cfg.get("low_visit_threshold", 0))
+                    except Exception:
+                        low_visit_thr = 0
+                    if low_visit_thr > 0 and max_visits < low_visit_thr:
+                        temp_eff = max(temp, 0.8)
+                    if temp_eff > 1e-3 and moves_count < temp_plies:
+                        moves = list(visits.keys())
+                        vis = np.array([visits[m] for m in moves], dtype=np.float32)
+                        logits = np.log(vis + 1e-8) / max(temp_eff, 1e-3)
+                        probs = np.exp(logits - np.max(logits))
+                        s = probs.sum()
+                        if s <= 0 or not np.isfinite(s):
+                            move = moves[int(np.argmax(vis))]
+                        else:
+                            probs /= s
+                            idx = int(np.random.choice(len(moves), p=probs))
+                            move = moves[idx]
+                    else:
+                        move = max(visits.items(), key=lambda kv: kv[1])[0]
             board.push(move)
             trace.append(move)
             move_history.append(move)  # Track move history
