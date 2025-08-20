@@ -159,7 +159,6 @@ class EnhancedEvaluator:
                 "fpu": 0.2,    # Lower first play urgency
                 "draw_penalty": -1.0,  # Very strong draw penalty
                 "selection_jitter": 0.2,  # More randomness
-                "resign_threshold": -0.8,  # Resign earlier
             })
         else:  # Precise config
             mcfg_dict.update({
@@ -167,7 +166,6 @@ class EnhancedEvaluator:
                 "fpu": 0.3,
                 "draw_penalty": -0.8,  # Strong draw penalty
                 "selection_jitter": 0.1,
-                "resign_threshold": -0.9,  # Resign earlier
             })
         
         mcfg = MCTSConfig.from_dict(mcfg_dict)
@@ -292,6 +290,36 @@ class EnhancedEvaluator:
             })
             
             self.logger.debug(f"Move {move_count + 1}: Recorded choice for {model_key} - move: {move}, visits: {visits.get(move, 0)}, value: {vroot:.3f}")
+            
+            # Check for resignation based on position evaluation
+            if move_count >= 20:  # Require minimum moves before resignation
+                resign_threshold = -0.8 if temperature > 1.0 else -0.9
+                if vroot < resign_threshold:
+                    self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to bad position (value: {vroot:.3f} < {resign_threshold})")
+                    # Determine winner based on whose turn it is
+                    if board.turn == chess.WHITE:  # Black's turn, so White resigned
+                        result = 0.0  # Black wins
+                        result_str = "0-1"
+                    else:  # White's turn, so Black resigned
+                        result = 1.0  # White wins
+                        result_str = "1-0"
+                    
+                    game_time = time.time() - start_time
+                    self.logger.info(f"Game ended by resignation: {result_str} in {move_count} moves, total time: {game_time:.2f}s")
+                    
+                    # Create game metadata for resignation
+                    game_meta = {
+                        "result": result,
+                        "result_str": result_str,
+                        "moves": moves,
+                        "move_times": move_times,
+                        "total_time": game_time,
+                        "move_choices": move_choices,
+                        "final_fen": board.fen(),
+                        "game_over_reason": "resignation"
+                    }
+                    
+                    return result, moves, result_str, game_meta
             
             # Make move
             self.logger.info(f"Move {move_count + 1}: Making move {move}")
