@@ -56,6 +56,7 @@ class EMA:
                 p.copy_(self.shadow[k])
 
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
+               augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
                label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0,
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
@@ -84,7 +85,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE))
-        elif r < 0.75 and bool(cfg.training().get('augment_rotate180', True)):
+        elif r < 0.75 and augment_rotate180:
             # 180-degree rotation (flip ranks and files)
             s = torch.flip(s, dims=[2, 3])
             pi_sh = pi.reshape(-1, *POLICY_SHAPE)
@@ -435,6 +436,7 @@ def train_comprehensive(
             tr_cfg = cfg.training()
             loss, policy_loss, value_loss, ssl_loss, wdl_loss = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
+                augment_rotate180=bool(tr_cfg.get('augment_rotate180', True)),
                 ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(tr_cfg.get('self_supervised', False)),
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
