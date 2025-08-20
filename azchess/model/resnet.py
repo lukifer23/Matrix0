@@ -309,15 +309,15 @@ class PolicyValueNet(nn.Module):
 
         # Policy head branches combined
         pfeat = self.policy_head(x)
-        # Spatial conv branch
+        # Spatial conv branch - ensure contiguity throughout
         p_conv = self.policy_conv_out(pfeat)
         p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
-        # Dense branch
+        # Dense branch - ensure contiguity
         p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
-        # Combine logits
-        p = p_conv + p_fc
+        # Combine logits and ensure final policy tensor is contiguous
+        p = (p_conv + p_fc).contiguous()
 
-        # Value head
+        # Value head - ensure contiguity throughout
         v = self.value_head(x)
         v = v.contiguous().reshape(v.size(0), -1)
         v = F.relu(self.value_fc1(v), inplace=True)
@@ -327,7 +327,7 @@ class PolicyValueNet(nn.Module):
         # Self-supervised learning head (if enabled and requested)
         ssl_output = None
         if self.ssl_head is not None and return_ssl:
-            ssl_output = self.ssl_head(x) # (B, 13, 8, 8)
+            ssl_output = self.ssl_head(x).contiguous() # (B, 13, 8, 8)
         # Return (policy, value); if return_ssl is True, also return SSL output
         if return_ssl:
             return p, v.squeeze(-1), ssl_output
@@ -335,22 +335,22 @@ class PolicyValueNet(nn.Module):
 
     def forward_with_features(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         feats = self._forward_features(x)
-        # Policy
+        # Policy - ensure contiguity throughout
         pfeat = self.policy_head(feats)
         p_conv = self.policy_conv_out(pfeat)
         p_conv = p_conv.permute(0, 2, 3, 1).contiguous().reshape(p_conv.size(0), -1)
         p_fc = self.policy_fc(pfeat.contiguous().reshape(pfeat.size(0), -1))
-        p = p_conv + p_fc
-        # Value
+        p = (p_conv + p_fc).contiguous()
+        # Value - ensure contiguity throughout
         v = self.value_head(feats)
         v = v.contiguous().reshape(v.size(0), -1)
         v = F.relu(self.value_fc1(v), inplace=True)
         v = F.relu(self.value_fc2(v), inplace=True)
         v = torch.tanh(self.value_fc3(v))
-        # SSL
+        # SSL - ensure contiguity
         ssl_output = None
         if self.ssl_head is not None and return_ssl:
-            ssl_output = self.ssl_head(feats)
+            ssl_output = self.ssl_head(feats).contiguous()
         return p, v.squeeze(-1), ssl_output, feats
 
     def compute_wdl_logits(self, feats: torch.Tensor) -> Optional[torch.Tensor]:

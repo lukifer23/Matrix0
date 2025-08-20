@@ -323,7 +323,8 @@ def build_horizontal_flip_permutation() -> np.ndarray:
         a = piece_block + 1
         b = piece_block + 2
         perm[a], perm[b] = perm[b], perm[a]
-    return np.array(perm, dtype=np.int64)
+    # Ensure the returned array is contiguous
+    return np.ascontiguousarray(perm, dtype=np.int64)
 
 
 def build_rotate180_permutation() -> np.ndarray:
@@ -363,4 +364,5 @@ def build_rotate180_permutation() -> np.ndarray:
         a = piece_block + 1  # left
         b = piece_block + 2  # right
         perm[a], perm[b] = perm[b], perm[a]
-    return np.array(perm, dtype=np.int64)
+    # Ensure the returned array is contiguous
+    return np.ascontiguousarray(perm, dtype=np.int64)

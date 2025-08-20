@@ -64,13 +64,27 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     model.train()
     s, pi, z = batch
-    s = torch.from_numpy(s).to(device)
-    pi = torch.from_numpy(pi).to(device)
-    z = torch.from_numpy(z).to(device)
-    # Ensure base tensors are contiguous early
-    s = s.contiguous()
-    pi = pi.contiguous()
-    z = z.contiguous()
+    
+    # Convert numpy arrays to PyTorch tensors and ensure contiguity immediately
+    s = torch.from_numpy(s).to(device).contiguous()
+    pi = torch.from_numpy(pi).to(device).contiguous()
+    z = torch.from_numpy(z).to(device).contiguous()
+    
+    # Validate tensor properties to catch issues early
+    if not s.is_contiguous():
+        raise RuntimeError(f"States tensor is not contiguous after conversion. Shape: {s.shape}, strides: {s.stride()}")
+    if not pi.is_contiguous():
+        raise RuntimeError(f"Policy tensor is not contiguous after conversion. Shape: {pi.shape}, strides: {pi.stride()}")
+    if not z.is_contiguous():
+        raise RuntimeError(f"Value tensor is not contiguous after conversion. Shape: {z.shape}, strides: {z.stride()}")
+    
+    # Validate tensor shapes
+    if s.shape[0] != pi.shape[0] or s.shape[0] != z.shape[0]:
+        raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
+    if pi.shape[1] != np.prod(POLICY_SHAPE):
+        raise RuntimeError(f"Policy tensor shape mismatch: expected {np.prod(POLICY_SHAPE)}, got {pi.shape[1]}")
+    if z.shape[1] != 1:
+        raise RuntimeError(f"Value tensor shape mismatch: expected 1, got {z.shape[1]}")
 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
@@ -78,23 +92,37 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if r < 0.5:
             # Horizontal flip (mirror files)
             s = torch.flip(s, dims=[3])
-            pi_sh = pi.reshape(-1, *POLICY_SHAPE)  # (B, 8, 8, 73)
+            # Ensure policy tensor is contiguous before reshaping
+            pi_cont = pi.contiguous()
+            pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)  # (B, 8, 8, 73)
             pi_sh = torch.flip(pi_sh, dims=[2])
             from azchess.encoding import build_horizontal_flip_permutation
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
-            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE))
+            # Ensure the final policy tensor is contiguous
+            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
         elif r < 0.75 and augment_rotate180:
             # 180-degree rotation (flip ranks and files)
             s = torch.flip(s, dims=[2, 3])
-            pi_sh = pi.reshape(-1, *POLICY_SHAPE)
+            # Ensure policy tensor is contiguous before reshaping
+            pi_cont = pi.contiguous()
+            pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)
             pi_sh = torch.flip(pi_sh, dims=[1, 2])
             from azchess.encoding import build_rotate180_permutation
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
-            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE))
+            # Ensure the final policy tensor is contiguous
+            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
+    
+    # Validate tensors after augmentation to catch any contiguity issues
+    if not s.is_contiguous():
+        raise RuntimeError(f"States tensor lost contiguity after augmentation. Shape: {s.shape}, strides: {s.stride()}")
+    if not pi.is_contiguous():
+        raise RuntimeError(f"Policy tensor lost contiguity after augmentation. Shape: {pi.shape}, strides: {pi.stride()}")
+    if not z.is_contiguous():
+        raise RuntimeError(f"Value tensor lost contiguity after augmentation. Shape: {z.shape}, strides: {z.stride()}")
 
     # Generate self-supervised learning targets (piece presence mask)
     ssl_target = None
@@ -130,6 +158,14 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         v = v.contiguous()
         if ssl_out is not None:
             ssl_out = ssl_out.contiguous()
+        
+        # Validate model outputs to catch any contiguity issues
+        if not p.is_contiguous():
+            raise RuntimeError(f"Policy output tensor is not contiguous. Shape: {p.shape}, strides: {p.stride()}")
+        if not v.is_contiguous():
+            raise RuntimeError(f"Value output tensor is not contiguous. Shape: {v.shape}, strides: {v.stride()}")
+        if ssl_out is not None and not ssl_out.is_contiguous():
+            raise RuntimeError(f"SSL output tensor is not contiguous. Shape: {ssl_out.shape}, strides: {ssl_out.stride()}")
 
         # Optional legality masking for stability: mask logits where target is zero
         # Assumes pi provides positive mass only on legal actions
@@ -206,6 +242,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     
     # Guard against NaN/Inf loss; skip backward if not finite
     if torch.isfinite(loss):
+        # Ensure loss tensor is contiguous before backward pass
+        if not loss.is_contiguous():
+            loss = loss.contiguous()
         if scaler is not None:
             scaler.scale(loss / accum_steps).backward()
         else:
