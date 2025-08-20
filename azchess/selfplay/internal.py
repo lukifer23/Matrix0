@@ -194,24 +194,26 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     sims = sp_cfg.get("num_simulations", 50)  # Default to 50 instead of 800
     logger.info(f"Worker {proc_id}: sims={sims} games={games}")
 
-    mcts_cfg = cfg_dict["mcts"]
-    # Allow selfplay overrides for common MCTS params
+    mcfg_dict = dict(cfg_dict["mcts"])
+    mcfg_dict.update(
+        {
+            "num_simulations": int(sp_cfg.get("num_simulations", mcfg_dict.get("num_simulations", 800))),
+            "cpuct": float(sp_cfg.get("cpuct", mcfg_dict.get("cpuct", 2.5))),
+            "dirichlet_alpha": float(sp_cfg.get("dirichlet_alpha", mcfg_dict.get("dirichlet_alpha", 0.3))),
+            "dirichlet_frac": float(sp_cfg.get("dirichlet_frac", mcfg_dict.get("dirichlet_frac", 0.25))),
+            "tt_capacity": int(mcfg_dict.get("tt_capacity", 2000000)),
+            "selection_jitter": float(sp_cfg.get("selection_jitter", mcfg_dict.get("selection_jitter", 0.01))),
+            "batch_size": int(sp_cfg.get("batch_size", mcfg_dict.get("batch_size", 32))),
+            "fpu": float(sp_cfg.get("fpu", mcfg_dict.get("fpu", 0.5))),
+            "parent_q_init": bool(sp_cfg.get("parent_q_init", mcfg_dict.get("parent_q_init", True))),
+            "tt_cleanup_frequency": int(mcfg_dict.get("tt_cleanup_frequency", 500)),
+            "draw_penalty": float(mcfg_dict.get("draw_penalty", -0.1)),
+            "value_from_white": bool(value_from_white),
+        }
+    )
     mcts = MCTS(
         model,
-        MCTSConfig(
-            num_simulations=int(sp_cfg.get("num_simulations", mcts_cfg.get("num_simulations", 800))),
-            cpuct=float(sp_cfg.get("cpuct", mcts_cfg.get("cpuct", 2.5))),
-            dirichlet_alpha=float(sp_cfg.get("dirichlet_alpha", mcts_cfg.get("dirichlet_alpha", 0.3))),
-            dirichlet_frac=float(sp_cfg.get("dirichlet_frac", mcts_cfg.get("dirichlet_frac", 0.25))),
-            tt_capacity=int(mcts_cfg.get("tt_capacity", 2000000)),
-            selection_jitter=float(sp_cfg.get("selection_jitter", mcts_cfg.get("selection_jitter", 0.01))),
-            batch_size=int(sp_cfg.get("batch_size", mcts_cfg.get("batch_size", 32))),
-            fpu=float(sp_cfg.get("fpu", mcts_cfg.get("fpu", 0.5))),
-            parent_q_init=bool(sp_cfg.get("parent_q_init", mcts_cfg.get("parent_q_init", True))),
-            tt_cleanup_frequency=int(mcts_cfg.get("tt_cleanup_frequency", 500)),
-            draw_penalty=float(mcts_cfg.get("draw_penalty", -0.1)),
-            value_from_white=bool(value_from_white),
-        ),
+        MCTSConfig.from_dict(mcfg_dict),
         device=device,
         inference_backend=infer_backend,
     )

@@ -48,16 +48,21 @@ class ExternalEngineSelfPlay:
         # Load Matrix0 model
         self.matrix0_model = PolicyValueNet.from_config(config.model()).to(self.device)
         sp_cfg = config.selfplay()
+        mcfg_dict = dict(config.mcts())
+        mcfg_dict.update(
+            {
+                "num_simulations": int(sp_cfg.get("num_simulations", mcfg_dict.get("num_simulations", 200))),
+                "cpuct": float(sp_cfg.get("cpuct", mcfg_dict.get("cpuct", 1.5))),
+                "dirichlet_alpha": float(sp_cfg.get("dirichlet_alpha", mcfg_dict.get("dirichlet_alpha", 0.3))),
+                "dirichlet_frac": float(sp_cfg.get("dirichlet_frac", mcfg_dict.get("dirichlet_frac", 0.25))),
+                "tt_capacity": int(sp_cfg.get("tt_capacity", mcfg_dict.get("tt_capacity", 200000))),
+                "selection_jitter": float(sp_cfg.get("selection_jitter", mcfg_dict.get("selection_jitter", 0.0))),
+                "tt_cleanup_frequency": int(config.mcts().get("tt_cleanup_frequency", 500)),
+            }
+        )
         self.matrix0_mcts = MCTS(
             self.matrix0_model,
-            MCTSConfig(
-                num_simulations=int(sp_cfg.get("num_simulations", 200)),
-                cpuct=float(sp_cfg.get("cpuct", 1.5)),
-                dirichlet_alpha=float(sp_cfg.get("dirichlet_alpha", 0.3)),
-                dirichlet_frac=float(sp_cfg.get("dirichlet_frac", 0.25)),
-                tt_capacity=int(sp_cfg.get("tt_capacity", 200000)),
-                selection_jitter=float(sp_cfg.get("selection_jitter", 0.0)),
-            ),
+            MCTSConfig.from_dict(mcfg_dict),
             self.device,
         )
         
