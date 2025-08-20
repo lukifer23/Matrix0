@@ -200,6 +200,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             log_probs = nn.functional.log_softmax(p_for_loss.contiguous(), dim=1)
             policy_loss = -(pi * log_probs).sum(dim=1).mean()
         
+        # Ensure policy loss is contiguous
+        policy_loss = policy_loss.contiguous()
+        
         # Add policy regularization to prevent uniform outputs
         # This encourages the model to produce diverse, meaningful policies
         policy_probs = torch.softmax(p_for_loss.contiguous(), dim=1)
@@ -212,11 +215,17 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         entropy_penalty = torch.relu(policy_entropy - 0.8 * max_entropy)
         policy_reg_loss = 0.1 * entropy_penalty
         
+        # Ensure policy regularization loss is contiguous
+        policy_reg_loss = policy_reg_loss.contiguous()
+        
         # Value loss: MSE or Huber
         if value_loss_type == 'huber':
             value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
         else:
             value_loss = nn.functional.mse_loss(v, z)
+        
+        # Ensure value loss is contiguous
+        value_loss = value_loss.contiguous()
         
         ssl_loss = 0.0
         if enable_ssl and ssl_target is not None and ssl_out is not None:
@@ -226,8 +235,17 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             else:
                 ramp = 1.0
             ssl_loss = nn.functional.cross_entropy(ssl_out, ssl_target)
+            # Ensure all loss components are contiguous before arithmetic operations
+            policy_loss = policy_loss.contiguous()
+            policy_reg_loss = policy_reg_loss.contiguous()
+            value_loss = value_loss.contiguous()
+            ssl_loss = ssl_loss.contiguous()
             loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         else:
+            # Ensure all loss components are contiguous before arithmetic operations
+            policy_loss = policy_loss.contiguous()
+            policy_reg_loss = policy_reg_loss.contiguous()
+            value_loss = value_loss.contiguous()
             loss = policy_loss + policy_reg_loss + value_loss
 
         # Optional WDL auxiliary head
@@ -243,6 +261,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         cls = torch.where(z > float(wdl_margin), torch.tensor(2, device=z.device, dtype=torch.long), cls)
                         cls = torch.where(z < -float(wdl_margin), torch.tensor(0, device=z.device, dtype=torch.long), cls)
                     wdl_loss = nn.functional.cross_entropy(wdl_logits, cls)
+                    # Ensure loss is contiguous before arithmetic operations
+                    wdl_loss = wdl_loss.contiguous()
                     loss = loss + (float(wdl_weight) * wdl_loss)
             except Exception:
                 pass

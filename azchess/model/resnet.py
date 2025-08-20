@@ -330,8 +330,8 @@ class PolicyValueNet(nn.Module):
             ssl_output = self.ssl_head(x).contiguous() # (B, 13, 8, 8)
         # Return (policy, value); if return_ssl is True, also return SSL output
         if return_ssl:
-            return p, v.squeeze(-1), ssl_output
-        return p, v.squeeze(-1)
+            return p, v.squeeze(-1).contiguous(), ssl_output
+        return p, v.squeeze(-1).contiguous()
 
     def forward_with_features(self, x: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         feats = self._forward_features(x)
@@ -351,7 +351,7 @@ class PolicyValueNet(nn.Module):
         ssl_output = None
         if self.ssl_head is not None and return_ssl:
             ssl_output = self.ssl_head(feats).contiguous()
-        return p, v.squeeze(-1), ssl_output, feats
+        return p, v.squeeze(-1).contiguous(), ssl_output, feats
 
     def compute_wdl_logits(self, feats: torch.Tensor) -> Optional[torch.Tensor]:
         if self.wdl_head is None:
