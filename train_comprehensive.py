@@ -401,7 +401,7 @@ def train_comprehensive(
     state = None
     if best_ckpt.exists():
         logger.info(f"Loading best checkpoint: {best_ckpt}")
-        state = torch.load(best_ckpt, map_location=device)
+        state = torch.load(best_ckpt, map_location=device, weights_only=False)
         if "model_ema" in state:
             model.load_state_dict(state["model_ema"])
         else:
