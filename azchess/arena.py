@@ -16,6 +16,7 @@ from .config import Config, select_device
 from .model import PolicyValueNet
 from .mcts import MCTS, MCTSConfig
 from .elo import EloBook, update_elo
+from .draw import should_adjudicate_draw
 from multiprocessing import Process, Queue
 from .selfplay.inference import (
     setup_shared_memory_for_worker,
@@ -75,12 +76,13 @@ def _arena_run_one_game(args_tuple):
     global _P_DEVICE, _P_CFG, _P_MCFG, _P_MCTS_A, _P_MCTS_B
     board = chess.Board()
     moves_count = 0
+    move_history = []
     a_is_white = (idx % 2 == 0)
     engines = (_P_MCTS_A, _P_MCTS_B) if a_is_white else (_P_MCTS_B, _P_MCTS_A)
     while (not board.is_game_over(claim_draw=True)) and (moves_count < max_moves):
         stm_white = board.turn == chess.WHITE
         mcts = engines[0] if stm_white else engines[1]
-        if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
+        if should_adjudicate_draw(board, move_history, _P_CFG.draw()):
             break
         visits, pi, vroot = mcts.run(board, ply=moves_count)
         if temp_local > 1e-3 and moves_count < temp_plies_local:
@@ -104,6 +106,7 @@ def _arena_run_one_game(args_tuple):
             else:
                 move = max(visits.items(), key=lambda kv: kv[1])[0]
         board.push(move)
+        move_history.append(move)
         moves_count += 1
     # Score from A's perspective
     if board.is_game_over(claim_draw=True):
@@ -182,13 +185,14 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
         t0 = _time.perf_counter()
         board = _chess.Board()
         moves_count = 0
+        move_history = []
         a_is_white = (idx % 2 == 0)
         engines = (mcts_a_local, mcts_b_local) if a_is_white else (mcts_b_local, mcts_a_local)
         last_hb = t0
         while (not board.is_game_over(claim_draw=True)) and (moves_count < max_moves_local):
             stm_white = board.turn == _chess.WHITE
             mcts_local = engines[0] if stm_white else engines[1]
-            if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
+            if should_adjudicate_draw(board, move_history, cfg_local.draw()):
                 break
             try:
                 visits, pi, vroot = mcts_local.run(board, ply=moves_count)
@@ -203,6 +207,7 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
                     break
                 mv = legal[0]
                 board.push(mv)
+                move_history.append(mv)
                 moves_count += 1
                 continue
             if temp_local > 1e-3 and moves_count < temp_plies_local:
@@ -226,6 +231,7 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
                 else:
                     move = max(visits.items(), key=lambda kv: kv[1])[0]
             board.push(move)
+            move_history.append(move)
             moves_count += 1
             now = _time.perf_counter()
             if now - last_hb >= 5.0:
@@ -642,8 +648,8 @@ def play_match(
                 if len(set(str(m) for m in recent_moves)) <= 3:  # Simple repetition check
                     print(f"  ⚠️  Repetitive pattern detected at move {moves_count+1}")
             
-            # If position is a claimable draw, stop early to avoid marathons
-            if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
+            # If position triggers draw adjudication, stop early to avoid marathons
+            if should_adjudicate_draw(board, move_history, cfg.draw()):
                 break
 
             visits, pi, vroot = mcts.run(board)

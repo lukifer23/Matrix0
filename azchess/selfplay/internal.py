@@ -21,6 +21,7 @@ from ..data_manager import DataManager
 from .inference import InferenceClient
 from ..encoding import encode_board, move_to_index
 import chess.polyglot
+from ..draw import should_adjudicate_draw
 
 
 def math_div_ceil(a: int, b: int) -> int:
@@ -135,6 +136,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             logger.info("No checkpoint provided, using untrained model")
 
     sp_cfg = cfg_dict["selfplay"]
+    draw_cfg = cfg_dict.get("draw", {})
 
     # Detect value orientation (side-to-move vs absolute White) and pass to MCTS
     def _detect_value_from_white() -> bool:
@@ -268,27 +270,16 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             legal = list(board.legal_moves)
             if not legal:
                 break
-            board.push(random.choice(legal))
+            mv = random.choice(legal)
+            board.push(mv)
+            move_history.append(mv)
 
         min_resign_plies = int(sp_cfg.get("min_resign_plies", 24))
         while not board.is_game_over() and len(states) < sp_cfg.get("max_game_len", 200):
-            # Check for early termination to prevent draws
-            # Optional early draw adjudication (configurable)
-            if bool(sp_cfg.get("early_draw_enabled", False)):
-                if _should_terminate_early(
-                    board,
-                    move_history,
-                    min_plies_before_check=int(sp_cfg.get("early_draw_min_plies", 60)),
-                    recent_window=int(sp_cfg.get("early_draw_window", 24)),
-                    min_unique_in_window=int(sp_cfg.get("early_draw_min_unique", 8)),
-                    halfmove_cap=int(sp_cfg.get("early_draw_halfmove_cap", 90)),
-                ):
-                    break
+            if should_adjudicate_draw(board, move_history, draw_cfg):
+                break
 
             move_no = board.fullmove_number
-            # Early draw adjudication is handled in _should_terminate_early; still allow claimable draws
-            if board.can_claim_threefold_repetition() or board.can_claim_fifty_moves():
-                break
             
             # Determine temperature for the current move
             # Smooth linear schedule by move number
@@ -584,44 +575,3 @@ def game_result(board: chess.Board) -> float:
     return 0.0
 
 
-def _should_terminate_early(
-    board: chess.Board,
-    move_history: List[chess.Move],
-    min_plies_before_check: int = 40,
-    recent_window: int = 16,
-    min_unique_in_window: int = 5,
-    halfmove_cap: int = 0,
-) -> bool:
-    """Heuristic early-draw adjudication to prevent marathons.
-
-    - Only begins checking after `min_plies_before_check` plies
-    - Looks at the last `recent_window` moves; if fewer than `min_unique_in_window`
-      unique moves appear, the game is probably shuffling → adjudicate draw.
-    - Still respects claimable draws and insufficient material.
-    """
-    plies = len(move_history)
-    if plies < min_plies_before_check:
-        return False
-
-    # Check for repetitive patterns (potential draws)
-    recent = move_history[-recent_window:]
-    if len(set(recent)) < min_unique_in_window:
-        return True
-
-    # Threefold repetition or fifty-move rule
-    if board.is_repetition(3) or board.can_claim_fifty_moves():
-        return True
-
-    # Clear insufficient material
-    if board.is_insufficient_material():
-        return True
-
-    # Early adjudication by halfmove clock (no capture/pawn move) before 50-move rule
-    if halfmove_cap and board.halfmove_clock >= int(halfmove_cap):
-        return True
-
-    # Hard cap
-    if plies > 200:
-        return True
-
-    return False

@@ -65,7 +65,6 @@ selfplay:
   min_resign_plies: 50  # Require 50 moves before resignation
   batch_size: 32
   buffer_dir: "data/selfplay"
-  early_draw_enabled: false  # Disable heuristic early draw adjudication by default
   # Low-visit fallback sampling: when root max visits below threshold, prefer sampling
   low_visit_threshold: 15
   # Require consecutive bad values before resigning
@@ -77,6 +76,13 @@ openings:
   pgn: "data/openings/lichess_openings.pgn"  # PGN opening database
   random_plies: 4  # Random opening moves for diversity
   max_plies: 12  # Maximum opening plies
+
+draw:
+  enabled: false
+  min_plies: 60
+  window: 24
+  min_unique: 8
+  halfmove_cap: 90
 
 training:
   batch_size: 512  # Increased for better GPU utilization

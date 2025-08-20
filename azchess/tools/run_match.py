@@ -13,6 +13,7 @@ import chess.pgn
 from azchess.config import Config, select_device
 from azchess.model import PolicyValueNet
 from azchess.mcts import MCTS, MCTSConfig
+from azchess.draw import should_adjudicate_draw
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -121,7 +122,8 @@ def main():
         m_ms_moves = s_ms_moves = 0
         move_ucis: List[str] = []
 
-        while not board.is_game_over(claim_draw=True):
+        draw_cfg = cfg.draw()
+        while not board.is_game_over(claim_draw=True) and not should_adjudicate_draw(board, board.move_stack, draw_cfg):
             is_white = (board.turn == chess.WHITE)
             side = "matrix0" if (is_white == matrix0_white) else "stockfish"
             if side == "matrix0":

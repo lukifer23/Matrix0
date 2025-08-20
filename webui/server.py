@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from azchess.config import Config, select_device
 from azchess.model import PolicyValueNet
 from azchess.mcts import MCTS, MCTSConfig
+from azchess.draw import should_adjudicate_draw
 
 try:
     import chess.engine
@@ -92,15 +93,17 @@ app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 _matrix0_model = None
 _matrix0_mcts = None
 _device = None
+_cfg: Config | None = None
 _stockfish = None
 _stockfish_path = (BASE_DIR / "engines" / "bin" / "stockfish")
 
 
 def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, device_pref: str = "cpu"):
-    global _matrix0_model, _matrix0_mcts, _device
+    global _matrix0_model, _matrix0_mcts, _device, _cfg
     if _matrix0_model is not None and _matrix0_mcts is not None:
         return
-    cfg = Config.load(cfg_path)
+    _cfg = Config.load(cfg_path)
+    cfg = _cfg
     # Default to CPU to avoid interfering with training; allow override via env MATRIX0_WEBUI_DEVICE
     dev_env = os.environ.get("MATRIX0_WEBUI_DEVICE", device_pref)
     _device = select_device(dev_env) if dev_env != "cpu" else "cpu"
@@ -192,7 +195,16 @@ def play_move(req: MoveRequest):
     gs.board.push(mv)
     gs.moves.append(req.uci)
     _jsonl_write(WEBUI_LOG, {"ts": _now_ts(), "type": "human_move", "game_id": gs.game_id, "uci": req.uci, "fen": gs.board.fen()})
-    return {"fen": gs.board.fen(), "turn": "w" if gs.board.turn == chess.WHITE else "b", "game_over": gs.board.is_game_over(claim_draw=True), "result": gs.board.result(claim_draw=True) if gs.board.is_game_over(claim_draw=True) else None}
+    draw_cfg = _cfg.draw() if _cfg else {}
+    finished = gs.board.is_game_over(claim_draw=True) or should_adjudicate_draw(gs.board, [chess.Move.from_uci(u) for u in gs.moves], draw_cfg)
+    if finished:
+        _save_pgn(gs)
+    return {
+        "fen": gs.board.fen(),
+        "turn": "w" if gs.board.turn == chess.WHITE else "b",
+        "game_over": finished,
+        "result": gs.board.result(claim_draw=True) if finished else None,
+    }
 
 
 @app.post("/engine-move")
@@ -227,10 +239,17 @@ def engine_move(req: EngineMoveRequest):
     else:
         raise HTTPException(status_code=400, detail="unknown engine")
 
-    finished = gs.board.is_game_over(claim_draw=True)
+    draw_cfg = _cfg.draw() if _cfg else {}
+    finished = gs.board.is_game_over(claim_draw=True) or should_adjudicate_draw(gs.board, [chess.Move.from_uci(u) for u in gs.moves], draw_cfg)
     if finished:
         _save_pgn(gs)
-    return {"uci": mv.uci(), "fen": gs.board.fen(), "turn": "w" if gs.board.turn == chess.WHITE else "b", "game_over": finished, "result": gs.board.result(claim_draw=True) if finished else None}
+    return {
+        "uci": mv.uci(),
+        "fen": gs.board.fen(),
+        "turn": "w" if gs.board.turn == chess.WHITE else "b",
+        "game_over": finished,
+        "result": gs.board.result(claim_draw=True) if finished else None,
+    }
 
 
 @app.post("/eval")
