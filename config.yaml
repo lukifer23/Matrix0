@@ -90,7 +90,7 @@ training:
   ssl_warmup_steps: 1000
   wdl_weight: 0.2
   wdl_margin: 0.25
-  compile: true  # ENABLED: PyTorch 2.x optimization
+  compile: false  # DISABLED: PyTorch 2.x optimization (temporarily for state dict compatibility)
   compile_mode: "max-autotune"  # Most aggressive optimization
   channels_last: true  # Better memory layout for MPS
   prefetch_factor: 2  # DataLoader optimization
