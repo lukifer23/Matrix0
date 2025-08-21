@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 2"]
+[Site "Matrix0 Arena"]
+[Date "2025.08.20"]
+[Round "Fast - Game 2"]
+[White "Model A (trained)"]
+[Black "Model B (baseline)"]
+[Result "1/2-1/2"]
+[TimeControl "unlimited"]
+[Termination "unknown"]
+
+1. c3 c6 2. d4 b6 3. e4 Ba6 4. f3 Bb7 5. Bf4 b5 6. d5 b4 7. Bc4 e5 8. a3 Nf6 9. g4 Ba6 10. b3 Bc8 11. Nd2 h5 12. h3 c5 13. Bxe5 bxa3 14. Qb1 Nc6 15. Bb5 Qc7 16. Bxc6 Nxe4 17. fxe4 Qd6 18. h4 a6 19. Qb2 hxg4 20. Ke2 dxc6 21. Rb1 Qd8 22. Qc2 Bd7 23. Ra1 cxd5 24. Ke3 Rc8 25. Re1 Rb8 26. Bc7 Rb7 27. e5 Rb8 28. Ngf3 Bb5 29. Rhg1 Qxh4 30. Ng5 f6 31. Ne6 Rh6 32. Nxf8 c4 33. Kd4 Bd7 34. Re2 Qh2 35. Rf1 Rb6 36. Rff2 cxb3 37. Bxb6 Qg1 38. Re3 b2 39. Qxb2 Rh5 40. Rf4 Be6 41. Qc2 Ke7 42. Rf5 Qh1 43. Rxf6 Qg2 44. Ba5 a2 45. Nf3 g3 46. Qh7 Bd7 47. Ne1 Qd2+ 48. Kc5 Qg2 49. Qh6 Rh3 50. Bb6 Qf2 1/2-1/2

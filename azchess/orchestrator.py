@@ -47,7 +47,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 grad_clip_override: float | None = None, promotion_threshold_override: float | None = None,
                 device_override: str | None = None, max_retries_override: int | None = None,
                 backoff_seconds_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None,
-                tui_mode: str = "bars", no_shared_infer: bool | None = None):
+                tui_mode: str = "bars", no_shared_infer: bool | None = None, quick_start: bool = False):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
     try:
@@ -68,10 +68,32 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         pass
 
     orch = cfg.raw.get("orchestrator", {})
-    games_target = int(orch.get("games_per_cycle", 64))
-    eval_games = int(orch.get("eval_games_per_cycle", 20))
-    if games_override is not None:
+    
+    # Dynamic game count logic: check if this is first run
+    initial_games = int(orch.get("initial_games", 64))
+    subsequent_games = int(orch.get("subsequent_games", 64))
+    
+    # Check if we have existing checkpoints to determine if this is first run
+    checkpoint_dir = Path("checkpoints")
+    existing_checkpoints = list(checkpoint_dir.glob("*.pt")) if checkpoint_dir.exists() else []
+    
+    # Determine game count based on context and overrides
+    if quick_start:
+        # Force quick start mode regardless of checkpoints
+        games_target = initial_games
+        logger.info(f"Quick start mode: using {initial_games} games for rapid iteration")
+    elif games_override is not None:
+        # Command-line override takes precedence
         games_target = int(games_override)
+        logger.info(f"Command-line override: using {games_target} games")
+    elif len(existing_checkpoints) <= 1:  # Only base model or no models
+        games_target = initial_games
+        logger.info(f"First run detected: using {initial_games} games for quick start")
+    else:
+        games_target = subsequent_games
+        logger.info(f"Subsequent run: using {subsequent_games} games for full cycle")
+    
+    eval_games = int(orch.get("eval_games_per_cycle", 20))
     if eval_games_override is not None:
         eval_games = int(eval_games_override)
     promote_thr = float(orch.get("promotion_threshold", 0.55))
@@ -741,6 +763,7 @@ def main():
     ap.add_argument("--backoff-seconds", type=int, default=None, help="Override backoff delay between retries")
     ap.add_argument("--tui", type=str, default=None, choices=["bars", "table"], help="Progress UI: bars or table")
     ap.add_argument("--no-shared-infer", action="store_true", help="Disable shared inference server (debug/compat)")
+    ap.add_argument("--quick-start", action="store_true", help="Force quick start mode (uses initial_games regardless of checkpoints)")
     
     args = ap.parse_args()
     
@@ -784,7 +807,8 @@ def main():
         doctor_fix=args.doctor_fix, 
         seed=args.seed,
         tui_mode=chosen_tui,
-        no_shared_infer=bool(args.no_shared_infer)
+        no_shared_infer=bool(args.no_shared_infer),
+        quick_start=bool(args.quick_start)
     )
 
 def _ingest_external_csvs(cfg: Config, dm: DataManager) -> None:

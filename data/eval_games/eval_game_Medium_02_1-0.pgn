@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 2"]
+[Site "Matrix0 Arena"]
+[Date "2025.08.20"]
+[Round "Medium - Game 2"]
+[White "Model A (trained)"]
+[Black "Model B (baseline)"]
+[Result "1-0"]
+[TimeControl "unlimited"]
+[Termination "resignation"]
+
+1. d4 c5 2. dxc5 a5 3. e4 Nh6 4. Nf3 Ng4 5. c4 e5 6. Be2 Nxh2 7. Be3 Bxc5 8. Bxc5 Ra6 9. g3 Ra8 10. b4 Qc7 11. a3 h5 12. Nbd2 Qc6 13. Nb3 h4 14. Rg1 Qf6 15. Rb1 b5 16. Rg2 h3 17. Rb2 Qh6 18. Qd3 1-0

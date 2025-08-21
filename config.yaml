@@ -90,11 +90,14 @@ training:
   ssl_warmup_steps: 1000
   wdl_weight: 0.2
   wdl_margin: 0.25
-  compile: false
-  compile_mode: default
+  compile: true  # ENABLED: PyTorch 2.x optimization
+  compile_mode: "max-autotune"  # Most aggressive optimization
+  channels_last: true  # Better memory layout for MPS
+  prefetch_factor: 2  # DataLoader optimization
+  pin_memory: false  # MPS doesn't benefit from this
   augment_rotate180: true
   # Added keys to unify training config (were previously under eval)
-  ssl_weight: 0.1
+  ssl_weight: 0.1  # SSL re-enabled
   policy_label_smoothing: 0.0
   value_loss: mse  # mse|huber
   huber_delta: 1.0
@@ -206,15 +209,19 @@ eval:
   strength_estimation_games: 50
 
 orchestrator:
-  games_per_cycle: 64  # Reduced from 300 for faster development cycles
+  # Dynamic game count: quick start for rapid iteration
+  initial_games: 4  # First cycle: quick training
+  subsequent_games: 120  # Future cycles: full training
+  games_per_cycle: 4  # Current cycle: quick start
   train_epochs_per_cycle: 1
-  eval_games_per_cycle: 20
+  eval_games_per_cycle: 10  # Reduced for faster cycles
   promotion_threshold: 0.55  # win rate to promote new checkpoint
   keep_top_k: 3
   max_retries: 2
   backoff_seconds: 5
   external_engine_integration: false
   tui: table
+  continuous_mode: true  # Keep running cycles
 
 external_data:
   multipv: 8
