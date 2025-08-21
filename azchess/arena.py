@@ -300,6 +300,11 @@ def play_match(
     temp: float = 0.0,
     temp_plies: int = 0,
 ):
+    # Handle case where no games are requested
+    if games <= 0:
+        print(f"🎯 No evaluation games requested (games={games}), returning early")
+        return 0.0
+        
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -790,7 +795,10 @@ def play_match(
     
     # Final results summary
     total_time = time.time() - start_time
-    win_rate = score / float(games)
+    if games > 0:
+        win_rate = score / float(games)
+    else:
+        win_rate = 0.0
     
     print("=" * 60)
     print("🏆 EVALUATION COMPLETE!")

@@ -623,21 +623,26 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             return
 
         # Evaluate candidate vs current best
-        logger.info(f"Evaluating candidate {candidate} vs best {best_ckpt}")
-        # Parallelize eval games if configured
-        eval_workers = int(cfg.eval().get("workers", 1))
-        eval_num_sims = int(cfg.eval().get("num_simulations", cfg.mcts().get("num_simulations", 500)))
-        score = play_match(
-            ckpt_a=str(candidate),
-            ckpt_b=str(best_ckpt),
-            games=eval_games,
-            cfg=cfg,
-            seed=seed or int(time.time()),
-            workers=eval_workers,
-            num_sims=eval_num_sims
-        )
-        win_rate = score / float(max(1, eval_games))
-        logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
+        if eval_games > 0:
+            logger.info(f"Evaluating candidate {candidate} vs best {best_ckpt}")
+            # Parallelize eval games if configured
+            eval_workers = int(cfg.eval().get("workers", 1))
+            eval_num_sims = int(cfg.eval().get("num_simulations", cfg.mcts().get("num_simulations", 500)))
+            score = play_match(
+                ckpt_a=str(candidate),
+                ckpt_b=str(best_ckpt),
+                games=eval_games,
+                cfg=cfg,
+                seed=seed or int(time.time()),
+                workers=eval_workers,
+                num_sims=eval_num_sims
+            )
+            win_rate = score / float(eval_games)
+            logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
+        else:
+            logger.info(f"Skipping evaluation (eval_games={eval_games})")
+            score = 0.0
+            win_rate = 0.0
 
         # Update Elo ratings for bookkeeping
         try:
