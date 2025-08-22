@@ -20,7 +20,17 @@ data/replays/selfplay_*.npz
 data/backups/selfplay_w*_20250820_*.npz
 data/backups/selfplay_w*_20250822_*.npz
 # Exclude large training data files (tracked by database metadata)
-data/training/*.npz
+data/training/lichess_chunks/
 data/external/lichess_db_puzzle.csv.zst
+
+# Keep important training data files - DO NOT exclude these:
+# data/training/tactical_training_data.npz
+# data/training/openings_training_data.npz
+# data/training/lichess_*.npz files are IMPORTANT and should be tracked
+
+# Exclude temporary and frequently changing files:
+data/selfplay/*.npz
+data/replays/*.npz
+data/backups/*.npz
 artifacts/
 chessData.csv
