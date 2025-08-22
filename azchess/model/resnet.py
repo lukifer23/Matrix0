@@ -634,16 +634,34 @@ class PolicyValueNet(nn.Module):
         ssl_output = ssl_output.permute(0, 2, 3, 1).reshape(-1, 13)  # (B*64, 13)
         targets = targets.reshape(-1).long()  # (B*64,)
 
+        # FORCE DEBUG: Always log first few calls to see what's happening
+        if not hasattr(self, '_ssl_debug_count'):
+            self._ssl_debug_count = 0
+
+        if self._ssl_debug_count < 5:  # Log first 5 calls
+            self._ssl_debug_count += 1
+            logger.info(f"SSL DEBUG #{self._ssl_debug_count}: targets_shape={targets.shape}, targets_min={targets.min().item()}, targets_max={targets.max().item()}, targets_sum={targets.sum().item()}, all_zeros={torch.all(targets == 0).item()}")
+
         # Validate targets efficiently - allow 13-class targets (0-12)
         if targets.min() < 0 or targets.max() > 12:  # Changed from >= 13 to > 12
+            if self._ssl_debug_count <= 5:
+                logger.error(f"SSL TARGETS INVALID: min={targets.min().item()}, max={targets.max().item()} - returning 0.0")
             return torch.tensor(0.0, device=x.device, requires_grad=False)
 
         # Only return 0 if ALL targets are 0 (not just if sum is 0)
         if torch.all(targets == 0):
+            if self._ssl_debug_count <= 5:
+                logger.warning("SSL TARGETS ARE ALL ZEROS - returning 0.0 loss")
             return torch.tensor(0.0, device=x.device, requires_grad=False)
 
         # Compute loss with optimized cross-entropy
         loss = F.cross_entropy(ssl_output, targets, reduction='mean')
+
+        # FORCE DEBUG: Always log first few loss computations
+        if self._ssl_debug_count <= 5:
+            valid_targets = (targets >= 0) & (targets <= 12)
+            class_counts = torch.bincount(targets[valid_targets], minlength=13)
+            logger.info(f"SSL LOSS COMPUTED #{self._ssl_debug_count}: loss={loss:.6f}, targets_sum={targets.sum().item()}, class_dist={class_counts.tolist()}")
 
         # Debug: Log SSL loss statistics (more frequent during debugging)
         if torch.rand(1).item() < 0.1:  # 10% chance to log (increased for debugging)
@@ -907,6 +925,15 @@ class PolicyValueNet(nn.Module):
         # Use more efficient argmax with dim=1 for better performance
         targets = torch.argmax(targets, dim=1)  # (B, 8, 8)
         targets = targets.reshape(batch_size, -1)  # (B, 64) - each position gets a class index 0-12
+
+        # FORCE DEBUG: Always log first few target creations
+        if not hasattr(self, '_ssl_target_debug_count'):
+            self._ssl_target_debug_count = 0
+
+        if self._ssl_target_debug_count < 5:  # Log first 5 creations
+            self._ssl_target_debug_count += 1
+            class_counts = torch.bincount(targets.flatten(), minlength=13)
+            logger.info(f"SSL TARGETS CREATED #{self._ssl_target_debug_count}: distribution={class_counts.tolist()}, sum={targets.sum().item()}, all_zeros={torch.all(targets == 0).item()}")
 
         # Debug: Log SSL target distribution (more frequent for debugging)
         if torch.rand(1).item() < 0.1:  # 10% chance to log
