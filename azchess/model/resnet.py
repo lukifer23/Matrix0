@@ -544,9 +544,8 @@ class PolicyValueNet(nn.Module):
             p = self.policy_fc2(p)
             p = torch.clamp(p, -10.0, 10.0)  # Final clamp
 
-        # Apply final normalization - skip for now to avoid dimension mismatch
-        # TODO: Add proper normalization layer for the unified policy head
-        # p = self.policy_final_norm(p)  # Commented out to fix dimension issue
+        # Apply final normalization for unified policy head
+        p = self.policy_fc_norm(p)  # Use the FC normalization layer
         
         # CRITICAL: Handle NaN/Inf gracefully instead of crashing
         if torch.isnan(p).any() or torch.isinf(p).any():
@@ -631,19 +630,26 @@ class PolicyValueNet(nn.Module):
 
         ssl_output = self.ssl_piece_head(x_processed)
 
-        # Fast path: Use view instead of reshape for better performance
-        ssl_output = ssl_output.permute(0, 2, 3, 1).view(-1, 13)  # (B*64, 13)
-        targets = targets.view(-1).long()  # (B*64,)
+        # Fast path: Use reshape for compatibility with permuted tensors
+        ssl_output = ssl_output.permute(0, 2, 3, 1).reshape(-1, 13)  # (B*64, 13)
+        targets = targets.reshape(-1).long()  # (B*64,)
 
-        # Validate targets efficiently
-        if targets.min() < 0 or targets.max() >= 13:
+        # Validate targets efficiently - allow 13-class targets (0-12)
+        if targets.min() < 0 or targets.max() > 12:  # Changed from >= 13 to > 12
             return torch.tensor(0.0, device=x.device, requires_grad=False)
 
-        if targets.sum() == 0:
+        # Only return 0 if ALL targets are 0 (not just if sum is 0)
+        if torch.all(targets == 0):
             return torch.tensor(0.0, device=x.device, requires_grad=False)
 
         # Compute loss with optimized cross-entropy
         loss = F.cross_entropy(ssl_output, targets, reduction='mean')
+
+        # Debug: Log SSL loss statistics (occasionally to avoid spam)
+        if torch.rand(1).item() < 0.01:  # 1% chance to log
+            valid_targets = (targets >= 0) & (targets <= 12)
+            class_counts = torch.bincount(targets[valid_targets], minlength=13)
+            logger.info(f"SSL Loss: {loss:.4f}, targets_range=[{targets.min()}, {targets.max()}], class_dist={class_counts.tolist()}")
 
         return loss
     
@@ -895,7 +901,12 @@ class PolicyValueNet(nn.Module):
         # Use more efficient argmax with dim=1 for better performance
         targets = torch.argmax(targets, dim=1)  # (B, 8, 8)
         targets = targets.reshape(batch_size, -1)  # (B, 64) - each position gets a class index 0-12
-        
+
+        # Debug: Log SSL target distribution (occasionally to avoid spam)
+        if torch.rand(1).item() < 0.01:  # 1% chance to log
+            class_counts = torch.bincount(targets.flatten(), minlength=13)
+            logger.info(f"SSL Targets: distribution={class_counts.tolist()}, total={targets.numel()}")
+
         # CRITICAL: Validate targets before returning
         if targets.sum() == 0:
             logger.error("SSL target generation produced all-zero targets - this indicates a serious problem")

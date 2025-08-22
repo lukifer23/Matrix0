@@ -1,6 +1,6 @@
 [Event "Matrix0 Enhanced Evaluation Game 3"]
 [Site "Matrix0 Arena"]
-[Date "2025.08.21"]
+[Date "2025.08.22"]
 [Round "Fast - Game 3"]
 [White "Model A (trained)"]
 [Black "Model B (baseline)"]
@@ -8,4 +8,4 @@
 [TimeControl "unlimited"]
 [Termination "unknown"]
 
-1. e4 e6 2. c3 d5 3. Ne2 c5 4. f3 Ne7 5. d4 Nd7 6. Bf4 f5 7. e5 Qc7 8. a3 Qc6 9. b4 Qa4 10. g3 Qb3 11. Bg2 Qc2 12. Qd2 Qxd2+ 13. Kxd2 h6 14. Kd3 cxb4 15. Rg1 h5 16. c4 Ng6 17. Bh1 Nxf4+ 18. Nxf4 b5 19. cxb5 Be7 20. Ne2 Bf6 21. Rg2 Nb8 22. h4 Rh7 23. Nd2 Nc6 24. Kc2 Kd7 25. Kd3 a6 26. Rgg1 g6 27. bxc6+ Kc7 28. Rg2 Rf7 29. exf6 Kxc6 30. g4 hxg4 31. Rgg1 Kb7 32. Rgc1 Re7 33. Rc7+ Kxc7 34. a4 Re8 35. f7 Kd7 36. Ra2 Kd8 37. Nf4 Ra7 38. Nxe6+ Rxe6 39. Nc4 Ra8 40. Nb6 Ke7 41. Nd7 Re4 42. Nf6 Kxf6 43. Ra3 Ke6 44. h5 bxa3 45. f4 Kf6 46. Kd2 Re2+ 47. Kd3 Rg2 48. h6 Kxf7 49. h7 Ra2 50. h8=Q Re2 51. Qxc8 Ra7 52. Kxe2 Rc7 53. Qd8 Ra7 54. Qd7+ Kf8 55. Qc6 a5 56. Qc8+ Kf7 57. Qd7+ Kf8 58. Qd6+ Kg7 59. Qd7+ Kf8 60. Qc6 Ra6 61. Kd3 Ke7 62. Qb6 Rxb6 63. Kd2 Ra6 64. Kd3 Ra7 65. Kd2 Kd7 66. Kc2 Kc6 67. Kd2 Ra8 68. Kc2 Kb7 69. Kd2 Kc7 70. Kd3 Rf8 71. Kc3 Kd7 72. Kd3 Rd8 73. Kc3 Kc6 74. Kd3 Kd6 75. Kc3 Kc6 1/2-1/2
+1. g4 c6 2. Na3 f6 3. Nh3 e6 4. Ng5 Nh6 5. Rb1 Qe7 6. Bg2 c5 7. h4 a5 8. b3 Rg8 9. Rg1 Rh8 10. Bh1 d6 11. e3 d5 12. Rf1 Na6 13. Nh3 Nf5 14. h5 Qd6 15. f3 Nxe3 16. dxe3 Bd7 17. Nb5 g6 18. Ba3 Qg3+ 19. Ke2 Rg8 20. f4 a4 21. f5 Be7 22. Bg2 Qxg2+ 23. Rf2 b6 24. bxa4 Rf8 25. Rb4 Qg3 26. h6 Qb8 27. Rb3 e5 28. Qa1 Nc7 29. Rc3 Na6 30. Qd1 Qc7 31. g5 Nb4 32. Kf3 Bxf5 33. Qe1 Qd8 34. Kg3 Bd7 35. Rf3 Nd3 36. Qe2 Bd6 37. Rxf6 Ra7 38. Bb2 Rb7 39. Rxd6 Bc8 40. Re6+ Kd7 41. Rf6 Qe7 42. Qd1 e4 43. Qb1 Nf2 44. Rd6+ Ke8 45. Nxf2 Be6 46. Na7 Rf6 47. Rb3 Bf7 48. c4 Rf5 49. Rxd5 Qd6+ 50. Kg2 Rf3 51. Rd2 Rf5 52. Ra3 Re5 53. Qd3 Bd5 54. Rb3 Re6 55. a3 Rf7 56. Ba1 Ree7 57. Rb4 Be6 58. Rdb2 Bc8 59. Qb3 Kd7 60. Kh1 Kc7 61. Qd1 Qf6 62. Qb3 Qf5 63. Rb1 Qd7 64. Re1 Qd4 65. Nd3 Bd7 66. Bxd4 Bxa4 67. Nf4 Kd8 68. Rd1 Rd7 69. Be5 Rg7 70. Nh5 Ke7 71. Rg1 Ke6 72. Kh2 gxh5 73. Kg3 Rxg5+ 74. Kh4 Rc7 75. Rg2 Ke7 1/2-1/2

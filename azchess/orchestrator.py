@@ -6,7 +6,6 @@ import os
 import queue as pyqueue
 from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
-from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List
 

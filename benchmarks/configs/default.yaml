@@ -1,0 +1,78 @@
+# Matrix0 Benchmark Configuration
+# Example configuration for benchmarking Matrix0 against UCI engines
+
+name: "Matrix0 Standard Benchmark"
+description: "Standard benchmark suite against Stockfish and lc0"
+
+# Output directory for results
+output_dir: "benchmarks/results"
+
+# UCI Engine configurations
+engines:
+  stockfish:
+    command: "stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "20"
+
+  lc0:
+    command: "lc0"
+    options:
+      Threads: "4"
+      NNCacheSize: "2000000"
+      MinibatchSize: "32"
+
+  komodo:
+    command: "komodo"
+    working_dir: "/path/to/komodo"
+    options:
+      Threads: "4"
+      Hash: "512"
+
+# Test scenarios
+scenarios:
+  - name: "Stockfish_ELO_2000"
+    engine: "stockfish"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    num_games: 50
+    time_control: "60+0.6"
+    max_moves: 200
+    concurrency: 2
+    random_openings: true
+    opening_plies: 8
+
+  - name: "lc0_Medium"
+    engine: "lc0"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    num_games: 30
+    time_control: "30+0.3"
+    max_moves: 150
+    concurrency: 1
+    random_openings: true
+    opening_plies: 6
+
+  - name: "Komodo_Strong"
+    engine: "komodo"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    num_games: 20
+    time_control: "120+1.0"
+    max_moves: 250
+    concurrency: 1
+    random_openings: false
+    opening_plies: 10
+
+# Performance monitoring configuration
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  sample_interval: 0.1
+  log_system_load: true
+
+# Statistical analysis configuration
+statistics:
+  confidence_level: 0.95
+  min_games_for_stats: 30
+  calculate_elo: true
+  elo_k_factor: 32

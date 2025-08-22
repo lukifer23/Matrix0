@@ -931,7 +931,7 @@ class MCTS:
             # Get current memory usage
             if psutil_available:
                 memory_mb = psutil.Process().memory_info().rss / (1024 * 1024)
-                memory_threshold = getattr(self.cfg, 'memory_cleanup_threshold_mb', 1024)
+                memory_threshold = getattr(self.cfg, 'memory_cleanup_threshold_mb', 2048)
 
                 # Force cleanup if memory usage is too high
                 if memory_mb > memory_threshold:

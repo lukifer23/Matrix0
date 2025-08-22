@@ -1,6 +1,6 @@
 [Event "Matrix0 Enhanced Evaluation Game 2"]
 [Site "Matrix0 Arena"]
-[Date "2025.08.21"]
+[Date "2025.08.22"]
 [Round "Precise - Game 2"]
 [White "Model A (trained)"]
 [Black "Model B (baseline)"]
@@ -8,4 +8,4 @@
 [TimeControl "unlimited"]
 [Termination "unknown"]
 
-1. e4 e6 2. d4 d5 3. Nc3 Nf6 4. Bg5 Nxe4 5. Bh4 Be7 6. Nf3 O-O 7. Bd3 Nxc3 8. h3 Nc6 9. O-O Qd7 10. g3 Ne2+ 11. Bxe2 f6 12. c4 b6 13. cxd5 Rf7 14. dxc6 Qd6 15. d5 Qc5 16. Nd4 Qxd4 17. Qxd4 f5 18. Qc4 h6 19. f3 Bxh4 20. Rf2 Bg5 21. Qd4 Be3 22. Qe5 Bc1 23. Bc4 Kf8 24. b3 g6 25. Qd6+ Kg8 26. a4 exd5 27. Bxd5 Kg7 28. Rb1 Rd7 29. Qxd7+ Bxd7 30. cxd7 Kf8 31. Bc4 h5 32. d8=Q+ Kg7 33. Qe8 Rxe8 34. Bd5 Re1+ 35. Kh2 Rh1+ 36. Kg2 Re1 37. Bc6 Bd2 38. Rxe1 Bxe1 39. f4 Bc3 40. Rf3 Ba1 41. Bd5 c5 42. Bc6 Kf6 43. Kf1 c4 44. Ke2 c3 45. Ke3 c2 46. Bd5 b5 47. g4 c1=Q+ 48. Ke2 Qf1+ 49. Ke3 Qg2 50. Kd3 Qe2+ 51. Kxe2 h4 52. Ke3 Bb2 53. axb5 Bc3 54. Be4 Ba1 55. Bxf5 a6 56. Ke4 axb5 57. Kd5 g5 58. Ke4 b4 59. Kd5 Ke7 60. Kc4 Bb2 61. Rf1 Bc1 62. Rd1 Bxf4 63. Rd2 Kf8 64. Rd8+ Kf7 65. Rc8 Ke7 66. Rd8 Kxd8 67. Kc5 Bd6+ 68. Kd4 Bc5+ 69. Kxc5 Ke7 70. Kd4 Ke8 71. Be6 Kf8 72. Bd5 Ke8 73. Bc4 Kd8 74. Ke5 Kd7 75. Kf5 Kd6 1/2-1/2
+1. b4 h6 2. d3 d5 3. Bxh6 Nf6 4. e3 Na6 5. Qg4 Nd7 6. Qd4 f6 7. f3 Nb6 8. Nc3 Rxh6 9. Qxd5 f5 10. Na4 e5 11. Qe4 Ke7 12. f4 Rc6 13. Rd1 Nxb4 14. Qxe5+ Be6 15. g3 Nxc2+ 16. Ke2 Nxe3 17. h3 Rc3 18. Nc5 Qc8 19. Bg2 g5 20. Bf3 Nf1 21. Bg2 Ke8 22. Bxf1 Bxc5 23. Qd6 a5 24. Qxc7 Bxa2 25. Nf3 Bb3 26. Qh7 Kf8 27. Qxb7 Qc7 28. Qd5 Bxd1+ 29. Kxd1 Qd7 30. g4 Bg1 31. Ne5 gxf4 32. Nc6 Bh2 33. Qxf5+ Qf7 34. Na7 Bg1 35. Qh5 Qg6 36. Qxg6 Bd4 37. Kd2 Rb8 38. Bg2 f3 39. Qd6+ Kg8 40. Qd8+ Kh7 41. Qf6 Be5 42. Rd1 Bd6 43. Qh6+ Kg8 44. Qe3 Kg7 45. h4 Rbc8 46. Rh1 Rh8 47. Rh3 Nc4+ 48. Kxc3 Rxh4 49. Qg1 Kh7 50. Qd4 Nb2 51. Rg3 Bb8 52. Kc2 a4 53. Kc3 Nd1+ 54. Kc2 Kh6 55. Qc4 Bd6 56. Qxa4 Rh5 57. Nc6 Bb4 58. Bf1 f2 59. Qa8 Rh2 60. Na5 Kg5 61. Be2 Rh1 62. Rg2 Rh3 63. Qe4 Rxd3 64. Rg1 Rc3+ 65. Kxd1 Rc1+ 66. Kxc1 Bd6 67. Qe5+ Kh6 68. Kc2 f1=R 69. Qf6+ Kh7 70. Qf5+ Kg8 71. Nb7 Bc5 72. Qxf1 Bb4 73. Qe1 Bc3 74. Bb5 Ba1 75. Bd7 Bg7 1/2-1/2

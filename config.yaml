@@ -21,7 +21,7 @@ model:
   ssrl_tasks: ["position", "material", "rotation"]  # SSRL tasks (32M model)
 
 selfplay:
-  num_workers: 6                   # Increased for better throughput
+  num_workers: 2                   # Conservative worker count for stability
   batch_size: 128                  # Larger batches for efficiency
   max_games: 18                    # More games per cycle for better training data
   max_game_len: 100                # Shorter games for faster generation
@@ -40,7 +40,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
-  checkpoint: "v2_base.pt"         # Use our new FIXED V2 checkpoint
+  checkpoint: "v3_base.pt"         # Use our PROMOTED step 5000 checkpoint
   gradient_accumulation_steps: 2   # Effective batch size = 384
   grad_clip_norm: 0.5              # More aggressive gradient clipping to prevent NaN
   ssl_weight: 0.05                 # Reduced SSL weight to focus on stability
@@ -58,7 +58,7 @@ orchestrator:
   eval_games_per_cycle: 6          # Evaluate 6 games
   keep_top_k: 1                    # Keep only best model
   continuous_mode: false           # Single run mode
-  checkpoint_override: "v2_base.pt"  # Override default best.pt with FIXED V2 checkpoint
+  checkpoint_override: "v3_base.pt"  # Override default best.pt with PROMOTED step 5000 checkpoint
   tui: "table"                     # Use table display mode
 
 eval:

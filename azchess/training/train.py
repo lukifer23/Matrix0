@@ -582,8 +582,10 @@ def train_comprehensive(
     # Setup tensorboard
     writer = SummaryWriter(log_dir)
 
-    # Set MPS memory limit if specified
+    # Get training config (needed for all device types)
     tr_cfg = cfg.training()  # Get training config
+
+    # Set MPS memory limit if specified
     memory_limit_gb = tr_cfg.get('memory_limit_gb', 12)  # Default 12GB if not specified
     if device.startswith('mps'):
         import os

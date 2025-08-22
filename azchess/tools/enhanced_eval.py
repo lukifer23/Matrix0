@@ -573,9 +573,9 @@ class EnhancedEvaluator:
         
         # Evaluation parameters - more aggressive settings for decisive games
         eval_configs = [
-            {"name": "Fast", "sims": 30, "temp": 2.0, "description": "Very aggressive, creative play"},
-            {"name": "Medium", "sims": 80, "temp": 1.2, "description": "Balanced with aggression"},
-            {"name": "Precise", "sims": 150, "temp": 0.8, "description": "Precise but not too conservative"}
+            {"name": "Fast", "sims": 100, "temp": 1.5, "description": "Aggressive play with good moves"},
+            {"name": "Medium", "sims": 250, "temp": 0.9, "description": "Balanced with some aggression"},
+            {"name": "Precise", "sims": 500, "temp": 0.3, "description": "Strong, competitive play"}
         ]
         
         # Create initial TUI table
