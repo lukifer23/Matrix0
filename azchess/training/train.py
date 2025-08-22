@@ -145,6 +145,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         ssl_targets = model.create_ssl_targets(s)
         ssl_targets = ssl_targets.contiguous()
 
+        # DEBUG: Log SSL targets statistics
+        if torch.rand(1).item() < 0.1:  # 10% chance to log
+            logger.info(f"SSL TARGETS DEBUG: shape={ssl_targets.shape}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}")
+
     # CRITICAL: Setup precision and device type BEFORE data transfer (OUTSIDE SSL block)
     device_type = device.split(':')[0]
     use_autocast = scaler is not None
@@ -268,6 +272,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         
         ssl_loss = 0.0
         if enable_ssl and ssl_targets is not None and ssl_out is not None:
+            # DEBUG: Log SSL computation conditions
+            if torch.rand(1).item() < 0.05:  # 5% chance to log
+                logger.info(f"SSL COMPUTATION: enable_ssl={enable_ssl}, ssl_targets is not None={ssl_targets is not None}, ssl_out is not None={ssl_out is not None}")
+
             # SSL warmup: linearly ramp SSL weight over first ssl_warmup_steps
             if ssl_warmup_steps and ssl_warmup_steps > 0:
                 ramp = min(1.0, float(current_step) / float(ssl_warmup_steps))

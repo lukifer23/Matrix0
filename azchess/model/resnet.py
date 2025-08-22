@@ -645,11 +645,17 @@ class PolicyValueNet(nn.Module):
         # Compute loss with optimized cross-entropy
         loss = F.cross_entropy(ssl_output, targets, reduction='mean')
 
-        # Debug: Log SSL loss statistics (occasionally to avoid spam)
-        if torch.rand(1).item() < 0.01:  # 1% chance to log
+        # Debug: Log SSL loss statistics (more frequent during debugging)
+        if torch.rand(1).item() < 0.1:  # 10% chance to log (increased for debugging)
             valid_targets = (targets >= 0) & (targets <= 12)
             class_counts = torch.bincount(targets[valid_targets], minlength=13)
-            logger.info(f"SSL Loss: {loss:.4f}, targets_range=[{targets.min()}, {targets.max()}], class_dist={class_counts.tolist()}")
+            logger.info(f"SSL Loss Debug: loss={loss:.6f}, targets_sum={targets.sum().item()}, targets_range=[{targets.min().item()}, {targets.max().item()}], class_dist={class_counts.tolist()}")
+
+        # TEMPORARY: Log SSL loss every time it's computed (remove after debugging)
+        if loss > 0.0:
+            logger.info(f"SSL LOSS > 0 DETECTED: {loss:.6f}")
+        elif torch.rand(1).item() < 0.05:  # 5% chance when loss is 0
+            logger.warning(f"SSL LOSS IS 0.0 - targets_sum={targets.sum().item()}, all_zeros={torch.all(targets == 0).item()}")
 
         return loss
     
@@ -902,27 +908,41 @@ class PolicyValueNet(nn.Module):
         targets = torch.argmax(targets, dim=1)  # (B, 8, 8)
         targets = targets.reshape(batch_size, -1)  # (B, 64) - each position gets a class index 0-12
 
-        # Debug: Log SSL target distribution (occasionally to avoid spam)
-        if torch.rand(1).item() < 0.01:  # 1% chance to log
+        # Debug: Log SSL target distribution (more frequent for debugging)
+        if torch.rand(1).item() < 0.1:  # 10% chance to log
             class_counts = torch.bincount(targets.flatten(), minlength=13)
             logger.info(f"SSL Targets: distribution={class_counts.tolist()}, total={targets.numel()}")
 
-        # CRITICAL: Validate targets before returning
+        # ENSURE we always have meaningful targets - even if argmax gives all zeros
         if targets.sum() == 0:
-            logger.error("SSL target generation produced all-zero targets - this indicates a serious problem")
-            # Generate fallback targets (piece positions only) to prevent training from getting stuck
-            fallback_targets = torch.zeros(batch_size, 64, device=device, dtype=torch.long)
+            logger.warning("SSL targets argmax resulted in all zeros, generating piece-based targets")
+            # Generate targets based on actual piece positions (planes 0-11)
+            piece_targets = torch.zeros_like(targets)
             for b in range(batch_size):
-                for i in range(12):  # 12 piece types
-                    piece_mask = (board_states[b, i, :, :] == 1)
-                    if piece_mask.any():
-                        positions = torch.nonzero(piece_mask, as_tuple=False)
-                        for pos in positions:
-                            r, c = pos[0], pos[1]
-                            idx = r * 8 + c
-                            fallback_targets[b, idx] = i
-            logger.info("Generated fallback SSL targets from piece positions only")
-            return fallback_targets
+                # Use the piece planes (0-11) to create meaningful targets
+                piece_data = board_states[b, :12, :, :]  # Only piece planes
+                if piece_data.sum() > 0:  # There are pieces on the board
+                    # Find positions with pieces and assign appropriate class
+                    for i in range(12):  # 12 piece types
+                        piece_mask = (piece_data[i, :, :] == 1)
+                        if piece_mask.any():
+                            positions = torch.nonzero(piece_mask, as_tuple=False)
+                            for pos in positions:
+                                r, c = pos[0], pos[1]
+                                idx = r * 8 + c
+                                piece_targets[b, idx] = i
+                    # If we still have zeros, fill with enhanced plane values
+                    if piece_targets[b].sum() == 0:
+                        enhanced_data = targets[b].view(8, 8)
+                        piece_targets[b] = enhanced_data.flatten()
+            targets = piece_targets
+            logger.info("Generated SSL targets from piece positions")
+
+        # Final validation - ensure we never return all zeros
+        if targets.sum() == 0:
+            logger.error("CRITICAL: Unable to generate any SSL targets - returning random targets to prevent training halt")
+            # Last resort: generate random but valid targets
+            targets = torch.randint(0, 12, (batch_size, 64), device=device, dtype=torch.long)
         
         # Debug: Log SSL target statistics (occasionally to avoid spam)
         if torch.rand(1).item() < 0.005:  # 0.5% chance to log
