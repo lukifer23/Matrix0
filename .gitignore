@@ -19,5 +19,8 @@ data/replays/selfplay_*.npz
 # Exclude large backup files that change frequently
 data/backups/selfplay_w*_20250820_*.npz
 data/backups/selfplay_w*_20250822_*.npz
+# Exclude large training data files (tracked by database metadata)
+data/training/*.npz
+data/external/lichess_db_puzzle.csv.zst
 artifacts/
 chessData.csv

@@ -36,35 +36,35 @@ def create_v2_checkpoint():
         # Create model with V2 architecture
         device = torch.device('cpu')  # Create on CPU first, then move if needed
 
-        # Create NetConfig for 32M PARAMETER BEAST - FULL V2 FEATURES!
+        # Create NetConfig using the same approach as the main training code
         net_config = NetConfig(
-            planes=19,
-            channels=320,  # DOUBLED from 160 for massive capacity
-            blocks=24,     # +10 blocks for deep strategic reasoning
-            policy_size=4672,
-            se=True,  # Squeeze-and-Excitation for adaptive feature recalibration
-            se_ratio=0.25,
-            attention=True,  # Full attention mechanisms
-            attention_heads=20,  # +12 heads for rich spatial relationships
-            attention_unmasked_mix=0.2,
-            attention_relbias=True,
-            attention_every_k=3,
-            chess_features=True,  # All chess-specific features
-            self_supervised=True,  # Full SSL pipeline
-            piece_square_tables=True,  # Positional knowledge
-            wdl=True,  # Win-Draw-Loss auxiliary head
-            policy_factor_rank=128,  # Factorized policy for efficiency
-            norm='group',  # GroupNorm for stability
-            activation='silu',  # SiLU for better gradients
-            preact=True,  # Pre-activation for deeper networks
-            droppath=0.2,  # DropPath for regularization
-            aux_policy_from_square=True,  # Auxiliary from-square head
-            aux_policy_move_type=True,  # Auxiliary move-type head
-            enable_visual=False,  # Keep visual disabled for now
-            ssl_tasks=['piece', 'threat', 'pin', 'fork', 'control'],  # Full SSL suite
-            ssl_curriculum=True,  # Progressive difficulty
-            ssrl_tasks=['position', 'material', 'rotation'],  # Full SSRL
-            enable_llm_tutor=False  # Keep LLM disabled for now
+            planes=model_cfg.get('planes', 19),
+            channels=model_cfg.get('channels', 320),
+            blocks=model_cfg.get('blocks', 24),
+            policy_size=model_cfg.get('policy_size', 4672),
+            se=model_cfg.get('se', True),
+            se_ratio=model_cfg.get('se_ratio', 0.25),
+            attention=model_cfg.get('attention', True),
+            attention_heads=model_cfg.get('attention_heads', 20),
+            attention_unmasked_mix=model_cfg.get('attention_unmasked_mix', True),
+            attention_relbias=model_cfg.get('attention_relbias', False),
+            attention_every_k=model_cfg.get('attention_every_k', 3),
+            chess_features=model_cfg.get('chess_features', True),
+            self_supervised=model_cfg.get('self_supervised', True),
+            piece_square_tables=model_cfg.get('piece_square_tables', False),
+            wdl=model_cfg.get('wdl', False),
+            policy_factor_rank=model_cfg.get('policy_factor_rank', 128),
+            norm=model_cfg.get('norm', 'group'),
+            activation=model_cfg.get('activation', 'silu'),
+            preact=model_cfg.get('preact', True),
+            droppath=model_cfg.get('droppath', 0.1),
+            aux_policy_from_square=model_cfg.get('aux_policy_from_square', True),
+            aux_policy_move_type=model_cfg.get('aux_policy_move_type', True),
+            enable_visual=model_cfg.get('enable_visual', False),
+            visual_encoder_channels=model_cfg.get('visual_encoder_channels', 64),
+            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),
+            ssl_curriculum=model_cfg.get('ssl_curriculum', True),
+            ssrl_tasks=model_cfg.get('ssrl_tasks', ['position', 'material', 'rotation'])
         )
 
         model = PolicyValueNet(net_config)

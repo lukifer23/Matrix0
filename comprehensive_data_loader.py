@@ -24,9 +24,11 @@ logger = logging.getLogger(__name__)
 class ComprehensiveDataLoader:
     """Comprehensive data loader that combines multiple data sources."""
     
-    def __init__(self, 
+    def __init__(self,
                  tactical_data_path: str = "data/training/tactical_training_data.npz",
                  openings_data_path: str = "data/training/openings_training_data.npz",
+                 lichess_complete_path: str = "data/training/lichess_complete_training_data.npz",
+                 lichess_batch_100_path: str = "data/training/lichess_batch_100_199_training_data.npz",
                  selfplay_data_dir: str = "data/selfplay"):
         """Initialize the comprehensive data loader.
         
@@ -37,13 +39,19 @@ class ComprehensiveDataLoader:
         """
         self.tactical_data_path = Path(tactical_data_path)
         self.openings_data_path = Path(openings_data_path)
+        self.lichess_complete_path = Path(lichess_complete_path)
+        self.lichess_batch_100_path = Path(lichess_batch_100_path)
         self.selfplay_data_dir = Path(selfplay_data_dir)
-        
+
         # Data storage
         self.tactical_data = None
         self.openings_data = None
+        self.lichess_complete_data = None
+        self.lichess_batch_100_data = None
         self.tactical_samples = 0
         self.openings_samples = 0
+        self.lichess_complete_samples = 0
+        self.lichess_batch_100_samples = 0
         
         # Load all available data
         self.load_all_data()
@@ -67,17 +75,34 @@ class ComprehensiveDataLoader:
             logger.info(f"✅ Loaded {self.openings_samples} openings training samples")
         else:
             logger.warning(f"❌ Openings data not found at {self.openings_data_path}")
-        
+
+        # Load lichess complete data
+        if self.lichess_complete_path.exists():
+            self.lichess_complete_data = np.load(self.lichess_complete_path)
+            self.lichess_complete_samples = len(self.lichess_complete_data['positions'])
+            logger.info(f"✅ Loaded {self.lichess_complete_samples} lichess complete training samples")
+        else:
+            logger.warning(f"❌ Lichess complete data not found at {self.lichess_complete_path}")
+
+        # Load lichess batch 100-199 data
+        if self.lichess_batch_100_path.exists():
+            self.lichess_batch_100_data = np.load(self.lichess_batch_100_path)
+            self.lichess_batch_100_samples = len(self.lichess_batch_100_data['positions'])
+            logger.info(f"✅ Loaded {self.lichess_batch_100_samples} lichess batch 100-199 training samples")
+        else:
+            logger.warning(f"❌ Lichess batch 100-199 data not found at {self.lichess_batch_100_path}")
+
         # Check self-play data
         if self.selfplay_data_dir.exists():
             selfplay_files = list(self.selfplay_data_dir.glob("*.npz"))
             logger.info(f"✅ Found {len(selfplay_files)} self-play data files")
         else:
             logger.warning(f"❌ Self-play data directory not found at {self.selfplay_data_dir}")
-        
+
         # Summary
-        total_samples = self.tactical_samples + self.openings_samples
-        logger.info(f"📊 Total external training samples: {total_samples}")
+        total_external_samples = (self.tactical_samples + self.openings_samples +
+                                self.lichess_complete_samples + self.lichess_batch_100_samples)
+        logger.info(f"📊 Total external training samples: {total_external_samples}")
 
     def _validate_shapes(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
         """Validate that data arrays have expected shapes."""
