@@ -142,13 +142,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Generate self-supervised learning targets (class indices for multi-class prediction)
     ssl_targets = None
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
-        logger.info("TRAINING: Creating SSL targets...")
         ssl_targets = model.create_ssl_targets(s)
         ssl_targets = ssl_targets.contiguous()
-        logger.info(f"TRAINING: SSL targets created with shape {ssl_targets.shape}")
 
         # DEBUG: Log SSL targets statistics
-        logger.info(f"SSL TARGETS DEBUG: shape={ssl_targets.shape}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}")
+        if torch.rand(1).item() < 0.1:  # 10% chance to log
+            logger.info(f"SSL TARGETS DEBUG: shape={ssl_targets.shape}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}")
     else:
         logger.warning(f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}")
 
