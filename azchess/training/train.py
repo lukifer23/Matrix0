@@ -688,7 +688,7 @@ def train_comprehensive(
                 loss_values = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
                 augment_rotate180=bool(tr_cfg.get('augment_rotate180', True)),
-                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(tr_cfg.get('self_supervised', False)),
+                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(cfg.model().get('self_supervised', False)),
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
                 huber_delta=float(tr_cfg.get('huber_delta', 1.0)),

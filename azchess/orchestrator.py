@@ -68,6 +68,16 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
 
+    # Clear structured log file at start of each run
+    log_dir = cfg.training().get("log_dir", "logs")
+    structured_log_path = Path(log_dir) / "structured.jsonl"
+    if structured_log_path.exists():
+        try:
+            structured_log_path.unlink()
+            logger.info(f"Cleared previous structured log: {structured_log_path}")
+        except Exception as e:
+            logger.warning(f"Could not clear structured log: {e}")
+
     # Validate MCTS config
     from .mcts import MCTSConfig
     mcts_cfg_dict = cfg.mcts()
