@@ -1,116 +1,143 @@
-# Matrix0 Model V2 — Enhanced Design, Novel Features, and Strategic Evolution
+# Matrix0 Model V2 — Production Architecture & Implementation
 
-Status: Enhanced Vision (approved to implement)
+Status: ACTIVE TRAINING (step 1000+ completed)
 Owner: Matrix0 maintainers
-Last updated: 2025-08-20
+Last updated: 2025-08-25
 
-## 1) Goals and Constraints
+## 1) Current Production Architecture
 
-- **Core Stability**: Improve stability and throughput on Apple Silicon (MPS) without changing external interfaces
-- **Parameter Efficiency**: Keep total parameters < 30M, maintain self-play/training/eval compatibility
-- **Interface Preservation**: Preserve inputs (19×8×8), outputs (policy 4672, value scalar, SSL 13×8×8)
-- **Backward Compatibility**: Maintain SSL, attention, and MPS autocast; keep data and move mapping unchanged
-- **Risk Mitigation**: Implement behind config toggles with safe defaults and instant revert path
-- **Novel Capabilities**: Integrate LLM chess tutor, enhanced SSL/SSRL, and multi-modal learning
+Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improving. The architecture is optimized for Apple Silicon MPS with advanced stability features and multi-task SSL learning.
 
-## 2) Summary of Key Improvements
+### Key Specifications
+- **Total Parameters**: 53,217,919 (53M)
+- **Architecture**: ResNet-24 with chess-specific attention
+- **Input**: 19×8×8 chess board representation
+- **Policy Output**: 4,672 move logits (from-square × to-square)
+- **Value Output**: Scalar win probability
+- **SSL Output**: 13-class per-square predictions
+- **Training Status**: Step 1000+ with stable 2.0s/step performance
 
-### Core Architecture Enhancements
-- **Norm/Activation**: GroupNorm + SiLU (configurable) for better AMP/MPS stability
-- **Residual Layout**: Pre-activation blocks for improved gradient flow
-- **Attention**: Heads tuned to head_dim=16; cadence every 4th block; relative bias on
-- **Policy Head**: Factorized dense (low-rank) to replace brittle huge FC; retain per-square conv branch
-- **Optional Auxiliary Policy Heads**: from-square (64) and move-type (73) with small loss weights
-- **SSL**: Enhanced with label smoothing; logits ensured standard-contiguous for CE backward on MPS
-- **Regularization**: Mild DropPath (stochastic depth) across residual blocks
-- **Numerics**: Train in standard contiguous memory format; channels_last reserved for inference
+### Production Achievements
+- **Training Stability**: No NaN/Inf crashes with branch normalization
+- **Memory Efficiency**: 14GB MPS limit with automatic management
+- **Performance**: ~2.0s per training step on Apple Silicon
+- **SSL Integration**: Multi-task learning with progressive curriculum
+- **Data Pipeline**: Complete self-play → training → evaluation cycle
 
-### Novel Learning Capabilities
-- **Enhanced SSL/SSRL**: Multi-task self-supervised learning with curriculum progression
-- **LLM Chess Tutor**: Integration with fine-tuned Gemma 3 270M for strategic guidance
-- **Multi-Modal Learning**: Visual board processing combined with symbolic representation
-- **Active Learning**: Intelligent data generation based on model uncertainty and LLM insights
-- **Curriculum Learning**: Progressive difficulty from openings to complex middlegame positions
+## 2) Implemented Architecture Features
 
-### MCTS Improvements
-- **Encoder Caching**: Optimized move encoding for performance
-- **Optional Legal-Only Softmax**: Improved move selection with validation
-- **TT Cleanup Cadence**: Periodic LRU trims and memory checks
-- **Backtracking Avoidance**: Prevent instant backtracking at root for stability
+### Core Architecture (53M Parameters)
+- **Channels**: 320 (increased from 160 for better capacity)
+- **Blocks**: 24 (increased from 14 for deeper learning)
+- **Attention Heads**: 20 (optimized for chess patterns)
+- **Normalization**: GroupNorm (more stable than BatchNorm for MPS)
+- **Activation**: SiLU (better gradient flow than ReLU)
+- **Residual Blocks**: Pre-activation style for improved training
+- **DropPath**: 0.1 rate for regularization and ensemble effect
 
-## 3) V2 Architecture Blueprint
+### Policy Head Architecture
+- **Dual Branch Design**: Spatial convolution + dense factorization
+- **Spatial Branch**: 73 channels per-square (8×8×73 = 4,672)
+- **Dense Branch**: Factorized to 128-rank for parameter efficiency
+- **Branch Normalization**: Independent LayerNorm before combination
+- **Stability**: Gradient clipping and NaN/Inf detection
 
-### Inputs: Enhanced Multi-Modal
-- **Primary**: 19×8×8 symbolic planes (unchanged)
-- **Optional Visual**: RGB board images (8×8×3) for multi-modal training
-- **LLM Context**: Strategic annotations and position analysis
+### SSL Implementation (Multi-Task Learning)
+- **SSL Tasks**: Piece recognition, threat detection, pin identification, fork opportunities, square control
+- **SSL Architecture**: Dedicated 13-class per-square prediction head
+- **Curriculum Learning**: Progressive difficulty from basic to advanced patterns
+- **Loss Integration**: Weighted SSL loss with policy/value learning
+- **Training Stability**: SSL warmup and curriculum progression
 
-### Backbone (Trunk)
-- **Channels**: 192 (from 160) - increased capacity for multi-modal learning
-- **Blocks**: 16 (from 14) - deeper network for complex pattern recognition
-- **Residual Blocks**: Pre-activation style: [GN→SiLU→Conv3×3]×2 + identity
-- **Normalization**: GroupNorm(groups=16) or BatchNorm (config `model.norm: group|batch`)
-- **Activation**: SiLU (config `model.activation: silu|relu|gelu`)
-- **DropPath**: 0.07 linearly across depth (config `model.droppath`)
+### Training Stability Features
+- **Branch Normalization**: Prevents magnitude differences between policy branches
+- **Gradient Clipping**: Aggressive clipping at 0.5 to prevent exploding gradients
+- **Memory Management**: 14GB MPS limit with automatic cleanup
+- **Mixed Precision**: FP16 training with stability safeguards
+- **Emergency Recovery**: Automatic checkpoint saving on errors
 
-### Chess Features
-- **PST**: 1×1 + interaction conv (3×3) + learnable 8×8 positional embedding
-- **Multi-Modal Fusion**: Visual encoder branch with cross-attention to symbolic features
+## 3) Architecture Blueprint (Current Implementation)
 
-### Enhanced SSL/SSRL Architecture
-- **Multi-Task SSL**: Piece recognition, relationships, threats, pawn structure, king safety
-- **SSRL Tasks**: Masked position prediction, contrastive learning, rotation invariance
-- **SSL Curriculum**: Progressive difficulty from basic to advanced concepts
-- **Cross-Modal SSL**: Symbolic-to-visual and visual-to-symbolic prediction tasks
+### Inputs (Standard Chess Representation)
+- **Board Representation**: 19×8×8 planes (piece types, colors, special states)
+- **Memory Format**: Standard contiguous for MPS compatibility
+- **Data Type**: FP16 for mixed precision training
 
-### Attention System
-- **ChessAttention**: Line-of-sight mask retained with enhanced capabilities
-- **Configuration**: `attention_heads: 12` (C=192 => head_dim=16), `attention_relbias: true`
-- **Cadence**: Every 4th block; blend unmasked mix ≈ 0.1–0.2
-- **Multi-Modal Attention**: Cross-attention between symbolic and visual representations
+### Backbone (ResNet-24 Trunk)
+- **Input Channels**: 19 → 320 (stem convolution)
+- **Residual Blocks**: 24 blocks with pre-activation design
+- **Block Structure**: [GN→SiLU→Conv3×3]×2 + identity skip connection
+- **Normalization**: GroupNorm with 16 groups (more stable than BatchNorm)
+- **Activation**: SiLU throughout (better gradient flow than ReLU)
+- **DropPath**: 0.1 rate, linearly increasing across depth
+- **Total Parameters**: ~48M in trunk
 
-### Policy Head
-- **Shared Trunk**: 1×1 conv trunk: C→64; GN + SiLU + dropout
-- **Branch A (Spatial)**: Conv1×1→73 per square; flatten → 4672
-- **Branch B (Dense)**: Low-rank factorization 4096→K→4672 (K=256–384; default 256)
-- **Combine**: logits = A + B (shape 4672), unchanged externally
-- **Optional Auxiliary Heads**: From-square (64 logits) and move-type (73 logits), CE losses with small weights (0.05–0.1)
+### Chess-Specific Attention
+- **Attention Heads**: 20 heads (320/16 = 20) every 4th block
+- **ChessAttention**: Line-of-sight masking for spatial relationships
+- **Relative Bias**: Enhanced positional relationships
+- **Unmasked Mix**: 0.1-0.2 blend for knight/tactical patterns
+- **Cadence**: Every 4th residual block for computational efficiency
+- **Parameters**: ~2M in attention components
+
+### SSL Architecture (Multi-Task Learning)
+- **SSL Head**: Dedicated 13-class per-square prediction (13×8×8 output)
+- **SSL Tasks**: Piece recognition, threat detection, pin identification, fork opportunities, square control
+- **SSL Curriculum**: Progressive difficulty (0.0 → 0.9 over training)
+- **Loss Integration**: Weighted SSL loss with policy/value learning
+- **Training Stability**: SSL warmup period and curriculum progression
+- **Parameters**: ~500K in SSL head
+
+### Policy Head (Dual Branch Design)
+- **Input Features**: 320 channels from trunk
+- **Branch A (Spatial)**: 1×1 conv → 73 channels per-square → permute/reshape → 4,672 logits
+- **Branch B (Dense)**: Global average pool → 320 → FC → 128 → FC → 4,672 logits
+- **Branch Normalization**: Independent LayerNorm before combination
+- **Combination**: logits = A + B with NaN/Inf protection
+- **Stability**: Gradient clipping and numerical safeguards
+- **Parameters**: ~2.5M total
 
 ### Value Head
-- **Architecture**: 1×1 conv (C→64) → flatten (4096) → MLP: 4096→C→C/2→1 with SiLU + dropout; tanh at end
-- **Multi-Modal Input**: Enhanced with visual and strategic context features
+- **Architecture**: 1×1 conv (320→64) → flatten → FC → tanh
+- **Output**: Scalar win probability (-1 to 1)
+- **Parameters**: ~200K
 
-### SSL Head
-- **Enhanced Output**: 13-class per-square logits (13×8×8) with expanded task set
-- **Label Smoothing**: 0.05–0.1 for improved training stability
-- **Multi-Task Losses**: Weighted combination of all SSL tasks
-- **Standard Contiguous**: Ensured before CE for MPS compatibility
+### SSL Head (Multi-Task Learning)
+- **Architecture**: 1×1 conv (320→64) → 13×8×8 output
+- **SSL Tasks**: 13-class prediction per-square (empty + 12 piece types)
+- **Loss Function**: Cross-entropy with SSL curriculum
+- **Training**: Progressive difficulty increase during training
+- **Parameters**: ~500K
 
-### LLM Integration Layer
-- **Chess Tutor**: Fine-tuned Gemma 3 270M for strategic analysis
-- **Input Processing**: Position encoding for LLM consumption
-- **Output Integration**: Strategic insights fed back into training pipeline
-- **Active Learning**: LLM identifies training needs and generates targeted scenarios
+### Outputs (Production Interface)
+- **Policy**: (B, 4672) - move logits (from-square × to-square)
+- **Value**: (B,) - win probability (-1 to 1)
+- **SSL**: (B, 13, 8, 8) - piece predictions per-square
+- **Memory Usage**: ~14GB MPS during training
 
-### Outputs (Enhanced)
-- **Policy**: (B, 4672) - unchanged externally
-- **Value**: (B,) - enhanced with strategic context
-- **SSL**: (B, 13, 8, 8) - expanded task set
-- **Strategic Context**: (B, C) - LLM-derived strategic features
+### Training Configuration
+- **Batch Size**: 192 (effective 384 with gradient accumulation)
+- **Learning Rate**: 0.001 with warmup
+- **Precision**: FP16 mixed precision
+- **Gradient Clipping**: 0.5 norm threshold
+- **SSL Weight**: 0.05 in total loss
+- **SSL Warmup**: 200 steps
 
 ## 4) Parameter Budget and Efficiency
 
-### Current Model Analysis
-- **Total Parameters**: ~27.3M
-- **Policy FC Dominance**: 19.1M (70% of total) - major bottleneck
-- **Trunk Capacity**: 160×14 = 2,240 channels - limited for complex learning
+### Current Model Analysis (53M Parameters)
+- **Total Parameters**: 53,217,919 (53.2M) - production model
+- **Trunk (ResNet-24)**: ~48M (90.3%) - deep learning capacity
+- **Policy Head**: ~2.5M (4.7%) - dual branch efficiency
+- **Value Head**: ~200K (0.4%) - lightweight evaluation
+- **SSL Head**: ~500K (0.9%) - multi-task learning
+- **Chess Attention**: ~2M (3.7%) - spatial relationships
 
-### V2 Parameter Distribution
-- **Factorized Policy**: K=256 saves ~14.6M parameters
-- **Enhanced Trunk**: 192×16 = 3,072 channels (+37% capacity)
-- **Multi-Modal Encoder**: ~2M parameters for visual processing
-- **LLM Integration**: ~1M parameters for strategic context
-- **Total Estimate**: 22–26M parameters (within 30M constraint)
+### Production Efficiency
+- **Policy Head**: Dual branch design with factorization saves parameters
+- **SSL Integration**: Multi-task learning adds minimal overhead
+- **Memory Optimized**: 14GB MPS limit enables full training
+- **Training Stable**: No NaN/Inf issues with current safeguards
 
 ### Efficiency Improvements
 - **Parameter Redistribution**: Move compute from policy FC to trunk capacity
