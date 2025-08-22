@@ -6,6 +6,7 @@ import os
 import queue as pyqueue
 from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
+from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List
 
@@ -16,7 +17,7 @@ from .logging_utils import setup_logging
 from .selfplay.internal import selfplay_worker, math_div_ceil
 from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
 from .config import select_device
-from train_comprehensive import train_from_config as train_main
+from azchess.training.train import train_from_config as train_main
 from .arena import play_match
 from .elo import EloBook, update_elo
 import gc
@@ -25,6 +26,23 @@ from .data_manager import DataManager
 from .monitor import dir_stats, disk_free, memory_usage_bytes
 import numpy as np
 import time
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
+
+
+def cleanup_temp_files(data_dir: Path) -> None:
+    """Clean up temporary files from previous runs."""
+    try:
+        # Clean up any leftover temp files
+        temp_patterns = ["*.tmp", "*.temp", "temp_*", "*_temp"]
+        for pattern in temp_patterns:
+            for temp_file in data_dir.glob(pattern):
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass  # Ignore cleanup errors
+    except Exception:
+        pass  # Ignore cleanup errors
 
 
 # Top-level helper for external engine process (macOS spawn-safe)
@@ -50,8 +68,20 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 tui_mode: str = "bars", no_shared_infer: bool | None = None, quick_start: bool = False):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
+
+    # Validate MCTS config
+    from .mcts import MCTSConfig
+    mcts_cfg_dict = cfg.mcts()
+    if not mcts_cfg_dict:
+        raise ValueError("MCTS config section is missing in config.yaml")
+    
+    mcts_config = MCTSConfig.from_dict(mcts_cfg_dict)
+    required_keys = set(MCTSConfig.__dataclass_fields__.keys())
+    missing_keys = required_keys - set(mcts_cfg_dict.keys())
+    if missing_keys:
+        raise ValueError(f"Missing required MCTS config keys: {sorted(missing_keys)}")
+
     try:
-        import torch as _torch
         import os as _os
         dev_req = cfg.get("device", "auto")
         from .config import select_device as _sel
@@ -61,8 +91,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             _os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
             _os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.8'
             _os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = '0.6'
-        mps_built = getattr(_torch.backends.mps, 'is_built', lambda: False)()
-        mps_avail = getattr(_torch.backends.mps, 'is_available', lambda: False)()
+        mps_built = getattr(torch.backends.mps, 'is_built', lambda: False)()
+        mps_avail = getattr(torch.backends.mps, 'is_available', lambda: False)()
         logger.info(f"Device requested={dev_req} selected={dev_sel} | MPS built={mps_built} available={mps_avail}")
     except Exception:
         pass
@@ -180,7 +210,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             random.seed(seed)
             np.random.seed(seed)
             try:
-                _torch.manual_seed(seed)
+                torch.manual_seed(seed)
             except Exception:
                 pass
             sp_cfg["seed"] = int(seed)
@@ -190,7 +220,15 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     games_per_worker = math_div_ceil(games_target, workers)
 
     Path(cfg.training().get("checkpoint_dir", "checkpoints")).mkdir(parents=True, exist_ok=True)
-    best_ckpt = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "best.pt"
+    
+    # Check for checkpoint override in orchestrator config
+    checkpoint_override = cfg.orchestrator().get("checkpoint_override")
+    if checkpoint_override:
+        best_ckpt = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / checkpoint_override
+        logger.info(f"Using checkpoint override: {best_ckpt}")
+    else:
+        best_ckpt = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "best.pt"
+        logger.info(f"Using default checkpoint: {best_ckpt}")
     
     # Auto-create best.pt from model.pt if it doesn't exist
     if not best_ckpt.exists():
@@ -217,6 +255,9 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     ) as progress:
         # Self-play
         def run_selfplay_once():
+            # Clean up any leftover temp files from previous runs
+            cleanup_temp_files(Path(cfg.get("data_dir", "data")))
+
             logger.info("Starting self-play")
             # Reduce MCTS verbosity during self-play to keep TUI readable
             try:
@@ -225,6 +266,9 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 _mcts_logger.setLevel(_logging.ERROR)
             except Exception:
                 pass
+            
+            # Ensure torch is available in this scope
+            import torch
             q: Queue = Queue()
             procs: List[Process] = []
             use_table = (tui_mode == "table")
@@ -252,7 +296,28 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                         logger.info("Using model from checkpoint")
                     else:
                         logger.info("Using checkpoint directly as model state dict")
-                    logger.info(f"Model state dict loaded successfully with {len(model_state_dict)} parameters")
+                    logger.info(f"Model state dict loaded successfully with {len(model_state_dict)} layers")
+                    
+                    # Log actual parameter count for clarity
+                    try:
+                        from azchess.model import PolicyValueNet
+                        temp_model = PolicyValueNet.from_config(sp_cfg["model"])
+                        actual_params = temp_model.count_parameters()
+                        logger.info(f"Model architecture has {actual_params:,} total parameters")
+                        del temp_model  # Clean up temporary model
+                    except Exception as e:
+                        logger.debug(f"Could not determine parameter count: {e}")
+                    
+                    # If using checkpoint override, copy to best.pt for future runs
+                    if checkpoint_override and checkpoint_override != "best.pt":
+                        best_pt_path = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "best.pt"
+                        try:
+                            import shutil
+                            shutil.copy2(ckpt_for_sp, best_pt_path)
+                            logger.info(f"Copied {checkpoint_override} to {best_pt_path} for future runs")
+                        except Exception as e:
+                            logger.warning(f"Failed to copy checkpoint override to best.pt: {e}")
+                    
                 except Exception as e:
                     logger.error(f"Failed to pre-load checkpoint state_dict: {e}")
                     raise
@@ -271,15 +336,17 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 stop_event = MPEvent()
                 server_ready_event = MPEvent()
                 
-                # Create shared memory resources for each worker
+                # Create shared memory resources for each worker with optimized batch sizes
                 model_params = sp_cfg["model"]
                 sp_params = sp_cfg["selfplay"]
+                # Use larger batch sizes for better GPU utilization
+                optimized_batch_size = max(32, sp_params.get('batch_size', 32))
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
                         worker_id=i,
                         planes=model_params['planes'],
                         policy_size=model_params['policy_size'],
-                        max_batch_size=sp_params['batch_size']
+                        max_batch_size=optimized_batch_size
                     )
                     shared_memory_resources.append(res)
 
@@ -563,6 +630,9 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         except Exception as e:
             logger.warning(f"Data compaction failed: {e}")
 
+        # Re-initialize DataManager to ensure it sees the new data
+        dm = DataManager(base_dir=cfg.get("data_dir", "data"))
+
         if run_doctor_fix:
             try:
                 valid, corrupted = dm.validate_data_integrity()
@@ -607,6 +677,20 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 return
         except Exception:
             logger.warning("Could not obtain data stats; attempting training anyway.")
+
+        # Memory cleanup between phases (especially important for MPS)
+        logger.info("Performing memory cleanup between self-play and training phases")
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.backends.mps.is_available():
+                # Force MPS memory cleanup
+                torch.mps.empty_cache()
+                logger.info("MPS memory cache cleared")
+            logger.info("Memory cleanup completed")
+        except Exception as e:
+            logger.warning(f"Memory cleanup failed: {e}")
 
         # Train phase
         logger.info("Starting training phase")

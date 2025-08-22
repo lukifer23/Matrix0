@@ -48,7 +48,7 @@ def main():
             "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
         }
     )
-    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device=device)
+    mcts = MCTS(MCTSConfig.from_dict(mcfg_dict), model, device=device)
 
     board = chess.Board()
     print("Play vs engine. Enter moves in UCI (e.g., e2e4, e7e8q). Type 'quit' to exit.")

@@ -61,8 +61,8 @@ class ExternalEngineSelfPlay:
             }
         )
         self.matrix0_mcts = MCTS(
-            self.matrix0_model,
             MCTSConfig.from_dict(mcfg_dict),
+            self.matrix0_model,
             self.device,
         )
         

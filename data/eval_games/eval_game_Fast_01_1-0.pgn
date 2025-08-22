@@ -1,6 +1,6 @@
 [Event "Matrix0 Enhanced Evaluation Game 1"]
 [Site "Matrix0 Arena"]
-[Date "2025.08.20"]
+[Date "2025.08.21"]
 [Round "Fast - Game 1"]
 [White "Model A (trained)"]
 [Black "Model B (baseline)"]
@@ -8,4 +8,4 @@
 [TimeControl "unlimited"]
 [Termination "resignation"]
 
-1. e4 c6 2. c4 a6 3. Nc3 Ra7 4. Nf3 e6 5. d4 Qh4 6. Be2 Ra8 7. Be3 Qxf2+ 8. Kxf2 b6 9. d5 h5 10. Nd4 Nf6 11. Qf1 c5 12. Nc6 Be7 13. Nxe7 e5 14. Qc1 d6 15. Nc6 Nh7 16. Rb1 Ra7 17. Nxe5 Nf6 18. Nf3 Rg8 19. Nd2 1-0
+1. c3 g5 2. e3 Bg7 3. Nf3 Nf6 4. d4 d5 5. Bd3 Nc6 6. a4 Bg4 7. Nbd2 O-O 8. Qb3 Bxf3 9. O-O e6 10. Nxf3 Na5 11. Qb4 Nb3 12. c4 Nxc1 13. g3 Ng4 14. Rfxc1 Nxh2 15. e4 c5 16. Kg2 Qd6 17. b3 dxe4 18. d5 exd3 19. Rc2 d2 20. Nd4 cxd4 21. Kh3 Qd7 22. f4 Qd8 23. Qxb7 Rb8 24. Qb6 Rc8 25. Qxd8 Rcxd8 26. g4 Rxd5 27. cxd5 f5 28. Rxd2 Nf3 29. Rxd4 Nd2 30. Rb1 Ne4 31. fxg5 Nd2 32. Rf4 Nf1 33. Ra1 e5 34. Rxf5 1-0

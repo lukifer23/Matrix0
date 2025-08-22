@@ -25,8 +25,8 @@ def play_match(ckpt_a: str, ckpt_b: str, games: int, cfg: Config) -> float:
     model_a.load_state_dict(state_a.get("model_ema", state_a["model"]))
     model_b.load_state_dict(state_b.get("model_ema", state_b["model"]))
     
-    mcts_a = MCTS(model_a, mcfg, device)
-    mcts_b = MCTS(model_b, mcfg, device)
+    mcts_a = MCTS(mcfg, model_a, device)
+    mcts_b = MCTS(mcfg, model_b, device)
 
     score = 0.0
     for g in range(games):

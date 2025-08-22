@@ -27,6 +27,9 @@ class DataShard:
     version: str
     corrupted: bool = False
 
+    def __repr__(self) -> str:
+        return f"DataShard(path={self.path}, samples={self.sample_count}, corrupted={self.corrupted})"
+
 
 @dataclass
 class DataStats:
@@ -295,7 +298,7 @@ class DataManager:
                             yield batch_states, batch_policies, batch_values
                             
             except Exception as e:
-                logger.error(f"Error loading shard {shard_path}: {e}")
+                logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
                 self._mark_shard_corrupted(shard_path)
                 continue
     

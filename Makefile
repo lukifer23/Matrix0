@@ -10,7 +10,8 @@ help:
 	@echo "----------------"
 	@echo "setup          - Create virtual environment and install dependencies."
 	@echo "install        - Install/update Python dependencies."
-	@echo "train          - Run the comprehensive training script."
+	@echo "train          - Run the training module directly."
+	@echo "orchestrator   - Run the complete training pipeline with orchestrator."
 	@echo "selfplay       - Start self-play workers to generate training data."
 	@echo "data-stats     - Display statistics about the training data."
 	@echo "lint           - Run linter and code formatter (requires ruff)."
@@ -33,8 +34,12 @@ install:
 
 # Core Workflows
 train:
-	@echo "Starting comprehensive training..."
-	$(PYTHON_EXEC) train_comprehensive.py --config config.yaml
+	@echo "Starting training module..."
+	$(PYTHON_EXEC) -m azchess.training.train --config config.yaml --steps 1000
+
+orchestrator:
+	@echo "Starting complete training pipeline with orchestrator..."
+	$(PYTHON_EXEC) -m azchess.orchestrator --config config.yaml
 
 selfplay:
 	@echo "Starting self-play data generation..."

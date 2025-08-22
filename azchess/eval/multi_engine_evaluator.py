@@ -45,7 +45,7 @@ class MultiEngineEvaluator:
         
         # Load Matrix0 model
         self.matrix0_model = PolicyValueNet.from_config(config.model()).to(self.device)
-        self.matrix0_mcts = MCTS(self.matrix0_model, MCTSConfig.from_dict(config.eval()), self.device)
+        self.matrix0_mcts = MCTS(MCTSConfig.from_dict(config.eval()), self.matrix0_model, self.device)
         
         # Load best checkpoint if available
         checkpoint_path = config.engines().get("matrix0", {}).get("checkpoint", "checkpoints/best.pt")

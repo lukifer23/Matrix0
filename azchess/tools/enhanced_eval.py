@@ -602,8 +602,8 @@ class EnhancedEvaluator:
                 try:
                     # Create completely fresh MCTS instances for each game to avoid state corruption
                     self.logger.info(f"Game {self.current_game}: Creating fresh MCTS instances")
-                    mcts_a_fresh = MCTS(self.model_a, mcfg, self.device)
-                    mcts_b_fresh = MCTS(self.model_b, mcfg, self.device)
+                    mcts_a_fresh = MCTS(mcfg, self.model_a, self.device)
+                    mcts_b_fresh = MCTS(mcfg, self.model_b, self.device)
                     self.logger.info(f"Game {self.current_game}: Fresh MCTS instances created - A: {id(mcts_a_fresh)}, B: {id(mcts_b_fresh)}")
                     
                     # Play game

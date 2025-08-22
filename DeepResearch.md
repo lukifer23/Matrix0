@@ -123,9 +123,9 @@ mcts:
 - **Batch optimization**: Already implemented (32 leaves per iteration)
 
 #### Required Actions
-- [ ] **Profile critical loops**: Identify hotspots in Python MCTS code
-- [ ] **Implement multi-threaded search**: Parallel MCTS within single game
-- [ ] **Optimize memory management**: More aggressive TT cleanup and pruning
+- [x] **Profile critical loops**: Identify hotspots in Python MCTS code
+- [x] **Implement multi-threaded search**: Parallel MCTS within single game
+- [x] **Optimize memory management**: More aggressive TT cleanup and pruning
 - [ ] **Tune hyperparameters**: Optimize cpuct, dirichlet, FPU for decisive play
 
 #### Implementation Notes

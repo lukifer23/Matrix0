@@ -101,7 +101,7 @@ def main():
             "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
         }
     )
-    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device)
+    mcts = MCTS(MCTSConfig.from_dict(mcfg_dict), model, device)
 
     # Stockfish
     import chess.engine

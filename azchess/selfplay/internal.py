@@ -92,10 +92,20 @@ def apply_polyglot_opening(board: chess.Board, polyglot_path: str, max_plies: in
 def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: int, q: Queue | None = None,
                     shared_memory_resource: Dict[str, Any] | None = None):
     # Set up logging for this worker
-    lvl_name = os.environ.get('MATRIX0_WORKER_LOG_LEVEL', 'WARNING').upper()
-    level = getattr(logging, lvl_name, logging.WARNING)
+    lvl_name = os.environ.get('MATRIX0_WORKER_LOG_LEVEL', 'INFO').upper()  # Changed to INFO for debugging
+    level = getattr(logging, lvl_name, logging.INFO)
     logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(f"selfplay_worker_{proc_id}")
+
+    logger.info(f"Worker {proc_id} starting with PID {os.getpid()}")
+    logger.info(f"Worker {proc_id} config: games={games}, device={select_device(cfg_dict.get('device', 'auto'))}")
+    logger.info(f"Worker {proc_id} checkpoint: {ckpt_path}")
+
+    # Log system info
+    import psutil
+    process = psutil.Process()
+    logger.info(f"Worker {proc_id} memory usage: {process.memory_info().rss / 1024 / 1024:.1f}MB")
+    logger.info(f"Worker {proc_id} CPU usage: {process.cpu_percent()}%")
     
     base_seed = int(cfg_dict.get("seed", 1234))
     random.seed(base_seed + proc_id)
@@ -107,7 +117,9 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     # Avoid CPU over-subscription when using GPU/MPS
     try:
         if device != "cpu":
-            torch.set_num_threads(max(1, os.cpu_count() // 2))
+            # Use config thread count or default to 2 cores per worker
+            config_threads = getattr(config, 'num_threads', 2)
+            torch.set_num_threads(config_threads)
     except Exception:
         pass
 
@@ -192,8 +204,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         else:
             logger.warning(f"Tablebase path not found or not a directory: {tb_path}")
 
-    # Set reasonable simulation count for testing
-    sims = sp_cfg.get("num_simulations", 50)  # Default to 50 instead of 800
+    # Set simulation count from config (no more hardcoded limits)
+    sims = sp_cfg.get("num_simulations", 800)  # Use config default, not hardcoded 50
     logger.info(f"Worker {proc_id}: sims={sims} games={games}")
 
     # Build MCTS config with robust fallbacks
@@ -227,8 +239,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         }
     )
     mcts = MCTS(
-        model,
         MCTSConfig.from_dict(mcfg_dict),
+        model,
         device=device,
         inference_backend=infer_backend,
     )

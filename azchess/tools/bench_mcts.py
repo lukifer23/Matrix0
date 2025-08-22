@@ -63,7 +63,7 @@ def bench_mcts(cfg_path: str, sims: int, boards: int, shared: bool) -> None:
             "tt_cleanup_frequency": int(cfg.mcts().get("tt_cleanup_frequency", 500)),
         }
     )
-    mcts = MCTS(model, MCTSConfig.from_dict(mcfg_dict), device, inference_backend=backend)
+    mcts = MCTS(MCTSConfig.from_dict(mcfg_dict), model, device, inference_backend=backend)
 
     # Generate boards
     bs = [random_board() for _ in range(boards)]

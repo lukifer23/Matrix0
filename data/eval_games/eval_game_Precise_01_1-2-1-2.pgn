@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 1"]
+[Site "Matrix0 Arena"]
+[Date "2025.08.21"]
+[Round "Precise - Game 1"]
+[White "Model A (trained)"]
+[Black "Model B (baseline)"]
+[Result "1/2-1/2"]
+[TimeControl "unlimited"]
+[Termination "unknown"]
+
+1. e4 d6 2. d4 Nf6 3. Qf3 e5 4. dxe5 dxe5 5. Nc3 Bb4 6. Ne2 O-O 7. a3 Nd5 8. axb4 Nxc3 9. Be3 Qg5 10. h3 Qd8 11. Qf6 Qe8 12. Ra6 Nc6 13. Qd8 Qxd8 14. Nd4 Bd7 15. Ne6 Kh8 16. Nxd8 Nd5 17. Bc1 Raxd8 18. Rxa7 Nde7 19. Ra8 Ng8 20. Rxd8 Bc8 21. Rxf8 h5 22. Bb5 h4 23. Bxc6 Kh7 24. Rxc8 bxc6 25. Kd1 Kh8 26. Rd8 Kh7 27. Rd5 Kh8 28. Rd8 Kh7 29. Rd5 Kh8 1/2-1/2

@@ -65,8 +65,8 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
         missing_b, unexpected_b = model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
     except Exception:
         model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
-    _P_MCTS_A = MCTS(model_a_local, _P_MCFG, _P_DEVICE)
-    _P_MCTS_B = MCTS(model_b_local, _P_MCFG, _P_DEVICE)
+    _P_MCTS_A = MCTS(_P_MCFG, model_a_local, _P_DEVICE)
+    _P_MCTS_B = MCTS(_P_MCFG, model_b_local, _P_DEVICE)
 
 
 def _arena_run_one_game(args_tuple):
@@ -151,8 +151,8 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
             # Use shared inference servers (no per-process models)
             infer_a = InferenceClient(shared_res_a)
             infer_b = InferenceClient(shared_res_b)
-            mcts_a_local = MCTS(None, mcfg_local, device_local, inference_backend=infer_a)
-            mcts_b_local = MCTS(None, mcfg_local, device_local, inference_backend=infer_b)
+            mcts_a_local = MCTS(mcfg_local, None, device_local, inference_backend=infer_a)
+            mcts_b_local = MCTS(mcfg_local, None, device_local, inference_backend=infer_b)
         else:
             model_a_local = PolicyValueNet.from_config(cfg_local.model()).to(device_local)
             model_b_local = PolicyValueNet.from_config(cfg_local.model()).to(device_local)
@@ -171,8 +171,8 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
             sb = torch.load(ckpt_b_path, map_location=device_local, weights_only=False)
             model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
             model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
-            mcts_a_local = MCTS(model_a_local, mcfg_local, device_local)
-            mcts_b_local = MCTS(model_b_local, mcfg_local, device_local)
+            mcts_a_local = MCTS(mcfg_local, model_a_local, device_local)
+            mcts_b_local = MCTS(mcfg_local, model_b_local, device_local)
     except Exception as e:
         try:
             q_local.put({"type": "error", "msg": f"worker_init_failed: {e}"})
@@ -592,17 +592,37 @@ def play_match(
     add_safe_globals([numpy.core.multiarray.scalar])
     state_a = torch.load(ckpt_a, map_location=device, weights_only=False)
     state_b = torch.load(ckpt_b, map_location=device, weights_only=False)
+    # Handle different checkpoint formats robustly
     if "model_ema" in state_a:
         model_a.load_state_dict(state_a["model_ema"])
-    else:
+    elif "model" in state_a:
         model_a.load_state_dict(state_a["model"])
+    elif "model_state_dict" in state_a:
+        model_a.load_state_dict(state_a["model_state_dict"])
+    else:
+        # Try to find any key that looks like model weights
+        model_keys = [k for k in state_a.keys() if 'model' in k.lower() and 'state' in k.lower()]
+        if model_keys:
+            model_a.load_state_dict(state_a[model_keys[0]])
+        else:
+            raise ValueError(f"No recognizable model state found in checkpoint A: {list(state_a.keys())}")
+    
     if "model_ema" in state_b:
         model_b.load_state_dict(state_b["model_ema"])
-    else:
+    elif "model" in state_b:
         model_b.load_state_dict(state_b["model"])
+    elif "model_state_dict" in state_b:
+        model_b.load_state_dict(state_b["model_state_dict"])
+    else:
+        # Try to find any key that looks like model weights
+        model_keys = [k for k in state_b.keys() if 'model' in k.lower() and 'state' in k.lower()]
+        if model_keys:
+            model_b.load_state_dict(state_b[model_keys[0]])
+        else:
+            raise ValueError(f"No recognizable model state found in checkpoint B: {list(state_b.keys())}")
     print("🧠 Creating MCTS instances...")
-    mcts_a = MCTS(model_a, mcfg, device)
-    mcts_b = MCTS(model_b, mcfg, device)
+    mcts_a = MCTS(mcfg, model_a, device)
+    mcts_b = MCTS(mcfg, model_b, device)
     print("✅ Models loaded successfully!")
     print("=" * 60)
 

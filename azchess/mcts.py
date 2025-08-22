@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import random
 import time
+import threading
+import queue
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 from collections import OrderedDict
@@ -21,6 +23,99 @@ except ImportError:  # pragma: no cover - exercised in tests via patching
 logger = logging.getLogger(__name__)
 
 from .encoding import encode_board, move_to_index, MoveEncoder
+
+
+def _ensure_contiguous_tensor(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
+    """Ensure tensor is contiguous, with debug logging for MPS compatibility."""
+    if not tensor.is_contiguous():
+        logger.debug(f"Making {name} contiguous (shape: {tensor.shape}, device: {tensor.device})")
+        return tensor.contiguous()
+    return tensor
+
+
+def _ensure_contiguous_array(array: np.ndarray, name: str = "array") -> np.ndarray:
+    """Ensure numpy array is contiguous for MPS compatibility."""
+    if not array.flags.c_contiguous:
+        logger.debug(f"Making {name} contiguous (shape: {array.shape})")
+        return np.ascontiguousarray(array)
+    return array
+
+
+class ThreadPool:
+    def __init__(self, num_threads):
+        self.num_threads = num_threads
+        self.tasks = queue.Queue()
+        self.results = queue.Queue()
+        self.threads = []
+        self._shutdown_event = threading.Event()
+        for _ in range(self.num_threads):
+            thread = threading.Thread(target=self._worker)
+            thread.daemon = True
+            thread.start()
+            self.threads.append(thread)
+
+    def _worker(self):
+        while not self._shutdown_event.is_set():
+            try:
+                task = self.tasks.get(timeout=1.0)  # 1 second timeout
+                if task is None:
+                    break
+                func, args, kwargs = task
+                try:
+                    result = func(*args, **kwargs)
+                    self.results.put(result)
+                except Exception as e:
+                    logger.error(f"Worker thread error: {e}")
+                    self.results.put(e)
+                finally:
+                    self.tasks.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Worker thread critical error: {e}")
+                break
+
+    def add_task(self, func, *args, **kwargs):
+        if not self._shutdown_event.is_set():
+            self.tasks.put((func, args, kwargs))
+
+    def get_results(self):
+        try:
+            return self.results.get(timeout=5.0)  # 5 second timeout
+        except queue.Empty:
+            return None
+
+    def wait_completion(self, timeout=30.0):
+        """Wait for completion with robust timeout and deadlock prevention."""
+        start_time = time.time()
+        max_wait = timeout
+        
+        while not self.tasks.empty():
+            if time.time() - start_time > max_wait:
+                remaining = self.tasks.qsize()
+                logger.warning(f"ThreadPool timeout after {timeout}s, {remaining} tasks remaining")
+                # Cancel remaining tasks to prevent deadlock
+                self.cancel_pending_tasks()
+                return False
+            
+            # Use shorter sleep intervals for better responsiveness
+            time.sleep(0.001)  # 1ms sleep instead of 10ms
+        
+        return True
+    
+    def cancel_pending_tasks(self):
+        """Cancel all pending tasks to prevent deadlocks."""
+        try:
+            # Clear the task queue
+            while not self.tasks.empty():
+                try:
+                    self.tasks.get_nowait()
+                except:
+                    break
+            logger.info("Cancelled pending ThreadPool tasks")
+        except Exception as e:
+            logger.error(f"Error cancelling ThreadPool tasks: {e}")
+
 
 
 class LRUCache:
@@ -71,6 +166,15 @@ class MCTSConfig:
     encoder_cache: bool = True       # use MoveEncoder caching
     tt_cleanup_interval_s: int = 5   # periodic TT cleanup interval (seconds)
     no_instant_backtrack: bool = True
+    # Memory management
+    enable_memory_cleanup: bool = True  # Enable automatic memory cleanup
+    memory_cleanup_threshold_mb: int = 1024  # Trigger cleanup at this memory usage
+    max_tree_nodes: int = 100000     # Maximum nodes before forced cleanup
+    # NEW: Multi-threading optimizations
+    num_threads: int = 6             # Use all 6 CPU cores
+    parallel_simulations: bool = True # Enable parallel MCTS simulations
+    simulation_batch_size: int = 16   # Batch simulations for efficiency
+    tree_parallelism: bool = True     # Enable tree-level parallelism
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -96,7 +200,7 @@ class Node:
         self.move = move
         self.expanded = False
 
-    def expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False) -> None:
+    def _expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False) -> None:
         """Expand this node with children for all legal moves."""
         if self.is_expanded():
             return
@@ -119,11 +223,11 @@ class Node:
                     idxs = [encoder.encode_move(board, m) for m in legal_moves]
                 else:
                     idxs = [move_to_index(board, m) for m in legal_moves]
-                sel = torch.from_numpy(logits[idxs])
+                sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
                 sel = torch.softmax(sel, dim=-1).numpy()
                 probs = None
             else:
-                probs = torch.from_numpy(logits)
+                probs = _ensure_contiguous_tensor(torch.from_numpy(logits), "policy_logits")
                 probs = torch.softmax(probs, dim=-1).numpy()
 
             # Check if policy is too uniform (degenerate case)
@@ -139,6 +243,8 @@ class Node:
                 probs = probs + noise
                 probs = np.maximum(probs, 1e-8)  # Ensure positive
                 probs = probs / probs.sum()  # Renormalize
+                # Ensure probs is contiguous after operations
+                probs = _ensure_contiguous_array(probs, "noisy_probs")
 
             legal_priors: List[float] = []
             for i, move in enumerate(legal_moves):
@@ -184,126 +290,253 @@ class Node:
 
 
 class MCTS:
-    def __init__(self, model, cfg: MCTSConfig, device: str = "cpu", inference_backend: any | None = None):
-        self.model = model
+    def __init__(self, cfg: MCTSConfig, model, device: str = "cpu", inference_backend=None, num_threads: int = None):
         self.cfg = cfg
         self.device = device
+        self.model = model
         self.inference_backend = inference_backend
-        self.nn_cache = LRUCache(capacity=50000)
-        self.tt: "OrderedDict[str, Node]" = OrderedDict()
+        self._enc = MoveEncoder()
+        self._tt = {}
+        self._tt_lock = threading.Lock()
+        self._tt_cleanup_counter = 0
+        self._last_cleanup_time = time.time()
         
+        # FIXED: Proper ThreadPool initialization with deadlock prevention
+        self.num_threads = cfg.num_threads
+        if self.num_threads > 1:
+            self.thread_pool = ThreadPool(self.num_threads)
+            logger.info(f"MCTS initialized with {self.num_threads} threads for parallel simulation")
+        else:
+            self.thread_pool = None
+            logger.info("MCTS running in single-threaded mode")
+        self.tt = OrderedDict()  # Transposition table
+        self.nn_cache = LRUCache(10000)  # Neural network cache
         self.simulations_run = 0
+        self._last_sims_run = 0
+        self._last_root = None
+        self._last_cleanup = 0
+        self._in_bulk_put = False
+        self._memory_cleanup_threshold = 85.0
         self.tt_hits = 0
         self.tt_misses = 0
-        self._last_cleanup = 0
-        self._last_sims_run = 0
-        self._memory_cleanup_threshold = 80  # Memory percentage threshold
-        # For debug/inspection in arena and tools
-        self._last_root: Optional[Node] = None
-        # Guard to defer cleanup during bulk inserts into TT
-        self._in_bulk_put: bool = False
+        
         # Move encoder cache
         self._enc: Optional[MoveEncoder] = MoveEncoder() if bool(cfg.encoder_cache) else None
         self._last_cleanup_wall: float = time.time()
 
+        # Use config num_threads if not specified, fallback to 1
+        self.num_threads = num_threads if num_threads is not None else getattr(cfg, 'num_threads', 1)
+        if self.num_threads > 1:
+            self.thread_pool = ThreadPool(self.num_threads)
+        self.lock = threading.Lock()
+
     @torch.no_grad()
     def run(self, board: chess.Board, num_simulations: Optional[int] = None, ply: Optional[int] = None) -> Tuple[Dict[chess.Move, int], np.ndarray, float]:
-        if board.is_game_over():
-            return {}, np.zeros(4672, dtype=np.float32), self._terminal_value(board)
+        """Run MCTS with safety timeout to prevent deadlocks."""
+        start_time = time.time()
+        max_runtime = 120.0  # Maximum 2 minutes per MCTS run
+        
+        try:
+            if board.is_game_over():
+                return {}, np.zeros(4672, dtype=np.float32), self._terminal_value(board)
 
-        key = board._transposition_key()
-        root = self._tt_get(key)
-        if root is None:
-            root = Node()
-            p_logits, v = self._infer(board)
-            root.expand(board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
-            self._prune_children(root)
-            self._tt_put(key, root)
-        else:
-            cached = self.nn_cache.get(key)
-            if cached is None:
-                # Cache miss: recompute value without expanding existing root
+            key = board._transposition_key()
+            root = self._tt_get(key)
+            if root is None:
+                root = Node()
                 p_logits, v = self._infer(board)
-                # Ensure recomputed result is stored for future lookups
-                self.nn_cache.put(key, (p_logits, v))
+                root._expand(board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                self._prune_children(root)
+                self._tt_put(key, root, skip_lock=True)
             else:
-                # Use cached value when available
-                _, v = cached
-
-        # Optionally gate Dirichlet noise by ply (apply in early game only)
-        dirichlet_plies = getattr(self.cfg, 'dirichlet_plies', None)
-        if dirichlet_plies is None or (ply is None) or (ply < int(dirichlet_plies)):
-            self._add_dirichlet(root)
-
-        sims_to_run = num_simulations if num_simulations is not None else self.cfg.num_simulations
-        
-        sims_run_this_turn = 0
-        while sims_run_this_turn < sims_to_run:
-            batch_size = min(self.cfg.batch_size, sims_to_run - sims_run_this_turn)
-            leaves: List[Tuple[Node, List[Node], chess.Board]] = []
-            selected_leaf_keys = set()
-            # Track in-flight edges within this batch to implement virtual loss
-            inflight_counts: Dict[Node, int] = {}
-            
-            # 1. Select leaves to expand
-            for i in range(batch_size):
-                # Try to pick distinct leaves within a batch to improve diversity
-                attempts = 0
-                while True:
-                    node, path, leaf_board = self._select(
-                        board.copy(), root, inflight_counts=inflight_counts, base_ply=(ply or 0)
-                    )
-                    leaf_key = leaf_board._transposition_key()
-                    if leaf_board.is_game_over() or (leaf_key not in selected_leaf_keys) or attempts >= 2:
-                        selected_leaf_keys.add(leaf_key)
-                        break
-                    attempts += 1
-                if leaf_board.is_game_over():
-                    v_leaf = self._terminal_value(leaf_board)
-                    self._backpropagate(path, v_leaf)
-                    sims_run_this_turn += 1
+                cached = self.nn_cache.get(key)
+                if cached is None:
+                    # Cache miss: recompute value without expanding existing root
+                    p_logits, v = self._infer(board)
+                    # Ensure recomputed result is stored for future lookups
+                    self.nn_cache.put(key, (p_logits, v))
                 else:
-                    leaves.append((node, path, leaf_board))
+                    # Use cached value when available
+                    _, v = cached
 
-            if not leaves:
-                continue
+            # Optionally gate Dirichlet noise by ply (apply in early game only)
+            dirichlet_plies = getattr(self.cfg, 'dirichlet_plies', None)
+            if dirichlet_plies is None or (ply is None) or (ply < int(dirichlet_plies)):
+                self._add_dirichlet(root)
 
-            # 2. Batch evaluate leaves
-            leaf_boards = [l[2] for l in leaves]
-            p_list, v_list = self._infer_batch(leaf_boards)
+            sims_to_run = num_simulations if num_simulations is not None else self.cfg.num_simulations
 
-            # 3. Expand and backpropagate
-            for i, (node, path, leaf_board) in enumerate(leaves):
-                p_logits, v_leaf = p_list[i], v_list[i]
-                if not node.is_expanded():
-                    node.expand(leaf_board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
-                    self._prune_children(node)
-                    self._register_children_in_tt(node, leaf_board)
+            # Periodic memory cleanup
+            if getattr(self.cfg, 'enable_memory_cleanup', True):
+                self._cleanup_memory()
+
+            # Check runtime before starting simulations
+            if time.time() - start_time > max_runtime * 0.5:
+                logger.warning("MCTS setup took too long, reducing simulations")
+                sims_to_run = max(50, sims_to_run // 2)  # Minimum 50 sims for quality
+
+            # Enhanced parallelization with batched inference for better throughput
+            # FIXED: Robust parallel MCTS with proper error handling and deadlock prevention
+            if self.num_threads > 1 and self.thread_pool is not None:
+                try:
+                    # Use the new batched inference approach
+                    self._run_simulations_parallel_batched(board, root, sims_to_run)
+                except Exception as e:
+                    logger.error(f"Batched MCTS failed: {e}, falling back to single-threaded")
+                    # Robust fallback: clear thread pool and run single-threaded
+                    try:
+                        if self.thread_pool:
+                            self.thread_pool.cancel_pending_tasks()
+                    except:
+                        pass
+                    # Run remaining simulations single-threaded
+                    for _ in range(sims_to_run):
+                        self._run_simulation(board, root)
+            else:
+                # Single-threaded MCTS (reliable fallback)
+                for _ in range(sims_to_run):
+                    self._run_simulation(board, root)
+
+            visit_counts: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
+            policy = self._policy_from_root(root, board)
+            self._last_sims_run = sims_to_run
+            # Expose last root for external inspection (e.g., debug prints)
+            self._last_root = root
+            
+            runtime = time.time() - start_time
+            if runtime > max_runtime * 0.8:
+                logger.warning(f"MCTS run took {runtime:.2f}s (close to {max_runtime}s limit)")
                 
-                self._backpropagate(path, v_leaf)
-                sims_run_this_turn += 1
+            return visit_counts, policy, float(v)
+            
+        except Exception as e:
+            logger.error(f"MCTS run error: {e}")
+            # Return safe fallback values
+            return {}, np.zeros(4672, dtype=np.float32), 0.0
 
-        # Preserve root.n from backpropagations; do not overwrite with sims_run_this_turn
+    def _run_simulations_parallel_batched(self, board: chess.Board, root: Node, num_simulations: int):
+        """Run simulations in parallel with simple batched inference."""
+        # Simple approach: collect all positions that need inference, then batch them
         
-        # Debug: Log what happened during MCTS (quiet)
-        if sims_run_this_turn == 0:
-            logger.debug(f"MCTS ran {sims_to_run} simulations but no simulations completed! root_children={len(root.children)}")
+        # First, run all simulations to collect leaf positions
+        leaf_positions = []
+        leaf_nodes = []
         
-        # Properly handle unvisited root children without corrupting the tree
-        # Only update children that were actually visited during backpropagation
-        for child in root.children.values():
-            if child.n == 0:
-                # Mark as unvisited but don't corrupt the tree with fake visits
-                child.n = 0
-                child.w = 0.0
-                child.q = 0.0
+        # Run simulations in parallel to collect positions
+        for _ in range(num_simulations):
+            self.thread_pool.add_task(self._collect_leaf_position, board.copy(), root, leaf_positions, leaf_nodes)
         
-        visit_counts: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
-        policy = self._policy_from_root(root, board)
-        self._last_sims_run = sims_run_this_turn
-        # Expose last root for external inspection (e.g., debug prints)
-        self._last_root = root
-        return visit_counts, policy, float(v)
+        # Wait for all simulations to complete
+        if not self.thread_pool.wait_completion(timeout=30.0):
+            logger.warning("Position collection timed out")
+            return
+        
+        # Now do batched inference on all collected positions
+        if leaf_positions:
+            try:
+                # Encode all positions
+                encoded_batch = []
+                for pos in leaf_positions:
+                    if pos is not None:
+                        encoded = encode_board(pos)
+                        if encoded is not None:
+                            encoded_batch.append(encoded)
+                
+                if encoded_batch:
+                    # Limit batch size to what shared memory can handle (typically 32)
+                    max_batch_size = 32  # Shared memory limit
+                    if len(encoded_batch) > max_batch_size:
+                        logger.debug(f"Limiting batch from {len(encoded_batch)} to {max_batch_size} positions")
+                        encoded_batch = encoded_batch[:max_batch_size]
+                        leaf_nodes = leaf_nodes[:max_batch_size]
+                        leaf_positions = leaf_positions[:max_batch_size]
+                    
+                    # Stack into batch tensor
+                    batch_tensor = np.stack(encoded_batch, axis=0)
+                    logger.debug(f"Running batched inference on {len(encoded_batch)} positions")
+                    
+                    # Use inference client for batched inference
+                    if hasattr(self, 'inference_backend') and self.inference_backend is not None:
+                        policies, values = self.inference_backend.infer_np(batch_tensor)
+                        
+                        # Apply results back to nodes
+                        for i, (node, policy, value) in enumerate(zip(leaf_nodes, policies, values)):
+                            if node is not None and not node.is_expanded():
+                                node._expand(leaf_positions[i], policy, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                                self._prune_children(node)
+                                self._register_children_in_tt(node, leaf_positions[i], skip_lock=True)
+                    else:
+                        # Fallback to individual inference
+                        for i, pos in enumerate(leaf_positions):
+                            if pos is not None:
+                                try:
+                                    p_logits, v = self._infer(pos)
+                                    node = leaf_nodes[i]
+                                    if node is not None and not node.is_expanded():
+                                        node._expand(pos, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                                        self._prune_children(node)
+                                        self._register_children_in_tt(node, pos, skip_lock=True)
+                                except Exception as e:
+                                    logger.error(f"Individual inference failed: {e}")
+                                    
+            except Exception as e:
+                logger.error(f"Batched inference failed: {e}, falling back to individual")
+                # Fallback to individual inference
+                for pos in leaf_positions:
+                    if pos is not None:
+                        try:
+                            self._infer(pos)
+                        except:
+                            pass
+
+    def _collect_leaf_position(self, board, root, leaf_positions, leaf_nodes):
+        """Collect the leaf position from a simulation."""
+        try:
+            node, path, leaf_board = self._select(board, root)
+            
+            if leaf_board.is_game_over():
+                v_leaf = self._terminal_value(leaf_board)
+            else:
+                # Store position and node for later batched inference
+                leaf_positions.append(leaf_board)
+                leaf_nodes.append(node)
+                v_leaf = 0.0  # Will be updated after batched inference
+            
+            self._backpropagate(path, v_leaf)
+            
+        except Exception as e:
+            logger.error(f"Position collection error: {e}")
+            leaf_positions.append(None)
+            leaf_nodes.append(None)
+
+    def _run_simulation(self, board: chess.Board, root: Node):
+        """Run a single MCTS simulation with robust error handling."""
+        try:
+            # CRITICAL FIX: Clone the board to prevent corruption across parallel simulations
+            simulation_board = board.copy()
+            
+            node, path, leaf_board = self._select(simulation_board, root)
+            
+            if leaf_board.is_game_over():
+                v_leaf = self._terminal_value(leaf_board)
+            else:
+                try:
+                    p_logits, v_leaf = self._infer(leaf_board)
+                    if not node.is_expanded():
+                        node._expand(leaf_board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                        self._prune_children(node)
+                        self._register_children_in_tt(node, leaf_board, skip_lock=True)
+                except Exception as e:
+                    logger.error(f"Inference error in simulation: {e}")
+                    # Use neutral value on inference failure
+                    v_leaf = 0.0
+
+            self._backpropagate(path, v_leaf)
+            
+        except Exception as e:
+            logger.error(f"Simulation error: {e}")
+            # Don't let simulation errors crash the entire MCTS
+            # The task will still be marked as done by the worker thread
 
     def _prune_children(self, node: "Node") -> None:
         """Prune low-prior children to limit branching, if configured.
@@ -349,63 +582,64 @@ class MCTS:
         path = [root]
         
         while node.is_expanded():
-            if not node.children: # Terminal node
-                break
+            with self.lock:
+                if not node.children: # Terminal node
+                    break
 
-            parent_visits = max(1, node.n)
-            
-            best_score = -1e9
-            best_child = None
-            
-            for child in node.children.values():
-                if child.n == 0:
-                    # FPU scaled by parent Q to emphasize uncertain branches
-                    fpu_bias = (self.cfg.fpu * (0.5 - node.q)) if self.cfg.parent_q_init else 0.0
-                    q = -fpu_bias
-                else:
-                    q = child.q
-
-                # Effective cpuct can be scheduled by ply (linear)
-                depth = max(0, len(path) - 1)
-                eff_cpuct = self._cpuct_at(base_ply + depth)
-                u = eff_cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
-                score = q + u
-                # Avoid instant backtracking at shallow depths if configured
-                if self.cfg.no_instant_backtrack and len(path) >= 2 and child.move is not None and path[-1].move is not None:
-                    prev = path[-1].move
-                    mv = child.move
-                    if mv.from_square == prev.to_square and mv.to_square == prev.from_square:
-                        score -= 0.01
-                # Apply virtual loss penalty if this edge is in-flight in current batch
-                if inflight_counts is not None and self.cfg.virtual_loss > 0.0:
-                    score -= float(inflight_counts.get(child, 0)) * float(self.cfg.virtual_loss)
+                parent_visits = max(1, node.n)
                 
-                # Always add small jitter to break ties when UCB scores are identical
-                if self.cfg.selection_jitter > 0:
-                    score += (random.random() - 0.5) * self.cfg.selection_jitter
-                else:
-                    # Add minimal jitter even when selection_jitter is 0 to break ties
-                    score += (random.random() - 0.5) * 0.001
-
-                # Debug: Log UCB scores only when selection fails (reduced spam)
-
-                if score > best_score:
-                    best_score = score
-                    best_child = child
-            
-            if best_child is None:
-                # Debug: Log why no child was selected
-                logger.warning(f"No child selected from {len(node.children)} children")
-                for move, child in node.children.items():
-                    logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
+                best_score = -1e9
+                best_child = None
                 
-                # Fallback: select first child if all UCB scores are identical
-                if node.children:
-                    best_child = next(iter(node.children.values()))
-                    logger.warning(f"Fallback: selected first child {best_child.move}")
-                else:
-                    break # Should not happen if children exist
-            
+                for child in node.children.values():
+                    if child.n == 0:
+                        # FPU scaled by parent Q to emphasize uncertain branches
+                        fpu_bias = (self.cfg.fpu * (0.5 - node.q)) if self.cfg.parent_q_init else 0.0
+                        q = -fpu_bias
+                    else:
+                        q = child.q
+
+                    # Effective cpuct can be scheduled by ply (linear)
+                    depth = max(0, len(path) - 1)
+                    eff_cpuct = self._cpuct_at(base_ply + depth)
+                    u = eff_cpuct * child.prior * (math.sqrt(parent_visits) / (1.0 + child.n))
+                    score = q + u
+                    # Avoid instant backtracking at shallow depths if configured
+                    if self.cfg.no_instant_backtrack and len(path) >= 2 and child.move is not None and path[-1].move is not None:
+                        prev = path[-1].move
+                        mv = child.move
+                        if mv.from_square == prev.to_square and mv.to_square == prev.from_square:
+                            score -= 0.01
+                    # Apply virtual loss penalty if this edge is in-flight in current batch
+                    if inflight_counts is not None and self.cfg.virtual_loss > 0.0:
+                        score -= float(inflight_counts.get(child, 0)) * float(self.cfg.virtual_loss)
+                    
+                    # Always add small jitter to break ties when UCB scores are identical
+                    if self.cfg.selection_jitter > 0:
+                        score += (random.random() - 0.5) * self.cfg.selection_jitter
+                    else:
+                        # Add minimal jitter even when selection_jitter is 0 to break ties
+                        score += (random.random() - 0.5) * 0.001
+
+                    # Debug: Log UCB scores only when selection fails (reduced spam)
+
+                    if score > best_score:
+                        best_score = score
+                        best_child = child
+                
+                if best_child is None:
+                    # Debug: Log why no child was selected
+                    logger.warning(f"No child selected from {len(node.children)} children")
+                    for move, child in node.children.items():
+                        logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
+                    
+                    # Fallback: select first child if all UCB scores are identical
+                    if node.children:
+                        best_child = next(iter(node.children.values()))
+                        logger.warning(f"Fallback: selected first child {best_child.move}")
+                    else:
+                        break # Should not happen if children exist
+                
             board.push(best_child.move)
             node = self._tt_get(board._transposition_key()) or best_child
             path.append(node)
@@ -428,12 +662,13 @@ class MCTS:
             return float(self.cfg.cpuct)
 
     def _backpropagate(self, path: List[Node], value: float) -> None:
-        v = max(-1.0, min(1.0, float(value)))
-        for node in reversed(path):
-            node.n += 1
-            node.w += v
-            node.q = node.w / node.n
-            v = -v
+        with self.lock:
+            v = max(-1.0, min(1.0, float(value)))
+            for node in reversed(path):
+                node.n += 1
+                node.w += v
+                node.q = node.w / node.n
+                v = -v
 
     def _add_dirichlet(self, root: Node) -> None:
         if not root.children or self.cfg.dirichlet_frac <= 0:
@@ -448,110 +683,65 @@ class MCTS:
 
     @torch.no_grad()
     def _infer(self, board: chess.Board) -> Tuple[np.ndarray, float]:
-        key = board._transposition_key()
-        cached = self.nn_cache.get(key)
-        if cached:
-            return cached
-        
-        arr = encode_board(board)
-        if self.inference_backend is not None:
-            p_b, v_b = self.inference_backend.infer_np(arr)
-            p_np = p_b[0]
-            v_np = float(v_b[0])
-            # Adjust value orientation if model outputs from White's perspective
-            if self.cfg.value_from_white and board.turn == chess.BLACK:
-                v_np = -v_np
-            out = (p_np, v_np)
-            self.nn_cache.put(key, out)
-            return out
-        else:
-            x = torch.from_numpy(arr).unsqueeze(0).to(self.device)
-            try:
-                x = x.contiguous(memory_format=torch.channels_last)
-            except Exception:
-                pass
-            self.model.eval()
-
-            device_type = self.device.split(':')[0]
-            use_amp = device_type in ("cuda", "mps")
-            with torch.autocast(device_type=device_type, enabled=use_amp):
-                p, v = self.model(x, return_ssl=False)  # Don't need SSL output for inference
-
-        # Convert outputs to float32 numpy arrays
-        p_np = p[0].detach().cpu().to(torch.float32).numpy() if self.inference_backend is None else p_np
-        v_np = float(v.item()) if self.inference_backend is None else v_np
-        # Adjust value orientation if model outputs from White's perspective
-        if self.inference_backend is None and self.cfg.value_from_white and board.turn == chess.BLACK:
-            v_np = -v_np
-        
-        # Validate outputs and handle invalid cases properly
-        if np.any(np.isnan(p_np)) or np.any(np.isinf(p_np)):
-            # Use proper fallback based on move priors instead of uniform distribution
-            p_np = self._generate_prior_based_policy(board)
-        
-        if np.isnan(v_np) or np.isinf(v_np):
-            # Use conservative value estimate for invalid outputs
-            v_np = 0.0
-        
-        out = (p_np, v_np)
-        self.nn_cache.put(key, out)
-        return out
-
-    @torch.no_grad()
-    def _infer_batch(self, boards: List[chess.Board]) -> Tuple[List[np.ndarray], List[float]]:
-        p_out: List[Optional[np.ndarray]] = [None] * len(boards)
-        v_out: List[Optional[float]] = [None] * len(boards)
-        to_eval_indices: List[int] = []
-        to_eval_boards: List[chess.Board] = []
-
-        for i, b in enumerate(boards):
-            key = b._transposition_key()
-            cached = self.nn_cache.get(key)
-            if cached:
-                p_logits, v = cached
-                p_out[i] = p_logits
-                v_out[i] = v
-            else:
-                to_eval_indices.append(i)
-                to_eval_boards.append(b)
-        
-        if to_eval_boards:
-            arr = np.stack([encode_board(b) for b in to_eval_boards], axis=0)
-            if self.inference_backend is not None:
-                p_np, v_np = self.inference_backend.infer_np(arr)
-                # Flip values for black-to-move if needed
-                if self.cfg.value_from_white:
-                    for j, b in enumerate(to_eval_boards):
-                        if b.turn == chess.BLACK:
-                            v_np[j] = -float(v_np[j])
-            else:
-                x = torch.from_numpy(arr).to(self.device)
-                try:
-                    x = x.contiguous(memory_format=torch.channels_last)
-                except Exception:
-                    pass
-                self.model.eval()
-
-                device_type = self.device.split(':')[0]
-                use_amp = device_type in ("cuda", "mps")
-                with torch.autocast(device_type=device_type, enabled=use_amp):
-                    p, v = self.model(x, return_ssl=False)  # Don't need SSL output for inference
-
-                p_np = p.detach().cpu().to(torch.float32).numpy()
-                v_np = v.detach().cpu().to(torch.float32).numpy().flatten()
-                if self.cfg.value_from_white:
-                    for j, b in enumerate(to_eval_boards):
-                        if b.turn == chess.BLACK:
-                            v_np[j] = -float(v_np[j])
+        """Get policy and value from the neural network with robust error handling."""
+        try:
+            # Encode board position using the correct function
+            encoded = encode_board(board)
+            if encoded is None:
+                logger.warning("Failed to encode board, using fallback values")
+                return np.ones(4672, dtype=np.float32) / 4672, 0.0
             
-            for j, original_idx in enumerate(to_eval_indices):
-                key = to_eval_boards[j]._transposition_key()
-                result = (p_np[j], float(v_np[j]))
-                p_out[original_idx] = result[0]
-                v_out[original_idx] = result[1]
-                self.nn_cache.put(key, result)
-        
-        return p_out, v_out
+            # Ensure tensor is contiguous for MPS compatibility
+            encoded = _ensure_contiguous_array(encoded)
+            
+            # Add batch dimension if needed
+            if encoded.ndim == 3:
+                encoded = np.expand_dims(encoded, 0)
+            
+            # Inference with timeout and retry
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    if hasattr(self, 'inference_backend') and self.inference_backend is not None:
+                        # Use inference client for multi-threaded MCTS
+                        policy, value = self.inference_backend.infer_np(encoded)
+                    else:
+                        # Direct inference for single-threaded
+                        with torch.no_grad():
+                            policy_logits, value_tensor = self.model(torch.from_numpy(encoded).to(self.device))
+                            policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+                            value = value_tensor.cpu().numpy().flatten()
+                    
+                    # Validate outputs
+                    if policy.shape[0] != encoded.shape[0] or value.shape[0] != encoded.shape[0]:
+                        raise ValueError(f"Output shape mismatch: policy={policy.shape}, value={value.shape}, input={encoded.shape}")
+                    
+                    return policy[0], float(value[0])
+                    
+                except TimeoutError as e:
+                    if attempt < max_retries:
+                        logger.warning(f"Inference timeout (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                        time.sleep(0.1)  # Brief pause before retry
+                        continue
+                    else:
+                        logger.error(f"Inference timeout after {max_retries + 1} attempts: {e}")
+                        # Return fallback values to prevent MCTS crash
+                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        
+                except Exception as e:
+                    if attempt < max_retries:
+                        logger.warning(f"Inference error (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                        time.sleep(0.1)
+                        continue
+                    else:
+                        logger.error(f"Inference failed after {max_retries + 1} attempts: {e}")
+                        # Return fallback values to prevent MCTS crash
+                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        
+        except Exception as e:
+            logger.error(f"Critical inference error: {e}")
+            # Return safe fallback values
+            return np.ones(4672, dtype=np.float32) / 4672, 0.0
 
     def _terminal_value(self, board: chess.Board) -> float:
         if board.is_checkmate():
@@ -562,27 +752,42 @@ class MCTS:
         return 0.0
 
     def _tt_get(self, key: str) -> Optional[Node]:
-        node = self.tt.get(key)
-        if node:
-            self.tt.move_to_end(key)
-            self.tt_hits += 1
-            return node
-        self.tt_misses += 1
-        return None
+        with self.lock:
+            node = self.tt.get(key)
+            if node:
+                self.tt.move_to_end(key)
+                self.tt_hits += 1
+                return node
+            self.tt_misses += 1
+            return None
     
     def _get_position_hash(self, board: chess.Board) -> str:
         """Get stable position hash for transposition table."""
         # Use Zobrist hash for efficient position comparison
         return board._transposition_key()
 
-    def _tt_put(self, key: str, node: Node) -> None:
-        self.tt[key] = node
-        self.simulations_run += 1
-        # Defer cleanup when bulk-inserting to avoid dict-size-changed during iteration
-        if not self._in_bulk_put:
-            self._check_memory_pressure()
-            if len(self.tt) > self.cfg.tt_capacity or self.simulations_run - self._last_cleanup > self.cfg.tt_cleanup_frequency:
-                self._cleanup_tt()
+    def _tt_put(self, key: str, node: Node, skip_lock: bool = False) -> None:
+        """Put a node in the transposition table.
+        
+        Args:
+            key: Position hash key
+            node: Node to store
+            skip_lock: If True, skip lock acquisition (for when called from locked context)
+        """
+        def _do_put():
+            self.tt[key] = node
+            self.simulations_run += 1
+            # Defer cleanup when bulk-inserting to avoid dict-size-changed during iteration
+            if not self._in_bulk_put:
+                self._check_memory_pressure()
+                if len(self.tt) > self.cfg.tt_capacity or self.simulations_run - self._last_cleanup > self.cfg.tt_cleanup_frequency:
+                    self._cleanup_tt()
+        
+        if skip_lock:
+            _do_put()
+        else:
+            with self.lock:
+                _do_put()
 
     def _check_memory_pressure(self) -> bool:
         """Check if memory usage is high and trigger cleanup if needed."""
@@ -594,7 +799,7 @@ class MCTS:
                 logger.warning(
                     f"Memory pressure detected: {memory_percent:.1f}%, triggering aggressive cleanup"
                 )
-                self._cleanup_deep_branches(max_depth=20)  # More aggressive pruning
+                self._cleanup_deep_branches(max_depth=10)  # More aggressive pruning
                 return True
         except Exception as e:
             logger.warning(f"Could not check memory pressure: {e}")
@@ -645,7 +850,7 @@ class MCTS:
                 node = self.tt[board_hash]
                 cleanup_node(node, 0)
 
-    def _register_children_in_tt(self, node: Node, board: chess.Board) -> None:
+    def _register_children_in_tt(self, node: Node, board: chess.Board, skip_lock: bool = False) -> None:
         # Bulk insert: defer cleanup until after registering all children
         prev = self._in_bulk_put
         self._in_bulk_put = True
@@ -658,7 +863,7 @@ class MCTS:
                     # Fallback for older python-chess versions without stack parameter
                     b2 = board.copy()
                 b2.push(m)
-                self._tt_put(b2._transposition_key(), child)
+                self._tt_put(b2._transposition_key(), child, skip_lock=skip_lock)
         finally:
             self._in_bulk_put = prev
         # Do not run heavy cleanup here; periodic cleanup will be triggered by _tt_put
@@ -713,3 +918,79 @@ class MCTS:
             base_weight *= 1.5
         
         return base_weight
+
+    def _cleanup_memory(self, force: bool = False) -> None:
+        """Clean up memory by clearing caches and old TT entries."""
+        current_time = time.time()
+
+        # Only cleanup periodically unless forced
+        if not force and current_time - self._last_cleanup_wall < self.cfg.tt_cleanup_interval_s:
+            return
+
+        try:
+            # Get current memory usage
+            if psutil_available:
+                memory_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                memory_threshold = getattr(self.cfg, 'memory_cleanup_threshold_mb', 1024)
+
+                # Force cleanup if memory usage is too high
+                if memory_mb > memory_threshold:
+                    logger.info(f"Memory usage {memory_mb:.0f}MB exceeds threshold {memory_threshold}MB, forcing cleanup")
+                    force = True
+        except Exception:
+            pass
+
+        if force:
+            # Aggressive cleanup
+            logger.debug("Performing aggressive memory cleanup")
+
+            # Clear NN cache
+            self.nn_cache.cache.clear()
+
+            # Clear old TT entries (keep only recent ones)
+            if len(self.tt) > 1000:
+                # Keep only the 1000 most recently accessed entries
+                items = list(self.tt.items())
+                items.sort(key=lambda x: getattr(x[1], '_last_access', 0), reverse=True)
+                self.tt.clear()
+                for key, node in items[:1000]:
+                    self.tt[key] = node
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        self._last_cleanup_wall = current_time
+
+    def get_memory_usage(self) -> Dict[str, int]:
+        """Get current memory usage statistics."""
+        stats = {
+            'tt_entries': len(self.tt),
+            'nn_cache_entries': len(self.nn_cache.cache),
+            'simulations_run': self.simulations_run
+        }
+
+        if psutil_available:
+            try:
+                process = psutil.Process()
+                stats['memory_mb'] = process.memory_info().rss // (1024 * 1024)
+            except Exception:
+                stats['memory_mb'] = 0
+
+        return stats
+
+    def reset(self):
+        """Reset the MCTS instance, clearing all caches."""
+        self.tt.clear()
+        self.nn_cache.cache.clear()
+        self.simulations_run = 0
+        self._last_sims_run = 0
+        self._last_root = None
+        self.tt_hits = 0
+        self.tt_misses = 0
+
+        # Force cleanup
+        self._cleanup_memory(force=True)

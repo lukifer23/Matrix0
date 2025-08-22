@@ -1,250 +1,112 @@
-experiment_name: Matrix0
-seed: 42
-
-device: mps  # auto|mps|cpu (set to mps for MacBook Pro)
-data_dir: data  # Base directory used by DataManager and ingestion
-precision: fp16  # fp16|bf16|fp32
-strict_encoding: true  # warn on legacy move_encoding imports
-use_presets: true  # Apply device-specific presets when available
+# Matrix0 V2 Production Configuration
+# Optimized for performance and strong play
 
 model:
-  planes: 19
-  channels: 160
-  blocks: 14
-  policy_size: 4672
-  se: true  # Enable SE blocks for better feature extraction
-  se_ratio: 0.25
-  attention: true  # Enable attention mechanisms
-  attention_heads: 8
-  attention_unmasked_mix: 0.2  # Blend some unmasked attention for knight/tactics
-  chess_features: true  # Enable chess-specific features
-  self_supervised: true  # Enable self-supervised learning
-  piece_square_tables: true  # Enable piece-square table features
-  wdl: true  # Enable WDL auxiliary head
-
-engines:
-  stockfish:
-    path: /usr/local/bin/stockfish
-    parameters:
-      Threads: 4
-      Hash: 512
-      MultiPV: 8
-      UCI_LimitStrength: false
-      UCI_Elo: 2000
-      Contempt: 0
-    time_control: 100ms
-    enabled: true
-  
-  lc0:
-    path: /usr/local/bin/lc0
-    parameters:
-      threads: 2
-      minibatch-size: 256
-      backend: cuda
-      WeightsFile: /path/to/network.pb.gz
-    time_control: 100ms
-    enabled: true
-  
-  matrix0:
-    type: internal
-    checkpoint: checkpoints/best.pt
-    enabled: true
-
-
+  # V2 Architecture Features
+  planes: 19                       # Input planes for chess board
+  channels: 320                    # Number of channels in residual blocks (32M model)
+  blocks: 24                       # Number of residual blocks (32M model)
+  attention_heads: 20              # Number of attention heads (32M model)
+  policy_size: 4672                # Policy output size
+  norm: "group"                    # GroupNorm instead of BatchNorm
+  activation: "silu"               # SiLU activation instead of ReLU
+  preact: true                     # Pre-activation residual blocks
+  droppath: 0.1                    # DropPath regularization
+  policy_factor_rank: 128          # Factorized policy head (32M model)
+  aux_policy_from_square: true     # Auxiliary from-square prediction
+  aux_policy_move_type: true       # Auxiliary move-type prediction
+  ssl_curriculum: true             # Self-supervised learning curriculum
+  self_supervised: true              # Enable SSL
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (32M model)
+  ssrl_tasks: ["position", "material", "rotation"]  # SSRL tasks (32M model)
 
 selfplay:
-  num_workers: 2
-  shared_inference: true  # Re-enabled after fixing the startup issue
-  book_path: "" # Temporarily disable opening book to test for bias
-  opening_random_plies: 0  # Temporarily disable random opening plies to test bias
-  temperature_start: 1.0
-  temperature_end: 0.2
-  temperature_moves: 20  # Lowered to reduce midgame stochasticity
-  resign_threshold: -0.30  # Much less strict resignation threshold
-  max_game_len: 140
-  min_resign_plies: 50  # Require 50 moves before resignation
-  batch_size: 32
-  buffer_dir: "data/selfplay"
-  # Low-visit fallback sampling: when root max visits below threshold, prefer sampling
-  low_visit_threshold: 15
-  # Require consecutive bad values before resigning
-  resign_consecutive_bad: 3
-
-# NEW: Openings configuration
-openings:
-  polyglot: "data/openings/performance.bin"  # Polyglot opening book
-  pgn: "data/openings/lichess_openings.pgn"  # PGN opening database
-  random_plies: 4  # Random opening moves for diversity
-  max_plies: 12  # Maximum opening plies
-
-draw:
-  enabled: false
-  min_plies: 60
-  window: 24
-  min_unique: 8
-  halfmove_cap: 90
+  num_workers: 6                   # Increased for better throughput
+  batch_size: 128                  # Larger batches for efficiency
+  max_games: 18                    # More games per cycle for better training data
+  max_game_len: 100                # Shorter games for faster generation
+  min_resign_plies: 20             # Earlier resignation for speed
+  resign_threshold: -0.90          # More aggressive resignation
+  num_simulations: 200             # Reduced for faster self-play generation
+  draw:
+    min_plies: 30                  # Minimum plies before draw
+    window: 12                     # Draw detection window
+    min_unique: 4                  # Minimum unique positions
+    halfmove_cap: 50               # Halfmove clock cap
 
 training:
-  batch_size: 512  # Increased for better GPU utilization
-  policy_masking: true
-  ssl_warmup_steps: 1000
-  wdl_weight: 0.2
-  wdl_margin: 0.25
-  compile: false  # DISABLED: PyTorch 2.x optimization (temporarily for state dict compatibility)
-  compile_mode: "max-autotune"  # Most aggressive optimization
-  channels_last: true  # Better memory layout for MPS
-  prefetch_factor: 2  # DataLoader optimization
-  pin_memory: false  # MPS doesn't benefit from this
-  augment_rotate180: true
-  # Added keys to unify training config (were previously under eval)
-  ssl_weight: 0.1  # SSL re-enabled
-  policy_label_smoothing: 0.0
-  value_loss: mse  # mse|huber
-  huber_delta: 1.0
-  checkpoint_save_freq: 1000
-  validation_freq: 500
-  use_curriculum: true
-  curriculum_phases:
-    - name: "openings"
-      steps: 2000
-      description: "Opening mastery phase"
-    - name: "tactics"
-      steps: 5000
-      description: "Tactical training phase"
-    - name: "mixed"
-      steps: 10000
-      description: "Balanced training with self-play"
-
-# MCTS defaults (legacy keys kept under a distinct namespace to avoid collisions)
-mcts_defaults:
-  dirichlet_plies: 16
-
-eval_legacy:
-  # Migrated keys retained for reference; active eval config is defined later.
-  num_simulations: 200
-  cpuct: 1.5
-  dirichlet_alpha: 0.3
-  tt_capacity: 200000
-  selection_jitter: 0.0
-  epochs: 1
-  steps_per_epoch: 10000
-  lr: 0.001
-  weight_decay: 1.0e-4
-  ema_decay: 0.999
-  grad_clip_norm: 1.0
-  accum_steps: 1
-  warmup_steps: 500
-  replay_dir: data/replays
-  validation_dir: data/validation
-  backup_dir: data/backups
-  replay_shard_size: 16384
-  replay_max_shards: 128
-  checkpoint_dir: checkpoints
-  checkpoint_prefix: "enhanced"
-  log_dir: logs
-  external_engine_ratio: 0.3
-  engine_strength_curriculum: true
-  adversarial_training: true
-  ssl_weight: 0.1
-  chess_features_weight: 0.05
-  policy_label_smoothing: 0.0
-  value_loss: mse
-  huber_delta: 1.0
-  checkpoint_save_freq: 1000
-  validation_freq: 500
-  use_curriculum: true
-  curriculum_phases:
-    - name: "openings"
-      steps: 2000
-      description: "Opening mastery phase"
-    - name: "tactics"
-      steps: 5000
-      description: "Tactical training phase"
-    - name: "mixed"
-      steps: 10000
-      description: "Balanced training with self-play"
-  
-  extra_replay_dirs:
-    - /Users/admin/Downloads/VSCode/Matrix0/data/lichess
-    - /Users/admin/Downloads/VSCode/Matrix0/data/replays
-    - /Users/admin/Downloads/VSCode/Matrix0/data/training
-    - /Users/admin/Downloads/VSCode/Matrix0/data/tactical
-    - /Users/admin/Downloads/VSCode/Matrix0/data/openings
-
-# Device-specific presets applied when use_presets: true
-presets:
-  cuda:
-    selfplay:
-      num_workers: 6
-      num_simulations: 256
-      batch_size: 64
-    mcts:
-      fpu: 0.5
-    training:
-      batch_size: 512
-      replay_shard_size: 32768
-  mps:
-    selfplay:
-      num_workers: 4  # Increased for better parallelization
-      num_simulations: 256  # Increased for better play quality
-      batch_size: 64  # Increased for better GPU utilization
-    mcts:
-      fpu: 0.5
-    training:
-      batch_size: 512  # Increased for better GPU utilization
-      replay_shard_size: 32768  # Increased for better data handling
-    eval:
-      num_simulations: 256
-      dirichlet_frac: 0.0
-      max_moves: 220
-
-eval:
-  games: 50
-  temperature: 0.1
-  num_simulations: 256
-  max_moves: 220  # Adjudicate long games sooner in eval
-  dirichlet_frac: 0.0  # Disable Dirichlet noise during evaluation
-  external_engines: ["stockfish", "lc0"]
-  tournament_rounds: 100
-  strength_estimation_games: 50
+  batch_size: 192                  # Reduced for memory efficiency
+  epochs: 3                        # More training epochs for efficiency
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  checkpoint_dir: "checkpoints"    # Directory for checkpoints
+  checkpoint: "v2_base.pt"         # Use our new FIXED V2 checkpoint
+  gradient_accumulation_steps: 2   # Effective batch size = 384
+  grad_clip_norm: 0.5              # More aggressive gradient clipping to prevent NaN
+  ssl_weight: 0.05                 # Reduced SSL weight to focus on stability
+  ssl_warmup_steps: 200            # Longer SSL warmup for stability
+  precision: "fp16"                # Optimized mixed precision
+  use_amp: true                    # Enable automatic mixed precision
+  warmup_steps: 200                # Shorter warmup for faster convergence
+  memory_limit_gb: 14              # Increase MPS memory limit to 14GB
 
 orchestrator:
-  # Dynamic game count: quick start for rapid iteration
-  initial_games: 4  # First cycle: quick training
-  subsequent_games: 120  # Future cycles: full training
-  games_per_cycle: 4  # Current cycle: quick start
-  train_epochs_per_cycle: 1
-  eval_games_per_cycle: 10  # Reduced for faster cycles
-  promotion_threshold: 0.55  # win rate to promote new checkpoint
-  keep_top_k: 3
-  max_retries: 2
-  backoff_seconds: 5
-  external_engine_integration: false
-  tui: table
-  continuous_mode: true  # Keep running cycles
+  initial_games: 12                # Start with 12 games
+  subsequent_games: 12             # Generate 12 more games
+  games_per_cycle: 12              # 12 games per cycle
+  train_epochs_per_cycle: 2        # 2 training epochs per cycle
+  eval_games_per_cycle: 6          # Evaluate 6 games
+  keep_top_k: 1                    # Keep only best model
+  continuous_mode: false           # Single run mode
+  checkpoint_override: "v2_base.pt"  # Override default best.pt with FIXED V2 checkpoint
+  tui: "table"                     # Use table display mode
 
-external_data:
-  multipv: 8
-  score_temperature_cp: 200.0
-  smoothing_epsilon: 0.01
+eval:
+  games: 4                         # More evaluation games
+  num_simulations: 800             # Production simulations
+  max_moves: 80                    # Reasonable move limit
+  external_engines: ["stockfish"]  # Compare against Stockfish
+  tournament_rounds: 4             # More tournament rounds
+  strength_estimation_games: 4     # More strength estimation games
 
 mcts:
-  num_simulations: 200
-  cpuct: 2.5
+  num_simulations: 300              # Increased for better quality
+  cpuct: 2.2
   cpuct_start: 2.8
-  cpuct_end: 1.6
+  cpuct_end: 1.8
   cpuct_plies: 40
   dirichlet_alpha: 0.3
-  dirichlet_frac: 0.3
+  dirichlet_frac: 0.25
   dirichlet_plies: 16
-  fpu: 0.5
   selection_jitter: 0.01
-  parent_q_init: true
-  tt_capacity: 2000000
-  tt_cleanup_frequency: 500
+  fpu: 0.2
   draw_penalty: -0.2
+  tt_capacity: 1000000
+  tt_cleanup_frequency: 500
+  tt_memory_limit_mb: 1024
+  batch_size: 32
+  encoder_cache: true
+  legal_softmax: false
+  max_children: 0
+  min_child_prior: 0.0
+  no_instant_backtrack: true
+  parent_q_init: true
+  tt_cleanup_interval_s: 5
+  value_from_white: false
+  virtual_loss: 2.0
+  enable_memory_cleanup: true
+  memory_cleanup_threshold_mb: 512
+  max_tree_nodes: 50000
+  # FIXED: Parallel MCTS with robust error handling and deadlock prevention
+  num_threads: 6
+  parallel_simulations: true
+  simulation_batch_size: 16
+  tree_parallelism: true
 
-tablebases:
-  enabled: false # Set to true to enable tablebase probing
-  path: "/path/to/syzygy" # Path to your Syzygy tablebase files
-  max_pieces: 7 # Probe for positions with this many pieces or fewer
+presets:
+  mps:
+    device: "mps"
+    num_threads: 4  # Reduced from 6
+    inference_batch_size: 32
+    mcts_threads: 4  # Reduced from 6
+    worker_threads: 2  # Keep 2 cores per worker

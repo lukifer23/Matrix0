@@ -152,7 +152,9 @@ class MoveEncoder:
         self._cache_misses = 0
 
     def encode_move(self, board: chess.Board, move: chess.Move) -> int:
-        cache_key = (board.fen(), move)
+        if not board.is_legal(move):
+            raise ValueError(f"Illegal move: {move} in position {board.fen()}")
+        cache_key = (board._transposition_key(), move)
         if cache_key in self._cache:
             self._cache_hits += 1
             return self._cache[cache_key]

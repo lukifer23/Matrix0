@@ -13,18 +13,19 @@ Tree Search (MCTS) and a modern ResNet backbone with chess-specific attention.
 Matrix0 implements the core concepts from AlphaZero and related research papers, adapted for modern hardware and optimized for Apple Silicon (MPS). The project focuses on:
 
 - **Self-Play Learning**: Autonomous improvement through self-play games
-- **Modern Architecture**: ResNet with attention mechanisms and SSL
+- **Modern Architecture**: ResNet with attention mechanisms and advanced SSL
 - **Apple Silicon Optimization**: MPS GPU acceleration with mixed precision
 - **Research Platform**: Extensible framework for chess AI research
 
 ## 📊 Project Status
-Development in progress. See the [status report](docs/status.md) and
+**ACTIVE DEVELOPMENT** - Training pipeline operational, SSL enhanced, actively improving. See the [status report](docs/status.md) and
 [development roadmap](docs/roadmap.md) for details.
 
 ## ✨ Key Features
 
 - **Complete Training Pipeline**: self-play → training → evaluation → promotion
-- **ResNet-14 Architecture**: 160 channels with chess-specific attention and SSL head
+- **ResNet-14 Architecture**: 160 channels with chess-specific attention and advanced SSL
+- **Enhanced SSL**: Multi-task learning with threat detection, pin detection, fork opportunities
 - **MPS Optimization**: Apple Silicon GPU acceleration with mixed precision
 - **Robust Data Management**: SQLite metadata, corruption detection, backup system
 - **External Engine Integration**: Stockfish, LC0 support for competitive training
@@ -42,7 +43,6 @@ Matrix0/
 │   ├── training/               # Training pipeline
 │   └── tools/                  # Utility tools
 ├── config.yaml                 # Main configuration
-├── train_comprehensive.py      # Training script
 ├── data/                       # Training data and replays
 ├── checkpoints/                # Model checkpoints
 ├── webui/                      # Web interface
@@ -143,14 +143,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📈 Roadmap
 See [docs/roadmap.md](docs/roadmap.md) for detailed development plans including:
-- System stabilization and bug fixes
-- Performance optimization
-- Enhanced SSL/SSRL capabilities
+- Enhanced SSL capabilities and multi-task learning
+- Performance optimization and memory management
+- Advanced training techniques and curriculum learning
 - LLM integration for strategic guidance
 - Multi-modal learning support
 
 ---
 
-**Matrix0 v1.0 - Development Version**
+**Matrix0 v1.1 - Active Development Version**
 
 *Building the future of chess AI, one move at a time.*

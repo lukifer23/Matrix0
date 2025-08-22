@@ -64,6 +64,22 @@ class Config:
     def orchestrator(self) -> Dict[str, Any]:
         """Orchestrator configuration section."""
         return self.raw.get("orchestrator", {})
+    
+    def model_v2(self) -> Dict[str, Any]:
+        """V2 model configuration section."""
+        return self.raw.get("model", {})
+    
+    def is_v2_enabled(self) -> bool:
+        """Check if V2 features are enabled."""
+        model_cfg = self.model_v2()
+        return (
+            model_cfg.get("channels", 160) == 192 or
+            model_cfg.get("blocks", 14) == 16 or
+            model_cfg.get("norm") == "group" or
+            model_cfg.get("activation") == "silu" or
+            model_cfg.get("preact", False) or
+            model_cfg.get("policy_factor_rank", 0) > 0
+        )
 
 
 def select_device(cfg_device: str = "auto") -> str:
