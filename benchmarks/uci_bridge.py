@@ -8,6 +8,9 @@ import subprocess
 import threading
 import time
 import logging
+import shlex
+import shutil
+import os
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 import re
@@ -42,8 +45,22 @@ class UCIEngine:
 
             logger.info(f"Starting UCI engine: {self.name} ({self.command})")
 
+            # Reject potentially unsafe shell metacharacters
+            if re.search(r"[|&;<>()$`!{}]", self.command):
+                raise ValueError("Command contains unsafe shell metacharacters")
+
+            cmd_parts = shlex.split(self.command)
+
+            # Validate executable
+            search_path = os.environ.get("PATH", "")
+            if working_dir:
+                search_path = str(working_dir) + os.pathsep + search_path
+            exe_path = shutil.which(cmd_parts[0], path=search_path)
+            if exe_path is None:
+                raise FileNotFoundError(f"Executable not found: {cmd_parts[0]}")
+
             self.process = subprocess.Popen(
-                self.command.split(),
+                cmd_parts,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
