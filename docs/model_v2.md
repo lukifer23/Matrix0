@@ -175,7 +175,7 @@ model:
   cross_modal_attention: true     # enable cross-modal attention
   
   # Enhanced SSL/SSRL
-  ssl_tasks: ["piece", "relationship", "threat", "pawn_structure", "king_safety"]
+  ssl_tasks: ["piece"]  # only piece recognition supported currently
   ssl_curriculum: true            # enable progressive difficulty
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
   
@@ -187,12 +187,8 @@ model:
 training:
   # SSL enhancements
   ssl_label_smoothing: 0.05
-  ssl_task_weights:              # weights for multi-task SSL
+  ssl_task_weights:              # weights for supported SSL tasks
     piece: 1.0
-    relationship: 0.8
-    threat: 0.9
-    pawn_structure: 0.7
-    king_safety: 0.8
   
   # SSRL configuration
   ssrl_loss_weight: 0.3
@@ -388,7 +384,7 @@ model:
   policy_factor_rank: 0
   enable_visual: false
   enable_llm_tutor: false
-  ssl_tasks: ["piece"]  # basic SSL only
+  ssl_tasks: ["piece"]  # basic SSL only (currently the only supported task)
 ```
 
 ### Gradual Fallback Options
@@ -486,7 +482,7 @@ model:
   aux_policy_move_type: true
   enable_visual: true
   enable_llm_tutor: true
-  ssl_tasks: ["piece", "relationship", "threat", "pawn_structure", "king_safety"]
+  ssl_tasks: ["piece"]
   ssl_curriculum: true
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
 
@@ -494,10 +490,6 @@ training:
   ssl_label_smoothing: 0.05
   ssl_task_weights:
     piece: 1.0
-    relationship: 0.8
-    threat: 0.9
-    pawn_structure: 0.7
-    king_safety: 0.8
   ssrl_loss_weight: 0.3
   visual_loss_weight: 0.2
   llm_guidance_weight: 0.1

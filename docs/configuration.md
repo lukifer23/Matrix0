@@ -35,7 +35,7 @@ model:
   policy_factor_rank: 128          # Factorized policy head
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks
+  ssl_tasks: ["piece"]  # SSL tasks (only piece task currently supported)
 ```
 
 ## 2. Key Configuration Sections
@@ -53,7 +53,7 @@ model:
 - `policy_factor_rank`: Factorized policy head rank (default: `128`)
 - `ssl_curriculum`: Enable SSL progressive difficulty (default: `true`)
 - `self_supervised`: Enable self-supervised learning (default: `true`)
-- `ssl_tasks`: List of SSL tasks to train (`["piece", "threat", "pin", "fork", "control"]`)
+- `ssl_tasks`: List of SSL tasks to train (currently only `["piece"]` is supported)
 
 ### `selfplay` - Self-Play Data Generation
 - `num_workers`: Number of parallel self-play workers (default: `6`)
@@ -167,7 +167,7 @@ The system uses dataclasses for type-safe configuration:
 ```yaml
 model:
   ssl_curriculum: true             # Progressive difficulty
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]
+  ssl_tasks: ["piece"]
   ssl_warmup_steps: 200            # Gradual SSL introduction
 
 training:
