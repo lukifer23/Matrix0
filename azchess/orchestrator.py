@@ -22,7 +22,6 @@ from .elo import EloBook, update_elo
 import gc
 import torch
 from .data_manager import DataManager
-from .monitor import dir_stats, disk_free, memory_usage_bytes
 import numpy as np
 import time
 import warnings
