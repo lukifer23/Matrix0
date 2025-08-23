@@ -6,6 +6,23 @@
 **Status**: PRODUCTION TRAINING ACTIVE - All Critical Issues Resolved + Major Performance Improvements
 **Priority**: HIGH - SSL Training System Fully Operational with 99%+ Performance Gains
 
+## Outstanding Problems
+
+1. **External Engine Stability**
+   - **Priority**: High
+   - **Benefit**: Ensures continuous self-play data generation without stalls
+   - **Corresponding files/modules**: `azchess/selfplay/external_engine_worker.py`
+
+2. **Training Throughput Bottleneck**
+   - **Priority**: Medium
+   - **Benefit**: Reduces wall-clock time by improving per-step efficiency
+   - **Corresponding files/modules**: `azchess/training/train.py`
+
+3. **Documentation Drift**
+   - **Priority**: Low
+   - **Benefit**: Keeps contributors aligned with latest project status
+   - **Corresponding files/modules**: `docs/status.md`
+
 ## Current State Assessment
 
 ### ✅ Production-Ready Components
@@ -114,7 +131,7 @@
 ### ✅ Core System Achievements
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle ✅ OPERATIONAL
 - **Model Architecture**: 53M parameter ResNet-24 with attention and SSL ✅ PRODUCTION READY
-- **Training Stability**: No NaN/Inf crashes, stable 2.0s/step performance ✅ ACHIEVED
+- **Training Stability**: No NaN/Inf crashes, stable ~3-4 seconds per step performance ✅ ACHIEVED
 - **Memory Management**: Optimized MPS usage (~10.7-11.0GB) with automatic cleanup ✅ OPTIMIZED
 - **Data Integrity**: SQLite metadata, backup system, corruption detection ✅ ROBUST
 - **Model Evaluation**: Step 3000 evaluation shows +37 ELO improvement ✅ VALIDATED
