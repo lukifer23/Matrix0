@@ -350,6 +350,45 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 sp_params = sp_cfg["selfplay"]
                 # Use larger batch sizes for better GPU utilization
                 optimized_batch_size = max(32, sp_params.get('batch_size', 32))
+
+                # Estimate memory usage before allocation and adjust if necessary
+                try:
+                    tensor_size = (
+                        (model_params['planes'] * 8 * 8 +
+                         model_params['policy_size'] + 1 + 1) * 4
+                    )  # bytes per sample across tensors
+                    estimated_mem = tensor_size * optimized_batch_size * workers
+                    import psutil
+                    if dev.startswith('cuda') and torch.cuda.is_available():
+                        total_mem = torch.cuda.get_device_properties(torch.device(dev)).total_memory
+                        mem_type = "GPU"
+                    elif dev == 'mps' and getattr(torch.backends.mps, 'is_available', lambda: False)():
+                        total_mem = psutil.virtual_memory().total
+                        mem_type = "System"
+                    else:
+                        total_mem = psutil.virtual_memory().total
+                        mem_type = "System"
+                    if estimated_mem > total_mem:
+                        max_bs = total_mem // (tensor_size * workers)
+                        if max_bs <= 0:
+                            logger.error(
+                                f"Insufficient {mem_type} memory for shared inference tensors: "
+                                f"required {estimated_mem/1024**2:.2f}MB, available {total_mem/1024**2:.2f}MB"
+                            )
+                            raise MemoryError("Insufficient device memory for shared inference tensors")
+                        logger.warning(
+                            f"Reducing shared inference batch size from {optimized_batch_size} to {max_bs} "
+                            f"due to {mem_type} memory limits"
+                        )
+                        optimized_batch_size = int(max_bs)
+                    else:
+                        logger.info(
+                            f"Estimated shared tensor usage: {estimated_mem/1024**2:.2f}MB / "
+                            f"{total_mem/1024**2:.2f}MB {mem_type} memory"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not estimate shared tensor memory usage: {e}")
+
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
                         worker_id=i,
