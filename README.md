@@ -56,7 +56,7 @@ Matrix0/
 │   └── data_metadata.db       # SQLite database for data integrity
 ├── checkpoints/                # Model checkpoints (v2_base.pt active)
 │   ├── v2_base.pt             # Current stable checkpoint
-│   └── model_step_1000.pt     # Latest training checkpoint
+│   └── model_step_5000.pt     # Latest training checkpoint
 ├── webui/                      # FastAPI web interface
 ├── logs/                       # Comprehensive logging system
 ├── docs/                       # Complete documentation suite
@@ -129,12 +129,13 @@ python -m azchess.tools.process_lichess
 ## 🔧 Current Training Status
 
 **Latest Update**: August 2025
-- **Training Progress**: Step 1000+ completed ✅
+- **Training Progress**: Step 5000+ completed ✅
+- **Training Speed**: ~3-4 seconds per step
 - **Model Size**: 53,217,919 parameters (53M)
 - **Architecture**: ResNet-24 with 320 channels, 20 attention heads
 - **SSL Status**: Multi-task learning enabled with curriculum progression
 - **Training Stability**: Branch normalization, gradient clipping, emergency checkpoints
-- **Memory Usage**: 14GB MPS limit with automatic management
+- **Memory Usage**: ~10.7-11.0GB MPS usage with automatic management
 
 ## 🔧 Development
 
