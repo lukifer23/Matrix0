@@ -44,16 +44,7 @@ def cleanup_temp_files(data_dir: Path) -> None:
         pass  # Ignore cleanup errors
 
 
-# Top-level helper for external engine process (macOS spawn-safe)
-def _run_external_proc(proc_id: int, cfg_path: str, out_dir: str, n_games: int):
-    import asyncio as _asyncio
-    from .config import Config as _Cfg
-    from .selfplay.external_engine_worker import external_engine_worker as _worker
-    _cfg = _Cfg.load(cfg_path)
-    _asyncio.run(_worker(proc_id=proc_id, config=_cfg, output_dir=out_dir, num_games=n_games))
-
-
-def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None, 
+def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None,
                 workers_override: int | None = None, sims_override: int | None = None, cpuct_override: float | None = None,
                 dirichlet_alpha_override: float | None = None, selection_jitter_override: float | None = None,
                 opening_plies_override: int | None = None, resign_threshold_override: float | None = None,
