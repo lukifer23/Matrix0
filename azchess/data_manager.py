@@ -399,26 +399,43 @@ class DataManager:
         """Get mixed batch from external training data sources."""
         tactical_batch = self._get_tactical_batch(batch_size // 2)
         openings_batch = self._get_openings_batch(batch_size // 2)
-        
+
         if not tactical_batch and not openings_batch:
             return None
-        
+
         if not tactical_batch:
             return openings_batch
         if not openings_batch:
             return tactical_batch
-        
+
         # Combine batches
         combined_batch = {}
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
-        
+
         # Shuffle the combined batch
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
+
+        # CRITICAL: Explicit cleanup to prevent memory accumulation
+        # The original batches contain potentially 10K+ samples each
+        # but we only need the final ~192 samples
+        del tactical_batch, openings_batch, indices
+        import gc
+        gc.collect()  # Force garbage collection to free memory immediately
+
+        # Additional cleanup for MPS/CUDA devices
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass  # Ignore cleanup errors
 
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'mixed external'):
             return None

@@ -612,6 +612,25 @@ def train_comprehensive(
             model.enable_memory_optimization()
             logger.info("Enabled model memory optimizations for MPS")
 
+    # Initialize training heartbeat monitoring
+    last_heartbeat = time.time()
+    heartbeat_interval = 30.0  # Heartbeat every 30 seconds (like self-play but less frequent)
+
+    def get_system_memory_usage():
+        """Get current system memory usage in GB for heartbeat monitoring."""
+        try:
+            if device.startswith('mps'):
+                # For MPS, estimate based on available memory
+                import psutil
+                return round(psutil.virtual_memory().used / (1024**3), 2)
+            elif device.startswith('cuda'):
+                return round(torch.cuda.memory_allocated(device) / (1024**3), 2)
+            else:
+                import psutil
+                return round(psutil.virtual_memory().used / (1024**3), 2)
+        except:
+            return 0.0
+
     # Training loop
     current_step = start_step
     
@@ -792,6 +811,34 @@ def train_comprehensive(
 
                     # Update watchdog timer
                     last_progress_time = time.time()
+
+                    # Training heartbeat monitoring (similar to self-play workers)
+                    current_time = time.time()
+                    if current_time - last_heartbeat > heartbeat_interval:
+                        memory_usage = get_system_memory_usage()
+                        lr_current = scheduler.get_last_lr()[0] if scheduler else 0.0
+
+                        logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} | "
+                                  f"Loss: {running_loss:.4f} | "
+                                  f"Policy: {running_policy_loss:.4f} | "
+                                  f"Value: {running_value_loss:.4f} | "
+                                  f"SSL: {running_ssl_loss:.4f} | "
+                                  f"LR: {lr_current:.6f} | "
+                                  f"Memory: {memory_usage}GB | "
+                                  f"Device: {device}")
+
+                        last_heartbeat = current_time
+
+                        # Aggressive memory cleanup during heartbeat
+                        try:
+                            import gc
+                            gc.collect()
+                            if device.startswith('mps'):
+                                torch.mps.empty_cache()
+                            elif device.startswith('cuda'):
+                                torch.cuda.empty_cache()
+                        except Exception as cleanup_error:
+                            logger.debug(f"Memory cleanup during heartbeat failed: {cleanup_error}")
 
                 except Exception as e:
                     logger.error(f"Error in optimization step: {e}")
