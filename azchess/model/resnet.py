@@ -486,6 +486,8 @@ class PolicyValueNet(nn.Module):
             self.policy_conv_out.weight.data *= 0.05  # Further reduced from 0.1 to 0.05
             if self.policy_fc is not None:
                 self.policy_fc.weight.data *= 0.3  # Further reduced from 0.5 to 0.3
+            elif self.policy_fc2 is not None:
+                self.policy_fc2.weight.data *= 0.3  # Apply same scaling in factorized case
             logger.info("Policy head weights scaled down for numerical stability")
             
         # CRITICAL: Initialize normalization layers for stability
