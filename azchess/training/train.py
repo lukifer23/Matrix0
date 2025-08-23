@@ -204,7 +204,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Ensure contiguity to avoid view-related autograd errors on some backends
         p = p.contiguous()
         v = v.contiguous()
-        if ssl_out is not None:
+        if ssl_out is not None and not ssl_out.is_contiguous():
             # Force standard contiguous (NCHW) to avoid channels_last view issues in CrossEntropy backward (MPS)
             try:
                 ssl_out = ssl_out.contiguous(memory_format=torch.contiguous_format)
