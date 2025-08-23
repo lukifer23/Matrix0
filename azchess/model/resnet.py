@@ -825,17 +825,21 @@ class PolicyValueNet(nn.Module):
                         if board_states[b, i, r, c] == 1:
                             board.set_piece_at(chess.square(c, 7 - r), chess.Piece(piece, color))
 
+            # Set board.turn based on side-to-move plane
+            board_turn = bool(board_states[b, 12, 0, 0])
+            board.turn = board_turn
+
             # Task 2: Threat detection (pieces under attack) - optimized
             threat_mask = torch.zeros(8, 8, device=device)
             for square in chess.SQUARES:
-                if board.is_attacked_by(not board.turn, square):
+                if board.is_attacked_by(not board_turn, square):
                     r, c = divmod(square, 8)
                     threat_mask[7 - r, c] = 1
 
             # Task 3: Pin detection (pinned pieces) - optimized
             pin_mask = torch.zeros(8, 8, device=device)
             for square in chess.SQUARES:
-                if board.is_pinned(board.turn, square):
+                if board.is_pinned(board_turn, square):
                     r, c = divmod(square, 8)
                     pin_mask[7 - r, c] = 1
 
@@ -843,13 +847,13 @@ class PolicyValueNet(nn.Module):
             fork_mask = torch.zeros(8, 8, device=device)
             for square in chess.SQUARES:
                 piece = board.piece_at(square)
-                if piece and piece.color == board.turn:
+                if piece and piece.color == board_turn:
                     attacks = list(board.attacks(square))
                     if len(attacks) >= 2:  # Need at least 2 attacks for fork
                         valuable_targets = []
                         for attack_square in attacks:
                             target_piece = board.piece_at(attack_square)
-                            if target_piece and target_piece.color != board.turn:
+                            if target_piece and target_piece.color != board_turn:
                                 # Higher value pieces are more valuable targets
                                 value = 1  # Pawn
                                 if target_piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
@@ -868,8 +872,8 @@ class PolicyValueNet(nn.Module):
             # Task 5: Square control (controlled squares) - optimized with vectorized operations
             control_mask = torch.zeros(8, 8, device=device)
             for square in chess.SQUARES:
-                attackers = list(board.attackers(board.turn, square))
-                defenders = list(board.attackers(not board.turn, square))
+                attackers = list(board.attackers(board_turn, square))
+                defenders = list(board.attackers(not board_turn, square))
 
                 # Weight attackers by piece value
                 attacker_value = 0
