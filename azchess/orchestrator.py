@@ -8,14 +8,14 @@ from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List
+import logging
 
 from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingColumn
 
-from .config import Config
+from .config import Config, select_device
 from .logging_utils import setup_logging
 from .selfplay.internal import selfplay_worker, math_div_ceil
 from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
-from .config import select_device
 from azchess.training.train import train_from_config as train_main
 from .arena import play_match
 from .elo import EloBook, update_elo
@@ -31,17 +31,18 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
 def cleanup_temp_files(data_dir: Path) -> None:
     """Clean up temporary files from previous runs."""
-    try:
-        # Clean up any leftover temp files
-        temp_patterns = ["*.tmp", "*.temp", "temp_*", "*_temp"]
-        for pattern in temp_patterns:
-            for temp_file in data_dir.glob(pattern):
-                try:
-                    temp_file.unlink()
-                except Exception:
-                    pass  # Ignore cleanup errors
-    except Exception:
-        pass  # Ignore cleanup errors
+    logger = logging.getLogger(__name__)
+
+    # Clean up any leftover temp files
+    temp_patterns = ["*.tmp", "*.temp", "temp_*", "*_temp"]
+    for pattern in temp_patterns:
+        for temp_file in data_dir.glob(pattern):
+            try:
+                temp_file.unlink()
+            except FileNotFoundError:
+                logger.debug("Temp file not found during cleanup: %s", temp_file)
+            except OSError as e:
+                logger.warning("Failed to delete temp file %s: %s", temp_file, e)
 
 
 # Top-level helper for external engine process (macOS spawn-safe)
