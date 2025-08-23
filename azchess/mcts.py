@@ -309,14 +309,7 @@ class MCTS:
         self._tt_cleanup_counter = 0
         self._last_cleanup_time = time.time()
         
-        # FIXED: Proper ThreadPool initialization with deadlock prevention
-        self.num_threads = cfg.num_threads
-        if self.num_threads > 1:
-            self.thread_pool = ThreadPool(self.num_threads)
-            logger.info(f"MCTS initialized with {self.num_threads} threads for parallel simulation")
-        else:
-            self.thread_pool = None
-            logger.info("MCTS running in single-threaded mode")
+        # ThreadPool and locking are initialized later based on provided num_threads
         self.tt = OrderedDict()  # Transposition table
         self.nn_cache = LRUCache(10000)  # Neural network cache
         self.simulations_run = 0
@@ -336,6 +329,10 @@ class MCTS:
         self.num_threads = num_threads if num_threads is not None else getattr(cfg, 'num_threads', 1)
         if self.num_threads > 1:
             self.thread_pool = ThreadPool(self.num_threads)
+            logger.info(f"MCTS initialized with {self.num_threads} threads for parallel simulation")
+        else:
+            self.thread_pool = None
+            logger.info("MCTS running in single-threaded mode")
         self.lock = threading.Lock()
 
     @torch.no_grad()
