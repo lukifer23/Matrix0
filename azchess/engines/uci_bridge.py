@@ -172,53 +172,53 @@ class SynchronousUCIClient:
     
     def __init__(self, engine_path: str, parameters: Dict[str, Any], time_control: str = "100ms"):
         self.async_client = UCIClient(engine_path, parameters, time_control)
-        
+
+    def _run(self, coro):
+        """Run an async coroutine, preserving the original event loop."""
+        try:
+            original_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            original_loop = None
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(original_loop)
+
     def start_engine(self) -> bool:
         """Start the engine synchronously."""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.async_client.start_engine())
-            loop.close()
-            return result
+            return bool(self._run(self.async_client.start_engine()))
         except Exception as e:
             logger.error(f"Failed to start engine synchronously: {e}")
             return False
-    
+
     def stop_engine(self):
         """Stop the engine synchronously."""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.async_client.stop_engine())
-            loop.close()
+            self._run(self.async_client.stop_engine())
         except Exception as e:
             logger.error(f"Failed to stop engine synchronously: {e}")
-    
+
     def get_move(self, board: chess.Board, time_ms: int = 100) -> Optional[chess.Move]:
         """Get move synchronously."""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.async_client.get_move(board, time_ms))
-            loop.close()
-            return result
+            return self._run(self.async_client.get_move(board, time_ms))
         except Exception as e:
             logger.error(f"Failed to get move synchronously: {e}")
             return None
-    
+
     def analyze_position(self, board: chess.Board, depth: int = 20) -> Optional[Dict[str, Any]]:
         """Analyze position synchronously."""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.async_client.analyze_position(board, depth))
-            loop.close()
-            return result
+            return self._run(self.async_client.analyze_position(board, depth))
         except Exception as e:
             logger.error(f"Failed to analyze position synchronously: {e}")
             return None
-    
+
     def get_engine_info(self) -> Dict[str, Any]:
         """Get engine info."""
         return self.async_client.get_engine_info()
