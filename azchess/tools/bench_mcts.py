@@ -2,30 +2,16 @@ from __future__ import annotations
 
 import argparse
 import time
-import random
 from multiprocessing import Process, Event, Queue
 
-import numpy as np
 import chess
 import torch
 
 from ..config import Config, select_device
 from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
-from ..encoding import encode_board
 from ..selfplay.inference import run_inference_server, InferenceClient
-
-
-def random_board(max_plies: int = 40, seed: int | None = None) -> chess.Board:
-    if seed is not None:
-        random.seed(seed)
-    b = chess.Board()
-    for _ in range(random.randint(1, max_plies)):
-        if b.is_game_over():
-            break
-        mv = random.choice(list(b.legal_moves))
-        b.push(mv)
-    return b
+from ..utils.board import random_board
 
 
 def bench_mcts(cfg_path: str, sims: int, boards: int, shared: bool) -> None:

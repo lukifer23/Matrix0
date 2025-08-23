@@ -4,23 +4,9 @@ import argparse
 from typing import List, Tuple
 
 import chess
-import numpy as np
 
 from .encoding import move_to_index, MoveEncoder
-
-
-def random_board(plies: int = 30, seed: int = 42) -> chess.Board:
-    rng = np.random.default_rng(seed)
-    b = chess.Board()
-    for _ in range(plies):
-        if b.is_game_over():
-            break
-        moves = list(b.legal_moves)
-        if not moves:
-            break
-        mv = moves[int(rng.integers(0, len(moves)))]
-        b.push(mv)
-    return b
+from .utils.board import random_board
 
 
 def validate_board(b: chess.Board) -> Tuple[int, int, List[str]]:
