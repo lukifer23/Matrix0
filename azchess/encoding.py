@@ -109,6 +109,8 @@ def move_to_index(board: chess.Board, move: chess.Move) -> int:
     Map a python-chess Move to [0, 4671] using fixed 64×73 layout.
     Queen promotions are encoded via ray moves; underpromotions occupy the last 9 slots.
     """
+    if not board.is_legal(move):
+        raise ValueError(f"Illegal move: {move}")
     from_sq = move.from_square
     to_sq = move.to_square
     fr, ff = chess.square_rank(from_sq), chess.square_file(from_sq)
@@ -135,11 +137,8 @@ def move_to_index(board: chess.Board, move: chess.Move) -> int:
         if ro is not None:
             return from_sq * 73 + ro
 
-    # Fallback: best-effort map to first legal move from the square
-    for m in board.legal_moves:
-        if m.from_square == from_sq:
-            return move_to_index(board, m)
-    return 0
+    # No valid mapping found: illegal move
+    raise ValueError(f"Illegal move: {move}")
 
 
 @dataclass

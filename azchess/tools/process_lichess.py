@@ -90,12 +90,16 @@ def process_game(game: chess.pgn.Game, min_elo: int):
     for move in game.mainline_moves():
         s = encode_board(board)
         pi = np.zeros(4672, dtype=np.float32)
-        pi[move_to_index(board, move)] = 1.0
-        
+        try:
+            idx = move_to_index(board, move)
+        except ValueError as e:
+            raise ValueError(f"Illegal move {move} in game {headers.get('Event', '')}") from e
+        pi[idx] = 1.0
+
         # Value is from the perspective of the current player
         value = z if board.turn == chess.WHITE else -z
         samples.append({"s": s, "pi": pi, "z": np.float32(value)})
-        
+
         board.push(move)
         
     return samples
