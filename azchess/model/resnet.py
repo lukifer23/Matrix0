@@ -355,13 +355,9 @@ class PolicyValueNet(nn.Module):
             )
         else:
             self.aux_move_type = None
-        # Spatial conv branch: per-square 73 logits
-        self.policy_conv_out = nn.Conv2d(64, 73, kernel_size=1, bias=True)
-        
-        # CRITICAL: Add normalization layers for branch stability
-        # Note: We'll normalize after reshaping to match the expected dimensions
-        self.policy_conv_norm = nn.LayerNorm(73)  # Normalize spatial branch (per-square)
-        self.policy_fc_norm = nn.LayerNorm(cfg.policy_size)  # Normalize dense branch
+
+        # Normalization for the dense policy branch
+        self.policy_fc_norm = nn.LayerNorm(cfg.policy_size)
         
         # Dense branch: preserves original capacity (4096 → 4672) or factorized when enabled
         _rank = int(getattr(cfg, 'policy_factor_rank', 0))
@@ -453,9 +449,6 @@ class PolicyValueNet(nn.Module):
         """Initialize weights properly for chess policy learning."""
         # Policy head initialization - CRITICAL: More conservative initialization
         nn.init.kaiming_normal_(self.policy_head[0].weight, mode='fan_out', nonlinearity='relu')
-        # CRITICAL: Use much smaller initialization for policy conv to prevent NaN explosion
-        nn.init.xavier_uniform_(self.policy_conv_out.weight, gain=0.05)  # Further reduced from 0.1 to 0.05
-        nn.init.constant_(self.policy_conv_out.bias, 0.0)
         
         # Initialize policy head dropout properly
         if hasattr(self.policy_head, 'dropout'):
@@ -482,15 +475,13 @@ class PolicyValueNet(nn.Module):
         
         # CRITICAL: Scale policy output weights to prevent NaN explosion
         with torch.no_grad():
-            # Much more conservative scaling for policy conv
-            self.policy_conv_out.weight.data *= 0.05  # Further reduced from 0.1 to 0.05
             if self.policy_fc is not None:
                 self.policy_fc.weight.data *= 0.3  # Further reduced from 0.5 to 0.3
             logger.info("Policy head weights scaled down for numerical stability")
-            
-        # CRITICAL: Initialize normalization layers for stability
+
+        # CRITICAL: Initialize normalization layer for stability
         # LayerNorm has no learnable parameters, but we ensure it's properly set up
-        logger.info("Policy head branch normalization layers initialized for stability")
+        logger.info("Policy head normalization layer initialized for stability")
 
         # SSL head initialization - CRITICAL: Was missing!
         if self.ssl_piece_head is not None:
@@ -577,22 +568,26 @@ class PolicyValueNet(nn.Module):
         feats = self._forward_features(x, visual_input)
         # Policy - ensure contiguity throughout
         pfeat = self.policy_head(feats)
-        
-        # Spatial conv branch - normalize BEFORE reshaping (same as forward)
-        p_conv = self.policy_conv_out(pfeat)  # (B, 73, 8, 8)
-        p_conv = p_conv.permute(0, 2, 3, 1).contiguous()  # (B, 8, 8, 73)
-        p_conv = self.policy_conv_norm(p_conv)  # Normalize last dimension (73)
-        p_conv = p_conv.reshape(p_conv.size(0), -1)  # (B, 64*73) = (B, 4672)
-        
-        _pflat = pfeat.contiguous().reshape(pfeat.size(0), -1)
+        pfeat = torch.clamp(pfeat, -5.0, 5.0)
+        p = pfeat.contiguous().reshape(pfeat.size(0), -1)
+
         if self.policy_fc is not None:
-            p_fc = self.policy_fc(_pflat)
+            p = self.policy_fc(p)
+            p = torch.clamp(p, -10.0, 10.0)
         else:
-            p_fc = self.policy_fc2(F.relu(self.policy_fc1(_pflat), inplace=True))
-        
-        # CRITICAL: Apply same normalization for consistency
-        p_fc_norm = self.policy_fc_norm(p_fc)
-        p = (p_conv + p_fc_norm).contiguous()
+            p = F.relu(self.policy_fc1(p), inplace=True)
+            p = torch.clamp(p, -10.0, 10.0)
+            p = self.policy_fc2(p)
+            p = torch.clamp(p, -10.0, 10.0)
+
+        p = self.policy_fc_norm(p)
+
+        if torch.isnan(p).any() or torch.isinf(p).any():
+            logger.warning(f"Policy output contains NaN/Inf: total={torch.isnan(p).sum() + torch.isinf(p).sum()}")
+            logger.warning("Replacing NaN/Inf with safe values to continue training")
+            p = torch.where(torch.isfinite(p), p, torch.zeros_like(p))
+
+        p = torch.clamp(p, -5.0, 5.0)
         # Value - ensure contiguity throughout
         v = self.value_head(feats)
         v = v.contiguous().reshape(v.size(0), -1)
