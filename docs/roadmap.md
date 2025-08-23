@@ -1,6 +1,8 @@
 
 # Matrix0 Development Roadmap
 
+For current problem areas, see the [Open Issues](index.md#open-issues) section.
+
 ## Project Status: PRODUCTION TRAINING
 
 **Current Version**: v2.0

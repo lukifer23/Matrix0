@@ -8,3 +8,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - [Web UI Guide](webui.md)
 - [Model V2 Design](model_v2.md)
 - [External Engine Integration](../EXTERNAL_ENGINES.md)
+
+## Open Issues
+
+For a quick look at current problem areas, check the [status report](status.md).
