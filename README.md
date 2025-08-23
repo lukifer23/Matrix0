@@ -19,8 +19,9 @@ Matrix0 implements cutting-edge reinforcement learning concepts from AlphaZero a
 - **Production Features**: Robust data management, monitoring, and evaluation tools
 
 ## 📊 Project Status
-**ACTIVE DEVELOPMENT** - Training pipeline operational, SSL enhanced, actively improving. See the [status report](docs/status.md) and
-[development roadmap](docs/roadmap.md) for details.
+**ACTIVE DEVELOPMENT** - Training pipeline operational, SSL enhanced, actively improving. See the
+[status report](docs/status.md), the [development roadmap](docs/roadmap.md), and the
+[Open Issues](docs/index.md#open-issues) section for current problem areas.
 
 ## ✨ Key Features
 
