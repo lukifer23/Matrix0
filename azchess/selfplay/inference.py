@@ -105,6 +105,9 @@ def run_inference_server(
         timeout = None
 
         logger.debug("Inference server entering main processing loop.")
+        event_recreation_count = 0
+        max_event_recreations = 3
+
         while not stop_event.is_set():
             try:
                 ready = wait(worker_events + [stop_event], timeout)
@@ -116,8 +119,36 @@ def run_inference_server(
                 logger.debug(
                     f"Inference server processing batch from workers: {batch_indices}"
                 )
+            except ValueError as e:
+                if "Invalid file object" in str(e) and event_recreation_count < max_event_recreations:
+                    event_recreation_count += 1
+                    logger.warning(f"Event objects became invalid, recreating them (attempt {event_recreation_count}/{max_event_recreations})")
+
+                    # Recreate events for all workers
+                    for i, res in enumerate(shared_memory_resources):
+                        try:
+                            res["request_event"] = Event()
+                            res["response_event"] = Event()
+                            logger.debug(f"Recreated events for worker {i}")
+                        except Exception as recreate_error:
+                            logger.error(f"Failed to recreate events for worker {i}: {recreate_error}")
+
+                    # Update worker_events and event_to_worker mapping
+                    worker_events = [res["request_event"] for res in shared_memory_resources]
+                    event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
+
+                    # Brief pause before continuing
+                    import time
+                    time.sleep(0.1)
+                    continue
+                else:
+                    logger.error(f"Critical error in inference server main loop: {e}")
+                    if event_recreation_count >= max_event_recreations:
+                        logger.error("Max event recreations reached, stopping inference server")
+                        break
+                    continue
             except Exception as e:
-                logger.error(f"Error in inference server main loop: {e}")
+                logger.error(f"Unexpected error in inference server main loop: {e}")
                 continue
 
             # Prepare batch from shared memory with better batching logic
@@ -303,8 +334,26 @@ class InferenceClient:
             self.res["request_event"].set()
             self.logger.debug(f"Set request_event for batch size {batch_size}")
         except Exception as e:
-            self.logger.error(f"Failed to copy request to shared memory: {e}")
-            raise RuntimeError(f"Inference request failed: {e}")
+            # Handle potential event corruption issues
+            if "Invalid file object" in str(e):
+                self.logger.warning("Request event may be corrupted, attempting recovery")
+                try:
+                    # Try to recreate the event
+                    self.res["request_event"] = Event()
+                    self.res["response_event"] = Event()
+                    self.logger.info("Recreated corrupted events, retrying request")
+
+                    # Retry the request with new events
+                    self.res["batch_size_tensor"][0] = batch_size
+                    self.res["request_tensor"][:batch_size].copy_(torch.from_numpy(arr_batch))
+                    self.res["request_event"].set()
+                    self.logger.debug("Successfully retried request with new events")
+                except Exception as recovery_error:
+                    self.logger.error(f"Failed to recover from event corruption: {recovery_error}")
+                    raise RuntimeError(f"Inference request failed after event recovery: {recovery_error}")
+            else:
+                self.logger.error(f"Failed to copy request to shared memory: {e}")
+                raise RuntimeError(f"Inference request failed: {e}")
 
         # Wait for response with timeout and retry logic
         max_retries = 1  # Reduced from 2 to prevent cascading failures
@@ -325,24 +374,47 @@ class InferenceClient:
 
                     self.res["response_event"].clear()
                     return policy, value
-
-                else:
+            except (ValueError, RuntimeError) as e:
+                # Handle event corruption during wait
+                if "Invalid file object" in str(e):
+                    self.logger.warning(f"Response event corrupted during wait (attempt {attempt + 1})")
                     if attempt < max_retries:
-                        self.logger.warning(
-                            f"Inference timeout (attempt {attempt + 1}/{max_retries + 1}), retrying..."
-                        )
-                        # Clear events and retry
-                        self.res["request_event"].clear()
-                        self.res["response_event"].clear()
-                        time.sleep(0.1)  # Brief pause before retry
-                        continue
+                        # Try to recreate events and retry
+                        try:
+                            self.res["request_event"] = Event()
+                            self.res["response_event"] = Event()
+                            # Resend the request
+                            self.res["batch_size_tensor"][0] = batch_size
+                            self.res["request_tensor"][:batch_size].copy_(torch.from_numpy(arr_batch))
+                            self.res["request_event"].set()
+                            continue
+                        except Exception as recovery_error:
+                            self.logger.error(f"Failed to recover from response event corruption: {recovery_error}")
+                            if attempt == max_retries:
+                                raise RuntimeError(f"Inference failed after {max_retries + 1} attempts due to event corruption: {recovery_error}")
+                            continue
                     else:
-                        self.logger.error(
-                            f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt)"
-                        )
-                        raise TimeoutError(
-                            f"Inference timeout after {timeout}s for batch size {batch_size}"
-                        )
+                        raise RuntimeError(f"Inference failed after {max_retries + 1} attempts due to event corruption: {e}")
+                else:
+                    raise
+
+            except Exception as timeout_e:
+                if attempt < max_retries:
+                    self.logger.warning(
+                        f"Inference timeout (attempt {attempt + 1}/{max_retries + 1}), retrying..."
+                    )
+                    # Clear events and retry
+                    self.res["request_event"].clear()
+                    self.res["response_event"].clear()
+                    time.sleep(0.1)  # Brief pause before retry
+                    continue
+                else:
+                    self.logger.error(
+                        f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt)"
+                    )
+                    raise TimeoutError(
+                        f"Inference timeout after {timeout}s for batch size {batch_size}"
+                    )
 
             except Exception as e:
                 if attempt < max_retries:
