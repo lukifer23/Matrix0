@@ -862,7 +862,8 @@ def train_comprehensive(
         raise
     finally:
         pbar.close()
-        
+        writer.close()
+
         # Save final checkpoint with enhanced prefix
         checkpoint_prefix = cfg.get("checkpoint_prefix", "enhanced")
         final_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_final.pt"
@@ -903,8 +904,6 @@ def train_comprehensive(
                 _f.write(_json.dumps(_rec) + "\n")
         except Exception:
             pass
-
-        writer.close()
 
 def save_checkpoint(model, ema, optimizer, scheduler, step, path):
     """Save a training checkpoint with robust error handling."""
