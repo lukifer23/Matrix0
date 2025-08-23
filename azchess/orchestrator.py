@@ -14,7 +14,11 @@ from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingC
 from .config import Config
 from .logging_utils import setup_logging
 from .selfplay.internal import selfplay_worker, math_div_ceil
-from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
+from .selfplay.inference import (
+    run_inference_server,
+    setup_shared_memory_for_worker,
+    cleanup_shared_memory,
+)
 from .config import select_device
 from azchess.training.train import train_from_config as train_main
 from .arena import play_match
@@ -617,6 +621,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                         infer_proc.join(timeout=5)
                     except Exception:
                         pass
+                if shared_memory_resources:
+                    cleanup_shared_memory(shared_memory_resources)
             return stats, done
 
         # Retry loop for self-play
