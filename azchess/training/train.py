@@ -30,8 +30,18 @@ import logging
 from azchess.config import Config, select_device
 from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
-from azchess.encoding import encode_board, move_to_index, POLICY_SHAPE
+from azchess.encoding import (
+    encode_board,
+    move_to_index,
+    POLICY_SHAPE,
+    build_horizontal_flip_permutation,
+    build_rotate180_permutation,
+)
 from azchess.logging_utils import setup_logging
+
+# Precompute action-space permutations for data augmentation
+HFLIP_PERM = torch.tensor(build_horizontal_flip_permutation(), dtype=torch.long)
+ROTATE180_PERM = torch.tensor(build_rotate180_permutation(), dtype=torch.long)
 
 # Setup logging
 logger = setup_logging(level=logging.INFO)
@@ -123,9 +133,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             pi_cont = pi.contiguous()
             pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)  # (B, 8, 8, 73)
             pi_sh = torch.flip(pi_sh, dims=[2])
-            from azchess.encoding import build_horizontal_flip_permutation
-            perm = build_horizontal_flip_permutation()
-            perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
+            perm_t = HFLIP_PERM.to(pi_sh.device)
             pi_sh = pi_sh.index_select(-1, perm_t)
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
@@ -136,9 +144,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             pi_cont = pi.contiguous()
             pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)
             pi_sh = torch.flip(pi_sh, dims=[1, 2])
-            from azchess.encoding import build_rotate180_permutation
-            perm = build_rotate180_permutation()
-            perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
+            perm_t = ROTATE180_PERM.to(pi_sh.device)
             pi_sh = pi_sh.index_select(-1, perm_t)
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
