@@ -72,21 +72,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Data preparation
     data_prep_start = time.time()
 
-    # Convert numpy arrays to PyTorch tensors and ensure contiguity immediately
-    s = torch.from_numpy(s).to(device).contiguous()
-    pi = torch.from_numpy(pi).to(device).contiguous()
-    z = torch.from_numpy(z).to(device).contiguous()
+    # Convert numpy arrays to PyTorch tensors on CPU
+    s = torch.from_numpy(s)
+    pi = torch.from_numpy(pi)
+    z = torch.from_numpy(z)
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
-        z = z.reshape(z.size(0)).contiguous()
-    
-    # Validate tensor properties to catch issues early
-    if not s.is_contiguous():
-        raise RuntimeError(f"States tensor is not contiguous after conversion. Shape: {s.shape}, strides: {s.stride()}")
-    if not pi.is_contiguous():
-        raise RuntimeError(f"Policy tensor is not contiguous after conversion. Shape: {pi.shape}, strides: {pi.stride()}")
-    if not z.is_contiguous():
-        raise RuntimeError(f"Value tensor is not contiguous after conversion. Shape: {z.shape}, strides: {z.stride()}")
+        z = z.reshape(z.size(0))
     
     # Validate tensor shapes with detailed error messages
     try:
@@ -113,43 +105,45 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if current_step % 10 == 0:  # Log every 10 steps
         logger.info(f"PERF: Data preparation: {data_prep_time:.3f}s")
 
+    # Setup precision and device type BEFORE moving tensors
+    device_type = device.split(':')[0]
+    use_autocast = scaler is not None
+
+    if precision == "bf16":
+        _amp_dtype = torch.bfloat16
+        use_autocast = False  # Disable autocast for bf16 but keep scaler
+    elif precision == "fp16":
+        _amp_dtype = torch.float16
+    else: # fp32
+        use_autocast = False
+        _amp_dtype = torch.float32
+
+    logger.debug(f"Using precision: {precision}, autocast: {use_autocast}, dtype: {_amp_dtype}, device: {device_type}")
+
+    # Move tensors to target device once
+    s = s.to(device, non_blocking=True)
+    pi = pi.to(device, non_blocking=True)
+    z = z.to(device, non_blocking=True)
+
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
-        r = torch.rand(1).item()
+        r = torch.rand(1, device=s.device).item()
         if r < 0.5:
             # Horizontal flip (mirror files)
-            s = torch.flip(s, dims=[3])
-            # Ensure policy tensor is contiguous before reshaping
-            pi_cont = pi.contiguous()
-            pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)  # (B, 8, 8, 73)
-            pi_sh = torch.flip(pi_sh, dims=[2])
+            s = torch.flip(s, dims=[3]).contiguous()
+            pi_sh = torch.flip(pi.view(-1, *POLICY_SHAPE), dims=[2]).contiguous()
             from azchess.encoding import build_horizontal_flip_permutation
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
-            pi_sh = pi_sh.index_select(-1, perm_t)
-            # Ensure the final policy tensor is contiguous
-            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
+            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
         elif r < 0.75 and augment_rotate180:
             # 180-degree rotation (flip ranks and files)
-            s = torch.flip(s, dims=[2, 3])
-            # Ensure policy tensor is contiguous before reshaping
-            pi_cont = pi.contiguous()
-            pi_sh = pi_cont.reshape(-1, *POLICY_SHAPE)
-            pi_sh = torch.flip(pi_sh, dims=[1, 2])
+            s = torch.flip(s, dims=[2, 3]).contiguous()
+            pi_sh = torch.flip(pi.view(-1, *POLICY_SHAPE), dims=[1, 2]).contiguous()
             from azchess.encoding import build_rotate180_permutation
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
-            pi_sh = pi_sh.index_select(-1, perm_t)
-            # Ensure the final policy tensor is contiguous
-            pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
-    
-    # Validate tensors after augmentation to catch any contiguity issues
-    if not s.is_contiguous():
-        raise RuntimeError(f"States tensor lost contiguity after augmentation. Shape: {s.shape}, strides: {s.stride()}")
-    if not pi.is_contiguous():
-        raise RuntimeError(f"Policy tensor lost contiguity after augmentation. Shape: {pi.shape}, strides: {pi.stride()}")
-    if not z.is_contiguous():
-        raise RuntimeError(f"Value tensor lost contiguity after augmentation. Shape: {z.shape}, strides: {z.stride()}")
+            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
@@ -166,9 +160,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             signal.signal(signal.SIGALRM, timeout_handler)
             signal.alarm(10)  # 10 second timeout
 
-            # CRITICAL: Create SSL targets BEFORE any device/precision changes to avoid type mismatches
             ssl_targets = model.create_ssl_targets(s)
-            ssl_targets = ssl_targets.contiguous()
 
             # Cancel the alarm
             signal.alarm(0)
@@ -200,40 +192,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     else:
         logger.warning(f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}")
 
-    # CRITICAL: Setup precision and device type BEFORE data transfer (OUTSIDE SSL block)
-    device_type = device.split(':')[0]
-    use_autocast = scaler is not None
-
-    if precision == "bf16":
-        _amp_dtype = torch.bfloat16
-        use_autocast = False  # Disable autocast for bf16 but keep scaler
-    elif precision == "fp16":
-        _amp_dtype = torch.float16
-    else: # fp32
-        use_autocast = False
-        _amp_dtype = torch.float32
-
-    logger.debug(f"Using precision: {precision}, autocast: {use_autocast}, dtype: {_amp_dtype}, device: {device_type}")
-
-    # CRITICAL FIX: Let autocast handle precision conversion to avoid MPS type mismatches
-    # Do NOT convert tensor dtypes manually before autocast - this causes fp16/fp32 conflicts
+    # Ensure SSL targets have correct dtype
     if ssl_targets is not None:
-        ssl_targets = ssl_targets.to(dtype=torch.long) # Target for CrossEntropyLoss should be long
-
-    # CRITICAL: Optimize data transfer to device with non_blocking
-    s = s.to(device, non_blocking=True)
-    pi = pi.to(device, non_blocking=True)
-    z = z.to(device, non_blocking=True)
-    if ssl_targets is not None:
-        ssl_targets = ssl_targets.to(device, non_blocking=True)
+        ssl_targets = ssl_targets.to(dtype=torch.long)
 
     # PERFORMANCE PROFILING: Start forward pass
     forward_start = time.time()
-
-    # Ensure all inputs are contiguous and properly typed before autocast
-    s = s.contiguous()
-    pi = pi.contiguous()
-    z = z.contiguous()
 
     # CRITICAL: Ensure model parameters have consistent dtype before autocast
     if use_autocast and device_type == "mps":
@@ -243,8 +207,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # CRITICAL: Enhanced autocast handling with proper type consistency
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
-        # Keep standard contiguous format during training
-        s = s.contiguous()
         if use_wdl and hasattr(model, 'forward_with_features'):
             p, v, ssl_out, feats = model.forward_with_features(s, return_ssl=True)
         else:
@@ -274,8 +236,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             p = torch.clamp(p, -5.0, 5.0)
         
         # Ensure contiguity to avoid view-related autograd errors on some backends
-        p = p.contiguous()
-        v = v.contiguous()
         if ssl_out is not None:
             # Force standard contiguous (NCHW) to avoid channels_last view issues in CrossEntropy backward (MPS)
             try:
@@ -301,28 +261,25 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     valid_rows = legal_mask.any(dim=1, keepdim=True)
                     # Build a keep mask: keep original logits where either row invalid or legal; else set to -1e9
                     keep_mask = valid_rows & legal_mask
-                p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9)).contiguous()
+                p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9))
             except Exception:
-                p_for_loss = p.contiguous()
+                p_for_loss = p
         else:
-            p_for_loss = p.contiguous()
+            p_for_loss = p
         # Policy loss with optional label smoothing
         if label_smoothing and label_smoothing > 0.0:
             num_actions = p.shape[1]
             smooth = label_smoothing / float(num_actions)
             pi_smooth = (1.0 - label_smoothing) * pi + smooth
-            log_probs = nn.functional.log_softmax(p_for_loss.contiguous(), dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
             policy_loss = -(pi_smooth * log_probs).sum(dim=1).mean()
         else:
-            log_probs = nn.functional.log_softmax(p_for_loss.contiguous(), dim=1)
+            log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
             policy_loss = -(pi * log_probs).sum(dim=1).mean()
-        
-        # Ensure policy loss is contiguous
-        policy_loss = policy_loss.contiguous()
         
         # Add policy regularization to prevent uniform outputs
         # This encourages the model to produce diverse, meaningful policies
-        policy_probs = torch.softmax(p_for_loss.contiguous(), dim=1)
+        policy_probs = torch.softmax(p_for_loss, dim=1)
         uniform_probs = torch.ones_like(policy_probs) / policy_probs.shape[1]
         policy_entropy = -(policy_probs * torch.log(policy_probs + 1e-8)).sum(dim=1).mean()
         max_entropy = torch.log(torch.tensor(policy_probs.shape[1], dtype=torch.float32, device=p.device))
@@ -332,9 +289,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         entropy_penalty = torch.relu(policy_entropy - 0.8 * max_entropy)
         policy_reg_loss = 0.1 * entropy_penalty
         
-        # Ensure policy regularization loss is contiguous
-        policy_reg_loss = policy_reg_loss.contiguous()
-        
         # PERFORMANCE PROFILING: Start loss computation
         loss_comp_start = time.time()
 
@@ -343,9 +297,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
         else:
             value_loss = nn.functional.mse_loss(v, z)
-
-        # Ensure value loss is contiguous
-        value_loss = value_loss.contiguous()
 
         ssl_loss = 0.0
         if enable_ssl and ssl_targets is not None and ssl_out is not None:
@@ -387,11 +338,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
         # CRITICAL FIX: Ensure all loss components have consistent dtypes BEFORE arithmetic
         # This prevents MPS type mismatch errors during loss combination
-        policy_loss = policy_loss.contiguous()
-        policy_reg_loss = policy_reg_loss.contiguous()
-        value_loss = value_loss.contiguous()
-        ssl_loss = ssl_loss.contiguous()
-
         # Ensure all tensors have the same dtype (use the model's dtype)
         target_dtype = policy_loss.dtype
         if value_loss.dtype != target_dtype:
@@ -418,8 +364,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         cls = torch.where(z > float(wdl_margin), torch.tensor(2, device=z.device, dtype=torch.long), cls)
                         cls = torch.where(z < -float(wdl_margin), torch.tensor(0, device=z.device, dtype=torch.long), cls)
                     wdl_loss = nn.functional.cross_entropy(wdl_logits, cls)
-                    # Ensure loss is contiguous and has consistent dtype before arithmetic operations
-                    wdl_loss = wdl_loss.contiguous()
+                    # Ensure loss has consistent dtype before arithmetic operations
                     if wdl_loss.dtype != loss.dtype:
                         wdl_loss = wdl_loss.to(dtype=loss.dtype)
                     loss = loss + (float(wdl_weight) * wdl_loss)
@@ -431,9 +376,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # Guard against NaN/Inf loss; skip backward if not finite
     if torch.isfinite(loss):
-        # Ensure loss tensor is contiguous before backward pass
-        if not loss.is_contiguous():
-            loss = loss.contiguous()
         try:
             # Use scaler for mixed precision if available and valid
             if scaler is not None and use_autocast:
