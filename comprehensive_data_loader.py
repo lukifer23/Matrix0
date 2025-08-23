@@ -29,7 +29,8 @@ class ComprehensiveDataLoader:
                  openings_data_path: str = "data/training/openings_training_data.npz",
                  lichess_complete_path: str = "data/training/lichess_complete_training_data.npz",
                  lichess_batch_100_path: str = "data/training/lichess_batch_100_199_training_data.npz",
-                 selfplay_data_dir: str = "data/selfplay"):
+                 selfplay_data_dir: str = "data/selfplay",
+                 expected_planes: int = 19):
         """Initialize the comprehensive data loader.
         
         Args:
@@ -42,6 +43,7 @@ class ComprehensiveDataLoader:
         self.lichess_complete_path = Path(lichess_complete_path)
         self.lichess_batch_100_path = Path(lichess_batch_100_path)
         self.selfplay_data_dir = Path(selfplay_data_dir)
+        self.expected_planes = expected_planes
 
         # Data storage
         self.tactical_data = None
@@ -104,10 +106,15 @@ class ComprehensiveDataLoader:
                                 self.lichess_complete_samples + self.lichess_batch_100_samples)
         logger.info(f"📊 Total external training samples: {total_external_samples}")
 
-    def _validate_shapes(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
+    def _validate_shapes(self,
+                         states: np.ndarray,
+                         policies: np.ndarray,
+                         values: np.ndarray,
+                         expected_planes: int,
+                         source: str = "") -> bool:
         """Validate that data arrays have expected shapes."""
         n = states.shape[0]
-        if (states.shape != (n, 19, 8, 8) or
+        if (states.shape != (n, expected_planes, 8, 8) or
                 policies.shape != (n, 4672) or
                 values.shape != (n,)):
             logger.warning(
@@ -168,7 +175,7 @@ class ComprehensiveDataLoader:
         if selfplay_samples > 0:
             # Create dummy self-play data for now
             # In practice, this would load from your DataManager
-            dummy_positions = np.random.random((selfplay_samples, 19, 8, 8)).astype(np.float32)
+            dummy_positions = np.random.random((selfplay_samples, self.expected_planes, 8, 8)).astype(np.float32)
             dummy_policies = np.random.random((selfplay_samples, 4672)).astype(np.float32)
             dummy_values = np.random.random(selfplay_samples).astype(np.float32)
             
@@ -190,7 +197,7 @@ class ComprehensiveDataLoader:
         shuffled_policies = combined_policies[indices]
         shuffled_values = combined_values[indices]
 
-        if not self._validate_shapes(shuffled_positions, shuffled_policies, shuffled_values, 'mixed batch'):
+        if not self._validate_shapes(shuffled_positions, shuffled_policies, shuffled_values, self.expected_planes, 'mixed batch'):
             return None
 
         return {
@@ -249,7 +256,7 @@ class ComprehensiveDataLoader:
             batch_states = self.tactical_data['positions'][indices]
             batch_policies = self.tactical_data['policy_targets'][indices]
             batch_values = self.tactical_data['value_targets'][indices]
-            if not self._validate_shapes(batch_states, batch_policies, batch_values, 'pure tactical'):
+            if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, 'pure tactical'):
                 return None
             return {
                 's': batch_states,
@@ -262,7 +269,7 @@ class ComprehensiveDataLoader:
             batch_states = self.openings_data['positions'][indices]
             batch_policies = self.openings_data['policy_targets'][indices]
             batch_values = self.openings_data['value_targets'][indices]
-            if not self._validate_shapes(batch_states, batch_policies, batch_values, 'pure openings'):
+            if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, 'pure openings'):
                 return None
             return {
                 's': batch_states,

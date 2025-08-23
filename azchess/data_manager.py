@@ -44,10 +44,11 @@ class DataStats:
 class DataManager:
     """Manages the replay buffer and data pipeline for Matrix0 training."""
     
-    def __init__(self, base_dir: str = "data", max_shards: int = 128, shard_size: int = 16384):
+    def __init__(self, base_dir: str = "data", max_shards: int = 128, shard_size: int = 16384, expected_planes: int = 19):
         self.base_dir = Path(base_dir)
         self.max_shards = max_shards
         self.shard_size = shard_size
+        self.expected_planes = expected_planes
         
         # Ensure directories exist
         self.selfplay_dir = self.base_dir / "selfplay"
@@ -263,7 +264,7 @@ class DataManager:
                     if values.ndim == 2 and values.shape[1] == 1:
                         values = values.reshape(values.shape[0])
 
-                    if not self._validate_shapes(states, policies, values, shard_path):
+                    if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
                         self._mark_shard_corrupted(shard_path)
                         continue
 
@@ -366,7 +367,7 @@ class DataManager:
                 batch_states = data['positions'][indices]
                 batch_policies = data['policy_targets'][indices]
                 batch_values = data['value_targets'][indices]
-                if not self._validate_shapes(batch_states, batch_policies, batch_values, tactical_path):
+                if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, tactical_path):
                     return None
                 return {
                     's': batch_states,
@@ -390,7 +391,7 @@ class DataManager:
                 batch_states = data['positions'][indices]
                 batch_policies = data['policy_targets'][indices]
                 batch_values = data['value_targets'][indices]
-                if not self._validate_shapes(batch_states, batch_policies, batch_values, openings_path):
+                if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, openings_path):
                     return None
                 return {
                     's': batch_states,
@@ -426,7 +427,7 @@ class DataManager:
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
 
-        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'mixed external'):
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'mixed external'):
             return None
         return combined_batch
     
@@ -450,7 +451,7 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 openings_batch[key], tactical_batch[key]
             ], axis=0)
-        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum openings'):
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum openings'):
             return None
         return combined_batch
     
@@ -474,7 +475,7 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
-        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum tactics'):
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum tactics'):
             return None
         return combined_batch
     
@@ -515,7 +516,7 @@ class DataManager:
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
-        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum mixed'):
+        if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum mixed'):
             return None
         return combined_batch
     
@@ -909,11 +910,16 @@ class DataManager:
         except Exception:
             return False
 
-    def _validate_shapes(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
+    def _validate_shapes(self,
+                         states: np.ndarray,
+                         policies: np.ndarray,
+                         values: np.ndarray,
+                         expected_planes: int,
+                         source: str = "") -> bool:
         """Ensure training data has expected shapes.
 
         Expected shapes:
-            states: (N, 19, 8, 8)
+            states: (N, ``expected_planes``, 8, 8)
             policies: (N, 4672)
             values: (N,) or (N,1)
 
@@ -921,13 +927,14 @@ class DataManager:
             states: State tensor
             policies: Policy tensor
             values: Value tensor
+            expected_planes: Number of input planes expected in ``states``
             source: Optional identifier for logging
 
         Returns:
             True if shapes match expectations, False otherwise.
         """
         n = states.shape[0]
-        ok_states = (states.shape == (n, 19, 8, 8))
+        ok_states = (states.shape == (n, expected_planes, 8, 8))
         ok_policies = (policies.shape == (n, 4672))
         ok_values = (values.shape == (n,)) or (values.ndim == 2 and values.shape == (n, 1))
         if not (ok_states and ok_policies and ok_values):

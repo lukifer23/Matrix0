@@ -550,7 +550,10 @@ def train_comprehensive(
         logger.info(f"Applied warmup LR: {learning_rate * warmup_factor:.6f}")
 
     # Setup data using DataManager
-    data_manager = DataManager(base_dir=cfg.get("data_dir", "data"))
+    data_manager = DataManager(
+        base_dir=cfg.get("data_dir", "data"),
+        expected_planes=cfg.model().get("planes", 19),
+    )
     data_stats = data_manager.get_stats()
     external_stats = data_manager.get_external_data_stats()
     

@@ -244,7 +244,10 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         device=device,
         inference_backend=infer_backend,
     )
-    data_manager = DataManager(base_dir=cfg_dict.get("data_dir", "data"))
+    data_manager = DataManager(
+        base_dir=cfg_dict.get("data_dir", "data"),
+        expected_planes=cfg_dict.get("model", {}).get("planes", 19),
+    )
 
     for g in range(games):
         board = get_opening_position()

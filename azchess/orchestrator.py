@@ -672,14 +672,20 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 attempt += 1
         # Post self-play: compact data, validate/quarantine if requested
         logger.info("Compacting self-play data into replay buffer")
-        dm = DataManager(base_dir=cfg.get("data_dir", "data"))
+        dm = DataManager(
+            base_dir=cfg.get("data_dir", "data"),
+            expected_planes=cfg.model().get("planes", 19),
+        )
         try:
             dm.compact_selfplay_to_replay()
         except Exception as e:
             logger.warning(f"Data compaction failed: {e}")
 
         # Re-initialize DataManager to ensure it sees the new data
-        dm = DataManager(base_dir=cfg.get("data_dir", "data"))
+        dm = DataManager(
+            base_dir=cfg.get("data_dir", "data"),
+            expected_planes=cfg.model().get("planes", 19),
+        )
 
         if run_doctor_fix:
             try:
@@ -719,7 +725,10 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
 
         # Ensure we have usable data before training
         try:
-            stats = DataManager(base_dir=cfg.get("data_dir", "data")).get_stats()
+            stats = DataManager(
+                base_dir=cfg.get("data_dir", "data"),
+                expected_planes=cfg.model().get("planes", 19),
+            ).get_stats()
             if int(stats.total_samples) <= 0:
                 logger.warning("No training data available after ingestion; skipping training and evaluation.")
                 return
