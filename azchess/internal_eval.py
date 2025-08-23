@@ -2,31 +2,16 @@
 from __future__ import annotations
 
 import chess
-import torch
-
-from .config import Config, select_device
-from .model import PolicyValueNet
-from .mcts import MCTS, MCTSConfig
+from .config import Config
+from .utils.model_loader import load_model_and_mcts
 
 def play_match(ckpt_a: str, ckpt_b: str, games: int, cfg: Config) -> float:
     """
     Plays a match between two model checkpoints.
     Returns the score of model A.
     """
-    device = select_device(cfg.get("device", "auto"))
-    mcfg = MCTSConfig.from_dict(cfg.eval())
-    
-    model_a = PolicyValueNet.from_config(cfg.model()).to(device)
-    model_b = PolicyValueNet.from_config(cfg.model()).to(device)
-    
-    state_a = torch.load(ckpt_a, map_location=device)
-    state_b = torch.load(ckpt_b, map_location=device)
-    
-    model_a.load_state_dict(state_a.get("model_ema", state_a["model"]))
-    model_b.load_state_dict(state_b.get("model_ema", state_b["model"]))
-    
-    mcts_a = MCTS(mcfg, model_a, device)
-    mcts_b = MCTS(mcfg, model_b, device)
+    model_a, mcts_a = load_model_and_mcts(cfg, ckpt_a)
+    model_b, mcts_b = load_model_and_mcts(cfg, ckpt_b)
 
     score = 0.0
     for g in range(games):

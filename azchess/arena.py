@@ -13,7 +13,6 @@ from tqdm import tqdm
 from datetime import datetime
 
 from .config import Config, select_device
-from .model import PolicyValueNet
 from .mcts import MCTS, MCTSConfig
 from .elo import EloBook, update_elo
 from .draw import should_adjudicate_draw
@@ -23,18 +22,18 @@ from .selfplay.inference import (
     run_inference_server,
     InferenceClient,
 )
+from .utils.model_loader import load_model_and_mcts
 
 # Globals for worker processes (initialized by _arena_worker_init)
 _P_DEVICE = None
 _P_CFG = None
-_P_MCFG = None
 _P_MCTS_A = None
 _P_MCTS_B = None
 
 
 def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_size_inner):
     """Initializer for multiprocessing workers: loads models and builds MCTS."""
-    global _P_DEVICE, _P_CFG, _P_MCFG, _P_MCTS_A, _P_MCTS_B
+    global _P_DEVICE, _P_CFG, _P_MCTS_A, _P_MCTS_B
     _P_CFG = Config(cfg_dict)
     _P_DEVICE = select_device(_P_CFG.get("device", "auto"))
     mcfg_dict = dict(_P_CFG.mcts())
@@ -49,50 +48,20 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
             "draw_penalty": float(_P_CFG.mcts().get("draw_penalty", -0.1)),
         }
     )
-    _P_MCFG = MCTSConfig.from_dict(mcfg_dict)
-    model_a_local = PolicyValueNet.from_config(_P_CFG.model()).to(_P_DEVICE)
-    model_b_local = PolicyValueNet.from_config(_P_CFG.model()).to(_P_DEVICE)
-    import numpy
-    from torch.serialization import add_safe_globals
-    add_safe_globals([numpy.core.multiarray.scalar])
-    sa = torch.load(ckpt_a_path, map_location=_P_DEVICE, weights_only=False)
-    sb = torch.load(ckpt_b_path, map_location=_P_DEVICE, weights_only=False)
-    try:
-        missing_a, unexpected_a = model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
-        if missing_a:
-            total_expected_a = len(sa.get("model_ema", sa.get("model", sa))) + len(missing_a)
-            logger.warning(
-                f"Model A: Missing keys during load: {len(missing_a)}/{total_expected_a} keys "
-                f"({len(sa.get('model_ema', sa.get('model', sa)))} loaded successfully)"
-            )
-            logger.warning(f"Model A missing keys: {sorted(list(missing_a))}")
-        if unexpected_a:
-            logger.warning(f"Model A: Unexpected keys (ignored): {len(unexpected_a)} keys")
-    except Exception:
-        model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
-
-    try:
-        missing_b, unexpected_b = model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
-        if missing_b:
-            total_expected_b = len(sb.get("model_ema", sb.get("model", sb))) + len(missing_b)
-            logger.warning(
-                f"Model B: Missing keys during load: {len(missing_b)}/{total_expected_b} keys "
-                f"({len(sb.get('model_ema', sb.get('model', sb)))} loaded successfully)"
-            )
-            logger.warning(f"Model B missing keys: {sorted(list(missing_b))}")
-        if unexpected_b:
-            logger.warning(f"Model B: Unexpected keys (ignored): {len(unexpected_b)} keys")
-    except Exception:
-        model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
-    _P_MCTS_A = MCTS(_P_MCFG, model_a_local, _P_DEVICE)
-    _P_MCTS_B = MCTS(_P_MCFG, model_b_local, _P_DEVICE)
+    loader_cfg = Config({
+        "model": _P_CFG.model(),
+        "mcts": mcfg_dict,
+        "device": _P_CFG.get("device", "auto"),
+    })
+    _, _P_MCTS_A = load_model_and_mcts(loader_cfg, ckpt_a_path)
+    _, _P_MCTS_B = load_model_and_mcts(loader_cfg, ckpt_b_path)
 
 
 def _arena_run_one_game(args_tuple):
     """Worker function: play a single game and return (score_from_A_persp, moves, result_str)."""
     idx, max_moves, temp_local, temp_plies_local, debug_local = args_tuple
     import chess, time, numpy as np
-    global _P_DEVICE, _P_CFG, _P_MCFG, _P_MCTS_A, _P_MCTS_B
+    global _P_DEVICE, _P_CFG, _P_MCTS_A, _P_MCTS_B
     board = chess.Board()
     moves_count = 0
     move_history = []
@@ -173,25 +142,13 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
             mcts_a_local = MCTS(mcfg_local, None, device_local, inference_backend=infer_a)
             mcts_b_local = MCTS(mcfg_local, None, device_local, inference_backend=infer_b)
         else:
-            model_a_local = PolicyValueNet.from_config(cfg_local.model()).to(device_local)
-            model_b_local = PolicyValueNet.from_config(cfg_local.model()).to(device_local)
-            import numpy
-            from torch.serialization import add_safe_globals
-            # Allow both numpy.core and numpy._core scalar classes
-            try:
-                add_safe_globals([numpy.core.multiarray.scalar])
-            except Exception:
-                pass
-            try:
-                add_safe_globals([numpy._core.multiarray.scalar])
-            except Exception:
-                pass
-            sa = torch.load(ckpt_a_path, map_location=device_local, weights_only=False)
-            sb = torch.load(ckpt_b_path, map_location=device_local, weights_only=False)
-            model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
-            model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
-            mcts_a_local = MCTS(mcfg_local, model_a_local, device_local)
-            mcts_b_local = MCTS(mcfg_local, model_b_local, device_local)
+            loader_cfg = Config({
+                "model": cfg_local.model(),
+                "mcts": mcfg_dict,
+                "device": cfg_local.get("device", "auto"),
+            })
+            _, mcts_a_local = load_model_and_mcts(loader_cfg, ckpt_a_path)
+            _, mcts_b_local = load_model_and_mcts(loader_cfg, ckpt_b_path)
     except Exception as e:
         try:
             q_local.put({"type": "error", "msg": f"worker_init_failed: {e}"})
@@ -607,45 +564,13 @@ def play_match(
 
     # Fallback: sequential path as before
     print("🔄 Loading models...")
-    model_a = PolicyValueNet.from_config(cfg.model()).to(device)
-    model_b = PolicyValueNet.from_config(cfg.model()).to(device)
-    # Safely load checkpoints by whitelisting numpy classes
-    import numpy
-    from torch.serialization import add_safe_globals
-    add_safe_globals([numpy.core.multiarray.scalar])
-    state_a = torch.load(ckpt_a, map_location=device, weights_only=False)
-    state_b = torch.load(ckpt_b, map_location=device, weights_only=False)
-    # Handle different checkpoint formats robustly
-    if "model_ema" in state_a:
-        model_a.load_state_dict(state_a["model_ema"])
-    elif "model" in state_a:
-        model_a.load_state_dict(state_a["model"])
-    elif "model_state_dict" in state_a:
-        model_a.load_state_dict(state_a["model_state_dict"])
-    else:
-        # Try to find any key that looks like model weights
-        model_keys = [k for k in state_a.keys() if 'model' in k.lower() and 'state' in k.lower()]
-        if model_keys:
-            model_a.load_state_dict(state_a[model_keys[0]])
-        else:
-            raise ValueError(f"No recognizable model state found in checkpoint A: {list(state_a.keys())}")
-    
-    if "model_ema" in state_b:
-        model_b.load_state_dict(state_b["model_ema"])
-    elif "model" in state_b:
-        model_b.load_state_dict(state_b["model"])
-    elif "model_state_dict" in state_b:
-        model_b.load_state_dict(state_b["model_state_dict"])
-    else:
-        # Try to find any key that looks like model weights
-        model_keys = [k for k in state_b.keys() if 'model' in k.lower() and 'state' in k.lower()]
-        if model_keys:
-            model_b.load_state_dict(state_b[model_keys[0]])
-        else:
-            raise ValueError(f"No recognizable model state found in checkpoint B: {list(state_b.keys())}")
-    print("🧠 Creating MCTS instances...")
-    mcts_a = MCTS(mcfg, model_a, device)
-    mcts_b = MCTS(mcfg, model_b, device)
+    loader_cfg = Config({
+        "model": cfg.model(),
+        "mcts": mcfg_dict,
+        "device": cfg.get("device", "auto"),
+    })
+    _, mcts_a = load_model_and_mcts(loader_cfg, ckpt_a)
+    _, mcts_b = load_model_and_mcts(loader_cfg, ckpt_b)
     print("✅ Models loaded successfully!")
     print("=" * 60)
 
