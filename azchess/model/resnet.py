@@ -931,4 +931,4 @@ class PolicyValueNet(nn.Module):
                     elif param_name == 'bias':
                         torch.nn.init.zeros_(param_tensor)
 
-        return super().load_state_dict(new_state_dict, strict=False)
+        return super().load_state_dict(new_state_dict, strict=strict)
