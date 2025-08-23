@@ -62,14 +62,7 @@ class DataManager:
         # Initialize database for tracking
         self.db_path = self.base_dir / "data_metadata.db"
         self._init_database()
-        
-        # Version tracking
-        self.version = "1.0.0"
-        
-        # Initialize database for tracking
-        self.db_path = self.base_dir / "data_metadata.db"
-        self._init_database()
-        
+
         # Version tracking
         self.version = "1.0.0"
         

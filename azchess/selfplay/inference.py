@@ -4,6 +4,7 @@ from torch.multiprocessing import Event
 from typing import Any, Dict, List, Optional, Tuple
 import time
 import logging
+from multiprocessing.connection import wait
 
 import numpy as np
 import torch
@@ -100,26 +101,21 @@ def run_inference_server(
         use_amp = device_type in ("cuda", "mps")
 
         worker_events = [res["request_event"] for res in shared_memory_resources]
+        event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
+        timeout = None
 
         logger.debug("Inference server entering main processing loop.")
         while not stop_event.is_set():
             try:
-                # Wait for any worker to signal a request with efficient polling
-                ready_events = []
-                for i, event in enumerate(worker_events):
-                    if event.is_set():
-                        ready_events.append(i)
-
-                if not ready_events:
-                    # No events ready, sleep briefly to avoid busy waiting
-                    time.sleep(0.001)
+                ready = wait(worker_events + [stop_event], timeout)
+                if stop_event in ready:
+                    break
+                if not ready:
                     continue
-
-                batch_indices = ready_events
+                batch_indices = [event_to_worker[ev] for ev in ready]
                 logger.debug(
                     f"Inference server processing batch from workers: {batch_indices}"
                 )
-
             except Exception as e:
                 logger.error(f"Error in inference server main loop: {e}")
                 continue

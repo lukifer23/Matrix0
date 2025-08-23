@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 import shutil
 
+from azchess.logging_utils import setup_logging
+
 
 def find_temp_files(root: Path):
     """Yield temporary NPZ files under ``root``."""
@@ -56,20 +58,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s: %(message)s",
-    )
+    logger = setup_logging(level=logging.DEBUG if args.verbose else logging.INFO)
 
     root = args.data_dir
     if not root.exists():
-        logging.error("Data directory %s does not exist", root)
+        logger.error("Data directory %s does not exist", root)
         return 1
 
     quarantine_dir = args.quarantine_dir
     if quarantine_dir and not quarantine_dir.exists():
         if args.dry_run:
-            logging.info(
+            logger.info(
                 "[dry-run] Would create quarantine directory %s", quarantine_dir
             )
         else:
@@ -79,11 +78,11 @@ def main() -> int:
     for temp_path in find_temp_files(root):
         final_path = resolve_final_path(temp_path)
         if final_path.exists():
-            logging.debug("Skipping %s because %s exists", temp_path, final_path)
+            logger.debug("Skipping %s because %s exists", temp_path, final_path)
             continue
 
         if args.dry_run:
-            logging.info("[dry-run] Removing %s", temp_path)
+            logger.info("[dry-run] Removing %s", temp_path)
             processed += 1
             continue
 
@@ -91,15 +90,15 @@ def main() -> int:
             if quarantine_dir:
                 dest = quarantine_dir / temp_path.name
                 shutil.move(str(temp_path), dest)
-                logging.info("Moved %s to %s", temp_path, dest)
+                logger.info("Moved %s to %s", temp_path, dest)
             else:
                 temp_path.unlink()
-                logging.info("Removed %s", temp_path)
+                logger.info("Removed %s", temp_path)
             processed += 1
         except Exception as exc:  # pragma: no cover
-            logging.error("Failed to process %s: %s", temp_path, exc)
+            logger.error("Failed to process %s: %s", temp_path, exc)
 
-    logging.info("Processed %d temporary files", processed)
+    logger.info("Processed %d temporary files", processed)
     return 0
 
 

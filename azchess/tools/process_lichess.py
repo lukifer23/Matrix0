@@ -24,10 +24,10 @@ import chess.pgn
 import numpy as np
 
 from azchess.encoding import encode_board, move_to_index
+from azchess.logging_utils import setup_logging
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO)
 
 # --- Configuration ---
 LICHESS_DB_URL = "https://database.lichess.org/standard/"

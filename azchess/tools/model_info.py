@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 
+from azchess.logging_utils import setup_logging
 from azchess.config import Config
 from azchess.model import PolicyValueNet
 
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO)
 
 
 def main():
@@ -30,6 +30,5 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     main()
 

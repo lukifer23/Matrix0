@@ -22,13 +22,13 @@ from .inference import InferenceClient
 from ..encoding import encode_board, move_to_index
 import chess.polyglot
 from ..draw import should_adjudicate_draw
+from azchess.logging_utils import setup_logging
 
 
 def math_div_ceil(a: int, b: int) -> int:
     """Integer division with ceiling."""
     return (a + b - 1) // b
-
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO)
 OPENING_BOOK: List[chess.Board] = []
 
 def load_opening_book(pgn_path: str):
@@ -94,8 +94,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     # Set up logging for this worker
     lvl_name = os.environ.get('MATRIX0_WORKER_LOG_LEVEL', 'INFO').upper()  # Changed to INFO for debugging
     level = getattr(logging, lvl_name, logging.INFO)
-    logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(f"selfplay_worker_{proc_id}")
+    logger = setup_logging(level=level, name=f"selfplay_worker_{proc_id}")
 
     logger.info(f"Worker {proc_id} starting with PID {os.getpid()}")
     logger.info(f"Worker {proc_id} config: games={games}, device={select_device(cfg_dict.get('device', 'auto'))}")

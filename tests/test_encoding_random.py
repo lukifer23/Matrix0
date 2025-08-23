@@ -1,22 +1,12 @@
 import chess
 import numpy as np
 
-from azchess.encoding import move_to_index, POLICY_SHAPE, build_horizontal_flip_permutation
-
-
-def random_board(plies: int = 20) -> chess.Board:
-    """Generate a random chess board by playing a number of random plies."""
-    rng = np.random.default_rng()
-    b = chess.Board()
-    for _ in range(plies):
-        if b.is_game_over():
-            break
-        moves = list(b.legal_moves)
-        if not moves:
-            break
-        mv = moves[int(rng.integers(0, len(moves)))]
-        b.push(mv)
-    return b
+from azchess.encoding import (
+    move_to_index,
+    POLICY_SHAPE,
+    build_horizontal_flip_permutation,
+)
+from azchess.utils.board import random_board
 
 
 def test_random_move_indices_unique():

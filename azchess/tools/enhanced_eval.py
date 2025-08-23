@@ -33,6 +33,7 @@ from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
 from ..elo import EloBook, update_elo
 from ..draw import should_adjudicate_draw
+from ..logging_utils import setup_logging
 
 
 class EnhancedEvaluator:
@@ -78,23 +79,13 @@ class EnhancedEvaluator:
         
     def _setup_logging(self):
         """Setup comprehensive logging for debugging."""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('data/eval_debug.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-        
-        # Filter out the noisy "Policy too uniform" debug messages from MCTS
+        self.logger = setup_logging(level=logging.INFO)
+
         class PolicyUniformFilter(logging.Filter):
             def filter(self, record):
-                return not ("Policy too uniform" in record.getMessage())
-        
-        # Apply filter to all handlers
-        for handler in logging.root.handlers:
+                return "Policy too uniform" not in record.getMessage()
+
+        for handler in self.logger.handlers:
             handler.addFilter(PolicyUniformFilter())
         
     def _load_models(self):
