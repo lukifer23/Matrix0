@@ -84,7 +84,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     if not mcts_cfg_dict:
         raise ValueError("MCTS config section is missing in config.yaml")
     
-    mcts_config = MCTSConfig.from_dict(mcts_cfg_dict)
+    _ = MCTSConfig.from_dict(mcts_cfg_dict)
     required_keys = set(MCTSConfig.__dataclass_fields__.keys())
     missing_keys = required_keys - set(mcts_cfg_dict.keys())
     if missing_keys:
