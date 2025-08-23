@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import queue as pyqueue
 from torch.multiprocessing import Process, Queue, Event as MPEvent
@@ -28,20 +29,21 @@ import time
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
+_log = logging.getLogger(__name__)
+
 
 def cleanup_temp_files(data_dir: Path) -> None:
     """Clean up temporary files from previous runs."""
     try:
-        # Clean up any leftover temp files
         temp_patterns = ["*.tmp", "*.temp", "temp_*", "*_temp"]
         for pattern in temp_patterns:
             for temp_file in data_dir.glob(pattern):
                 try:
                     temp_file.unlink()
-                except Exception:
-                    pass  # Ignore cleanup errors
-    except Exception:
-        pass  # Ignore cleanup errors
+                except OSError as e:
+                    _log.warning(f"Failed to remove temp file {temp_file}: {e}")
+    except OSError as e:
+        _log.exception(f"Failed to clean temporary files in {data_dir}: {e}")
 
 
 # Top-level helper for external engine process (macOS spawn-safe)
@@ -75,8 +77,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         try:
             structured_log_path.unlink()
             logger.info(f"Cleared previous structured log: {structured_log_path}")
-        except Exception as e:
-            logger.warning(f"Could not clear structured log: {e}")
+        except OSError as e:
+            logger.exception(f"Could not clear structured log: {e}")
 
     # Validate MCTS config
     from .mcts import MCTSConfig
@@ -95,15 +97,13 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         dev_req = cfg.get("device", "auto")
         from .config import select_device as _sel
         dev_sel = _sel(dev_req)
-        # Set MPS-friendly env if we are likely to use MPS
         if dev_sel == 'mps':
             _os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-            # Memory limits are now set at the beginning of main() before torch imports
         mps_built = getattr(torch.backends.mps, 'is_built', lambda: False)()
         mps_avail = getattr(torch.backends.mps, 'is_available', lambda: False)()
         logger.info(f"Device requested={dev_req} selected={dev_sel} | MPS built={mps_built} available={mps_avail}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception(f"Device selection logging failed: {e}")
 
     orch = cfg.raw.get("orchestrator", {})
     
@@ -158,7 +158,6 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             dev_sel = _sel_dev(dev)
             preset = sp_cfg["presets"].get(dev_sel)
             if preset:
-                # Merge selfplay and training presets without clobbering existing keys unless absent
                 for section in ("selfplay", "training", "mcts", "eval"):
                     if section in preset:
                         sp_cfg.setdefault(section, {})
@@ -167,7 +166,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 sp_cfg[section][k] = v
                 logger.info(f"Applied {dev_sel} presets to config")
     except Exception as e:
-        logger.warning(f"Failed to apply presets: {e}")
+        logger.exception(f"Failed to apply presets: {e}")
     
     # Apply command-line overrides to self-play config
     if workers_override is not None:
@@ -219,11 +218,11 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             np.random.seed(seed)
             try:
                 torch.manual_seed(seed)
-            except Exception:
-                pass
+            except RuntimeError as e:
+                logger.debug(f"torch.manual_seed failed: {e}")
             sp_cfg["seed"] = int(seed)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.exception(f"Failed to set deterministic seed: {e}")
     workers = sp_cfg["selfplay"].get("num_workers", 2)
     games_per_worker = math_div_ceil(games_target, workers)
 
@@ -247,7 +246,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 import shutil
                 shutil.copy2(model_ckpt, best_ckpt)
                 logger.info(f"Successfully created {best_ckpt}")
-            except Exception as e:
+            except OSError as e:
                 logger.warning(f"Failed to copy model.pt to best.pt: {e}")
                 logger.info("Will create new model with random weights")
         else:
@@ -272,8 +271,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 import logging as _logging
                 _mcts_logger = __import__('logging').getLogger('azchess.mcts')
                 _mcts_logger.setLevel(_logging.ERROR)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception(f"Failed to adjust MCTS log level: {e}")
             
             # Ensure torch is available in this scope
             import torch
@@ -322,7 +321,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                         logger.info(f"Model architecture has {actual_params:,} total parameters")
                         del temp_model  # Clean up temporary model
                     except Exception as e:
-                        logger.debug(f"Could not determine parameter count: {e}")
+                        logger.exception(f"Could not determine parameter count: {e}")
                     
                     # If using checkpoint override, copy to best.pt for future runs
                     if checkpoint_override and checkpoint_override != "best.pt":
@@ -331,11 +330,11 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                             import shutil
                             shutil.copy2(ckpt_for_sp, best_pt_path)
                             logger.info(f"Copied {checkpoint_override} to {best_pt_path} for future runs")
-                        except Exception as e:
+                        except OSError as e:
                             logger.warning(f"Failed to copy checkpoint override to best.pt: {e}")
                     
                 except Exception as e:
-                    logger.error(f"Failed to pre-load checkpoint state_dict: {e}")
+                    logger.exception(f"Failed to pre-load checkpoint state_dict: {e}")
                     raise
 
             # Start shared inference server if beneficial
@@ -344,7 +343,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             shared_memory_resources = []
             try:
                 dev = select_device(sp_cfg.get("device", cfg.get("device", "auto")))
-            except Exception:
+            except Exception as e:
+                logger.exception(f"Device selection failed; defaulting to CPU: {e}")
                 dev = "cpu"
             shared_infer_enabled = bool(sp_cfg.get("selfplay", {}).get("shared_inference", True))
             if shared_infer_enabled and dev != "cpu":
@@ -411,11 +411,10 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 if shared_infer_enabled and infer_proc is not None and not infer_proc.is_alive():
                     logger.warning("Inference server died; restarting.")
                     try:
-                        # Attempt clean stop signal (in case it is in zombie state)
                         if stop_event is not None:
                             stop_event.set()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.exception(f"Failed to signal stop event: {e}")
                     # Start a new server process
                     stop_event = MPEvent()
                     server_ready_event = MPEvent()
@@ -435,8 +434,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                             new_shared_memory_resources.append(new_res)
                             logger.debug(f"Recreated shared memory resource {i} for inference server restart")
                         except Exception as e:
-                            logger.error(f"Failed to recreate shared memory resource {i}: {e}")
-                            # Try to reuse old resource if recreation fails
+                            logger.exception(f"Failed to recreate shared memory resource {i}: {e}")
                             new_shared_memory_resources.append(shared_memory_resources[i])
 
                     # Replace the old resources with new ones
@@ -459,7 +457,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                 infer_proc.join(timeout=5)
                                 logger.info("Terminated failed inference server process")
                         except Exception as term_error:
-                            logger.error(f"Failed to terminate failed inference server: {term_error}")
+                            logger.exception(f"Failed to terminate failed inference server: {term_error}")
                         infer_proc = None  # Reset to None so it won't be checked again
 
             try:
@@ -474,7 +472,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                             total_gb = vm.total / (1024**3)
                             used_gb = (vm.total - vm.available) / (1024**3)
                             return f"Self-Play | Mem {used_gb:.1f}/{total_gb:.1f} GB ({vm.percent:.0f}%)"
-                        except Exception:
+                        except Exception as e:
+                            logger.exception(f"Failed to compute memory stats: {e}")
                             return "Self-Play"
 
                     table = Table(title=mem_title())
@@ -506,8 +505,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                         # Ensure initial rows render before first message
                         try:
                             live.refresh()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.exception(f"Live refresh failed: {e}")
                         
                         last_msg_time = time.time()
                         total_target = workers * games_per_worker
@@ -530,10 +529,9 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                                     per_worker[wid]["moves"] = int(msg.get("moves", 0))
                                     per_worker[wid]["hb_ts"] = time.perf_counter()
                                 try:
-                                    # bump a dummy heartbeat task to redraw if present
                                     progress.update(hb_task, completed=0)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.exception(f"Heartbeat progress update failed: {e}")
                                 # Refresh table to reflect heartbeat and memory
                                 new_table = Table(title=mem_title())
                                 new_table.add_column("Worker", justify="left")
@@ -655,10 +653,11 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     p.join()
                 if infer_proc is not None:
                     try:
-                        if stop_event: stop_event.set()
+                        if stop_event:
+                            stop_event.set()
                         infer_proc.join(timeout=5)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.exception(f"Failed to join inference process: {e}")
             return stats, done
 
         # Retry loop for self-play
@@ -670,7 +669,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             except Exception as e:
                 if attempt >= max_retries:
                     raise
-                logger.warning(f"Self-play failed: {e}. Retrying in {backoff}s...")
+                logger.exception(f"Self-play failed: {e}. Retrying in {backoff}s...")
                 sleep(backoff)
                 attempt += 1
         # Post self-play: compact data, validate/quarantine if requested
@@ -679,7 +678,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         try:
             dm.compact_selfplay_to_replay()
         except Exception as e:
-            logger.warning(f"Data compaction failed: {e}")
+            logger.exception(f"Data compaction failed: {e}")
 
         # Re-initialize DataManager to ensure it sees the new data
         dm = DataManager(base_dir=cfg.get("data_dir", "data"))
@@ -692,7 +691,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     qn = dm.quarantine_corrupted_shards()
                     logger.info(f"Quarantined {qn} corrupted shards")
             except Exception as e:
-                logger.warning(f"Doctor fix failed: {e}")
+                logger.exception(f"Doctor fix failed: {e}")
 
         # Import extra replay dirs (e.g., Lichess) into the DB for training
         try:
@@ -704,11 +703,11 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                         n = dm.import_replay_dir(d, source="external", move_files=False)
                         imported_total += int(n)
                     except Exception as e:
-                        logger.warning(f"Import of extra replay dir {d} failed: {e}")
+                        logger.exception(f"Import of extra replay dir {d} failed: {e}")
                 if imported_total:
                     logger.info(f"Imported {imported_total} external shards from extra_replay_dirs for training")
         except Exception as e:
-            logger.warning(f"Loading extra replay dirs failed: {e}")
+            logger.exception(f"Loading extra replay dirs failed: {e}")
 
         # External CSV ingestion disabled per request (sufficient NPZ shards available)
 
@@ -718,7 +717,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             if ndirs:
                 logger.info(f"Registered NPZ shards from {ndirs} external directories")
         except Exception as e:
-            logger.warning(f"Registering NPZ directories failed: {e}")
+            logger.exception(f"Registering NPZ directories failed: {e}")
 
         # Ensure we have usable data before training
         try:
@@ -726,8 +725,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             if int(stats.total_samples) <= 0:
                 logger.warning("No training data available after ingestion; skipping training and evaluation.")
                 return
-        except Exception:
-            logger.warning("Could not obtain data stats; attempting training anyway.")
+        except Exception as e:
+            logger.exception(f"Could not obtain data stats; attempting training anyway: {e}")
 
         # Memory cleanup between phases (especially important for MPS)
         logger.info("Performing memory cleanup between self-play and training phases")
@@ -741,14 +740,14 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 logger.info("MPS memory cache cleared")
             logger.info("Memory cleanup completed")
         except Exception as e:
-            logger.warning(f"Memory cleanup failed: {e}")
+            logger.exception(f"Memory cleanup failed: {e}")
 
         # Train phase
         logger.info("Starting training phase")
         try:
             train_main(cfg_path)
         except Exception as e:
-            logger.error(f"Training failed: {e}")
+            logger.exception(f"Training failed: {e}")
             raise
 
         # Determine candidate checkpoint produced by training
@@ -775,8 +774,8 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             try:
                 shutil.copy2(candidate, best_ckpt)
                 logger.info(f"Promoted initial best checkpoint: {best_ckpt}")
-            except Exception as e:
-                logger.error(f"Failed to set initial best checkpoint: {e}")
+            except OSError as e:
+                logger.exception(f"Failed to set initial best checkpoint: {e}")
             return
 
         # Evaluate candidate vs current best
@@ -821,7 +820,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             book.save(state)
             logger.info(f"Elo updated: candidate={r_cand_new:.1f}, best={r_best_new:.1f}")
         except Exception as e:
-            logger.warning(f"Elo update failed: {e}")
+            logger.exception(f"Elo update failed: {e}")
 
         # Promotion and top-k management
         if win_rate >= promote_thr:
@@ -831,23 +830,23 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 ts = time.strftime("%Y%m%d_%H%M%S")
                 archive = ckpt_dir / f"best_archive_{ts}.pt"
                 shutil.copy2(best_ckpt, archive)
-            except Exception:
-                pass
+            except OSError as e:
+                logger.exception(f"Failed to archive current best checkpoint: {e}")
             try:
                 shutil.copy2(candidate, best_ckpt)
                 logger.info(f"Promoted candidate to best: {best_ckpt}")
-            except Exception as e:
-                logger.error(f"Failed to promote candidate: {e}")
+            except OSError as e:
+                logger.exception(f"Failed to promote candidate: {e}")
             # Enforce keep_top_k archives
             try:
                 arch = sorted(ckpt_dir.glob("best_archive_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
                 for p in arch[keep_top_k:]:
                     try:
                         p.unlink()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except OSError as e:
+                        logger.exception(f"Failed to remove old archive {p}: {e}")
+            except Exception as e:
+                logger.exception(f"Failed to enforce top-k archives: {e}")
         else:
             logger.info("Candidate did not meet promotion threshold; keeping current best.")
 
@@ -866,18 +865,16 @@ def main():
         cfg = Config.load(temp_args.config)
         import os
 
-        # Get memory limit from config and set appropriate ratios
         memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
-        memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
+        memory_ratio = min(memory_limit_gb / 18.0, 0.9)
 
-        # Set environment variables before PyTorch initializes
         os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = str(memory_ratio)
         os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = str(memory_ratio * 0.8)
         os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
         print(f"✅ Set MPS memory limit to {memory_limit_gb}GB (ratio: {memory_ratio:.2f})")
     except Exception as e:
-        print(f"⚠️  Could not set memory limits: {e}")
+        _log.exception(f"Could not set memory limits: {e}")
 
     # Force spawn start method for torch/multiprocessing compatibility on macOS
     import torch.multiprocessing as mp
@@ -930,8 +927,8 @@ def main():
         cfg = Config.load(args.config)
         if bool(cfg.get("strict_encoding", False)):
             _os.environ["MATRIX0_STRICT_ENCODING"] = "1"
-    except Exception:
-        pass
+    except Exception as e:
+        _log.exception(f"Failed to enforce strict encoding: {e}")
     
     # Determine TUI mode: CLI overrides config; if CLI not provided, use config default
     tui_cfg = Config.load(args.config).orchestrator().get("tui", "bars")
@@ -988,7 +985,8 @@ def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
     for d in dirs + [Path(p) for p in (cfg.training().get('extra_replay_dirs', []) or [])]:
         try:
             rp = d.resolve()
-        except Exception:
+        except OSError as e:
+            _log.exception(f"Failed to resolve path {d}: {e}")
             rp = d
         if rp in seen:
             continue
@@ -1009,8 +1007,7 @@ def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
                 for phase in curriculum_phases:
                     logger.info(f"  - {phase['name']}: steps 0-{phase['steps']} ({phase.get('description', '')})")
     except Exception as e:
-        # Non-critical, continue with directory registration
-        pass
+        _log.exception(f"Failed to gather external data stats: {e}")
     
     # Filter out external training data directories to avoid import errors
     # These are handled separately by the enhanced DataManager
@@ -1028,7 +1025,8 @@ def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
             n = dm.import_replay_dir(str(d), source='external', move_files=False)
             if n:
                 count_dirs += 1
-        except Exception:
+        except Exception as e:
+            _log.exception(f"Failed to import replay dir {d}: {e}")
             continue
     return count_dirs
 
