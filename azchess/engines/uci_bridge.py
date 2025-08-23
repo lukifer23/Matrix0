@@ -1,7 +1,6 @@
 """UCI protocol bridge for external chess engines."""
 
 import asyncio
-import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
