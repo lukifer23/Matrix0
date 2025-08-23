@@ -82,16 +82,13 @@ def run_inference_server(
         logger.debug("Inference server entering main processing loop.")
         while not stop_event.is_set():
             try:
-                # Wait for any worker to signal a request with efficient polling
-                import select
+                # Wait for any worker to signal a request using event wait timeouts
                 ready_events = []
                 for i, event in enumerate(worker_events):
-                    if event.is_set():
+                    if event.wait(timeout=0.001):
                         ready_events.append(i)
 
                 if not ready_events:
-                    # No events ready, sleep briefly to avoid busy waiting
-                    time.sleep(0.001)
                     continue
 
                 batch_indices = ready_events
