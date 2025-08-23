@@ -4,7 +4,7 @@ import math
 import random
 import time
 import threading
-import queue
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 from collections import OrderedDict
@@ -39,83 +39,6 @@ def _ensure_contiguous_array(array: np.ndarray, name: str = "array") -> np.ndarr
         logger.debug(f"Making {name} contiguous (shape: {array.shape})")
         return np.ascontiguousarray(array)
     return array
-
-
-class ThreadPool:
-    def __init__(self, num_threads):
-        self.num_threads = num_threads
-        self.tasks = queue.Queue()
-        self.results = queue.Queue()
-        self.threads = []
-        self._shutdown_event = threading.Event()
-        for _ in range(self.num_threads):
-            thread = threading.Thread(target=self._worker)
-            thread.daemon = True
-            thread.start()
-            self.threads.append(thread)
-
-    def _worker(self):
-        while not self._shutdown_event.is_set():
-            try:
-                task = self.tasks.get(timeout=1.0)  # 1 second timeout
-                if task is None:
-                    break
-                func, args, kwargs = task
-                try:
-                    result = func(*args, **kwargs)
-                    self.results.put(result)
-                except Exception as e:
-                    logger.error(f"Worker thread error: {e}")
-                    self.results.put(e)
-                finally:
-                    self.tasks.task_done()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Worker thread critical error: {e}")
-                break
-
-    def add_task(self, func, *args, **kwargs):
-        if not self._shutdown_event.is_set():
-            self.tasks.put((func, args, kwargs))
-
-    def get_results(self):
-        try:
-            return self.results.get(timeout=5.0)  # 5 second timeout
-        except queue.Empty:
-            return None
-
-    def wait_completion(self, timeout=30.0):
-        """Wait for completion with robust timeout and deadlock prevention."""
-        start_time = time.time()
-        max_wait = timeout
-        
-        while not self.tasks.empty():
-            if time.time() - start_time > max_wait:
-                remaining = self.tasks.qsize()
-                logger.warning(f"ThreadPool timeout after {timeout}s, {remaining} tasks remaining")
-                # Cancel remaining tasks to prevent deadlock
-                self.cancel_pending_tasks()
-                return False
-            
-            # Use shorter sleep intervals for better responsiveness
-            time.sleep(0.001)  # 1ms sleep instead of 10ms
-        
-        return True
-    
-    def cancel_pending_tasks(self):
-        """Cancel all pending tasks to prevent deadlocks."""
-        try:
-            # Clear the task queue
-            while not self.tasks.empty():
-                try:
-                    self.tasks.get_nowait()
-                except:
-                    break
-            logger.info("Cancelled pending ThreadPool tasks")
-        except Exception as e:
-            logger.error(f"Error cancelling ThreadPool tasks: {e}")
-
 
 
 class LRUCache:
@@ -312,10 +235,10 @@ class MCTS:
         # Initialize threading based on provided configuration
         self.num_threads = num_threads if num_threads is not None else getattr(cfg, 'num_threads', 1)
         if self.num_threads > 1:
-            self.thread_pool = ThreadPool(self.num_threads)
+            self.executor = ThreadPoolExecutor(max_workers=self.num_threads)
             logger.info(f"MCTS initialized with {self.num_threads} threads for parallel simulation")
         else:
-            self.thread_pool = None
+            self.executor = None
             logger.info("MCTS running in single-threaded mode")
         self.lock = threading.Lock()
 
@@ -380,20 +303,12 @@ class MCTS:
                 sims_to_run = max(50, sims_to_run // 2)  # Minimum 50 sims for quality
 
             # Enhanced parallelization with batched inference for better throughput
-            # FIXED: Robust parallel MCTS with proper error handling and deadlock prevention
-            if self.num_threads > 1 and self.thread_pool is not None:
+            if self.num_threads > 1 and self.executor is not None:
                 try:
                     # Use the new batched inference approach
                     self._run_simulations_parallel_batched(board, root, sims_to_run)
                 except Exception as e:
                     logger.error(f"Batched MCTS failed: {e}, falling back to single-threaded")
-                    # Robust fallback: clear thread pool and run single-threaded
-                    try:
-                        if self.thread_pool:
-                            self.thread_pool.cancel_pending_tasks()
-                    except:
-                        pass
-                    # Run remaining simulations single-threaded
                     for _ in range(sims_to_run):
                         self._run_simulation(board, root)
             else:
@@ -427,13 +342,25 @@ class MCTS:
         leaf_nodes = []
         
         # Run simulations in parallel to collect positions
+        futures = []
         for _ in range(num_simulations):
-            self.thread_pool.add_task(self._collect_leaf_position, board.copy(), root, leaf_positions, leaf_nodes)
-        
-        # Wait for all simulations to complete
-        if not self.thread_pool.wait_completion(timeout=30.0):
-            logger.warning("Position collection timed out")
-            return
+            if self.executor:
+                futures.append(
+                    self.executor.submit(
+                        self._collect_leaf_position, board.copy(), root, leaf_positions, leaf_nodes
+                    )
+                )
+            else:
+                # Single-threaded fallback
+                self._collect_leaf_position(board.copy(), root, leaf_positions, leaf_nodes)
+
+        if futures:
+            done, not_done = wait(futures, timeout=30.0)
+            if not_done:
+                logger.warning("Position collection timed out")
+                for f in not_done:
+                    f.cancel()
+                return
         
         # Now do batched inference on all collected positions
         if leaf_positions:
@@ -998,3 +925,16 @@ class MCTS:
 
         # Force cleanup
         self._cleanup_memory(force=True)
+
+    def shutdown(self) -> None:
+        """Shutdown any executor resources."""
+        if self.executor:
+            self.executor.shutdown(wait=True)
+            self.executor = None
+
+    def __del__(self):
+        # Ensure threads are cleaned up when the object is garbage collected
+        try:
+            self.shutdown()
+        except Exception:
+            pass
