@@ -17,7 +17,7 @@ model:
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true              # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (32M model)
+  ssl_tasks: ["piece"]  # SSL tasks (only piece task currently supported)
   ssrl_tasks: ["position", "material", "rotation"]  # SSRL tasks (32M model)
 
 selfplay:

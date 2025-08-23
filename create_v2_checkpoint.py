@@ -62,7 +62,7 @@ def create_v2_checkpoint():
             aux_policy_move_type=model_cfg.get('aux_policy_move_type', True),
             enable_visual=model_cfg.get('enable_visual', False),
             visual_encoder_channels=model_cfg.get('visual_encoder_channels', 64),
-            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),
+            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),  # only piece SSL task currently supported
             ssl_curriculum=model_cfg.get('ssl_curriculum', True),
             ssrl_tasks=model_cfg.get('ssrl_tasks', ['position', 'material', 'rotation'])
         )

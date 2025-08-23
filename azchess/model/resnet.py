@@ -249,7 +249,7 @@ class NetConfig:
     aux_policy_move_type: bool = False # Auxiliary move-type head
     enable_visual: bool = False # Enable visual encoder
     visual_encoder_channels: int = 64 # Channels for visual encoder
-    ssl_tasks: List[str] = field(default_factory=lambda: ["piece"]) # Basic piece recognition only
+    ssl_tasks: List[str] = field(default_factory=lambda: ["piece"]) # Basic piece recognition only (other tasks ignored)
     ssl_curriculum: bool = False # Progressive difficulty
     ssrl_tasks: List[str] = field(default_factory=list) # No SSRL tasks by default
     enable_llm_tutor: bool = False # LLM integration
@@ -307,7 +307,7 @@ class PolicyValueNet(nn.Module):
         # Self-supervised learning head (if enabled)
         if cfg.self_supervised:
             # Enhanced SSL with multiple tasks support
-            ssl_tasks = getattr(cfg, 'ssl_tasks', ['piece'])
+            ssl_tasks = getattr(cfg, 'ssl_tasks', ['piece'])  # Only 'piece' task currently implemented
             if 'piece' in ssl_tasks:
                 self.ssl_piece_head = nn.Sequential(
                     nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
@@ -660,7 +660,11 @@ class PolicyValueNet(nn.Module):
         return loss
     
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute enhanced SSL loss for multiple tasks."""
+        """Compute SSL loss for supported tasks.
+
+        Currently only the 'piece' task is implemented; additional tasks
+        will be added in future updates.
+        """
         total_loss = 0.0
         
         # Piece prediction task
