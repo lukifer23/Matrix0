@@ -862,34 +862,6 @@ class PolicyValueNet(nn.Module):
 
         return targets
 
-    def ensure_dtype_consistency(self, target_dtype: torch.dtype):
-        """Ensure all model parameters and buffers have consistent dtype for MPS operations."""
-        if not hasattr(self, '_original_dtypes'):
-            # Store original dtypes for restoration
-            self._original_dtypes = {}
-            for name, param in self.named_parameters():
-                self._original_dtypes[name] = param.dtype
-
-        # Convert all parameters to target dtype
-        for name, param in self.named_parameters():
-            if param.dtype != target_dtype:
-                param.data = param.data.to(dtype=target_dtype)
-
-        # Convert buffers (like BatchNorm running stats) to target dtype
-        for name, buffer in self.named_buffers():
-            if buffer.dtype != target_dtype:
-                buffer.data = buffer.data.to(dtype=target_dtype)
-
-    def restore_original_dtypes(self):
-        """Restore original parameter dtypes after MPS operations."""
-        if hasattr(self, '_original_dtypes'):
-            for name, param in self.named_parameters():
-                if name in self._original_dtypes:
-                    original_dtype = self._original_dtypes[name]
-                    if param.dtype != original_dtype:
-                        param.data = param.data.to(dtype=original_dtype)
-            # Clean up stored dtypes
-            delattr(self, '_original_dtypes')
 
     def load_state_dict(self, state_dict, strict=False):
         """Handle V1 to V2 migration by mapping old keys to new ones."""

@@ -235,12 +235,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     pi = pi.contiguous()
     z = z.contiguous()
 
-    # CRITICAL: Ensure model parameters have consistent dtype before autocast
-    if use_autocast and device_type == "mps":
-        # For MPS, ensure all model parameters and buffers match the autocast dtype
-        logger.info(f"MPS: Ensuring dtype consistency for autocast ({_amp_dtype})")
-        model.ensure_dtype_consistency(_amp_dtype)
-
     # CRITICAL: Enhanced autocast handling with proper type consistency
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
         # Keep standard contiguous format during training
@@ -250,11 +244,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         else:
             feats = None
             p, v, ssl_out = model(s, return_ssl=True)
-
-    # CRITICAL: Restore original dtypes after autocast for MPS
-    if use_autocast and device_type == "mps":
-        logger.info(f"MPS: Restoring original parameter dtypes")
-        model.restore_original_dtypes()
 
     # PERFORMANCE PROFILING: Forward pass complete
     forward_time = time.time() - forward_start
@@ -525,6 +514,8 @@ def train_comprehensive(
     # Load configuration
     cfg = Config.load(config_path)
     device = select_device(device)
+    tr_cfg = cfg.training()
+    precision = tr_cfg.get("precision", precision)
     
     # Memory cleanup at start of training
     import torch
@@ -543,39 +534,16 @@ def train_comprehensive(
         logger.warning(f"Memory cleanup failed: {e}")
     
     # Apply config overrides for performance optimization
-    if cfg.training().get('gradient_accumulation_steps'):
-        accum_steps = int(cfg.training().get('gradient_accumulation_steps'))
+    if tr_cfg.get('gradient_accumulation_steps'):
+        accum_steps = int(tr_cfg.get('gradient_accumulation_steps'))
         logger.info(f"Using gradient accumulation: {accum_steps} steps (effective batch size: {batch_size * accum_steps})")
     
     # Create directories
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     
-    # Initialize model
-    model = PolicyValueNet.from_config(cfg.model()).to(device)
-    
-    # Enable memory optimizations
-    if hasattr(model, 'enable_gradient_checkpointing'):
-        model.enable_gradient_checkpointing()
-        logger.info("Gradient checkpointing enabled for memory efficiency")
-    
-    # Log model memory usage
-    if hasattr(model, 'get_memory_usage'):
-        memory_stats = model.get_memory_usage()
-        logger.info(f"Model memory usage: {memory_stats}")
-    
-    # Optional compile for speed (PyTorch 2.1+)
-    try:
-        if bool(cfg.training().get('compile', False)):
-            # torch already imported at module scope; avoid local import that would shadow name
-            model = torch.compile(model, mode=cfg.training().get('compile_mode', 'default'))
-            logger.info("torch.compile enabled")
-    except Exception as _e:
-        logger.warning(f"torch.compile not enabled: {_e}")
-
-    # Use AMP + channels_last for MPS/CUDA; avoid hard quantization of BatchNorm layers
-    if device.startswith('mps'):
-        logger.info("Using MPS with autocast; not forcing FP16 parameters to keep BatchNorm stable")
+    # Initialize model on CPU; will move to device and precision after checkpoint loading
+    model = PolicyValueNet.from_config(cfg.model())
     
     # Load best checkpoint if available
     best_ckpt = Path(checkpoint_dir) / "best.pt"
@@ -616,7 +584,37 @@ def train_comprehensive(
             state = None
     else:
         logger.info("Starting training from scratch")
-    
+
+    # Move model to target device and precision once
+    if precision in ["fp16", "bf16"]:
+        _amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+        model.to(device, dtype=_amp_dtype)
+    else:
+        _amp_dtype = torch.float32
+        model.to(device)
+
+    # Enable memory optimizations
+    if hasattr(model, 'enable_gradient_checkpointing'):
+        model.enable_gradient_checkpointing()
+        logger.info("Gradient checkpointing enabled for memory efficiency")
+
+    # Log model memory usage
+    if hasattr(model, 'get_memory_usage'):
+        memory_stats = model.get_memory_usage()
+        logger.info(f"Model memory usage: {memory_stats}")
+
+    # Optional compile for speed (PyTorch 2.1+)
+    try:
+        if bool(tr_cfg.get('compile', False)):
+            model = torch.compile(model, mode=tr_cfg.get('compile_mode', 'default'))
+            logger.info("torch.compile enabled")
+    except Exception as _e:
+        logger.warning(f"torch.compile not enabled: {_e}")
+
+    # Use AMP + channels_last for MPS/CUDA; avoid hard quantization of BatchNorm layers
+    if device.startswith('mps'):
+        logger.info("Using MPS with autocast; not forcing FP16 parameters to keep BatchNorm stable")
+
     # Initialize optimizer, scheduler, and EMA
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = get_lr_scheduler(optimizer, total_steps, warmup_steps)
@@ -702,8 +700,8 @@ def train_comprehensive(
     logger.info(f"External training data: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples.")
     
     # Check if curriculum learning is enabled
-    use_curriculum = cfg.training().get("use_curriculum", False)
-    curriculum_phases = cfg.training().get("curriculum_phases", [])
+    use_curriculum = tr_cfg.get("use_curriculum", False)
+    curriculum_phases = tr_cfg.get("curriculum_phases", [])
     
     if use_curriculum and curriculum_phases:
         logger.info(f"Curriculum learning enabled with {len(curriculum_phases)} phases")
@@ -732,9 +730,6 @@ def train_comprehensive(
     
     # Setup tensorboard
     writer = SummaryWriter(log_dir)
-
-    # Get training config (needed for all device types)
-    tr_cfg = cfg.training()  # Get training config
 
     # Memory limits are now set at the beginning of the orchestrator main() function
     memory_limit_gb = tr_cfg.get('memory_limit_gb', 12)  # Default 12GB if not specified
@@ -877,7 +872,7 @@ def train_comprehensive(
                 use_wdl=bool(cfg.model().get('wdl', False)),
                 wdl_weight=float(tr_cfg.get('wdl_weight', 0.0)),
                 wdl_margin=float(tr_cfg.get('wdl_margin', 0.25)),
-                precision=tr_cfg.get("precision", "fp16")
+                precision=precision
                 )
                 
                 # Check if train_step returned None (indicating invalid batch)
@@ -1189,7 +1184,7 @@ def train_comprehensive(
         # JSONL train summary
         try:
             import json as _json
-            logs_dir = Path(cfg.training().get("log_dir", "logs"))
+            logs_dir = Path(tr_cfg.get("log_dir", "logs"))
             logs_dir.mkdir(parents=True, exist_ok=True)
             _rec = {
                 'type': 'train_summary',
