@@ -451,7 +451,7 @@ class PolicyValueNet(nn.Module):
         nn.init.kaiming_normal_(self.policy_head[0].weight, mode='fan_out', nonlinearity='relu')
         
         # Initialize policy head dropout properly
-        if hasattr(self.policy_head, 'dropout'):
+        if isinstance(self.policy_head[-1], nn.Dropout):
             logger.info("Policy head dropout initialized")
         if self.policy_fc is not None:
             nn.init.xavier_uniform_(self.policy_fc.weight, gain=1.0)
