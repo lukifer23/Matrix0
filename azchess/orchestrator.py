@@ -98,8 +98,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         # Set MPS-friendly env if we are likely to use MPS
         if dev_sel == 'mps':
             _os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-            _os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.8'
-            _os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = '0.6'
+            # Memory limits are now set at the beginning of main() before torch imports
         mps_built = getattr(torch.backends.mps, 'is_built', lambda: False)()
         mps_avail = getattr(torch.backends.mps, 'is_available', lambda: False)()
         logger.info(f"Device requested={dev_req} selected={dev_sel} | MPS built={mps_built} available={mps_avail}")
@@ -350,45 +349,6 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 sp_params = sp_cfg["selfplay"]
                 # Use larger batch sizes for better GPU utilization
                 optimized_batch_size = max(32, sp_params.get('batch_size', 32))
-
-                # Estimate memory usage before allocation and adjust if necessary
-                try:
-                    tensor_size = (
-                        (model_params['planes'] * 8 * 8 +
-                         model_params['policy_size'] + 1 + 1) * 4
-                    )  # bytes per sample across tensors
-                    estimated_mem = tensor_size * optimized_batch_size * workers
-                    import psutil
-                    if dev.startswith('cuda') and torch.cuda.is_available():
-                        total_mem = torch.cuda.get_device_properties(torch.device(dev)).total_memory
-                        mem_type = "GPU"
-                    elif dev == 'mps' and getattr(torch.backends.mps, 'is_available', lambda: False)():
-                        total_mem = psutil.virtual_memory().total
-                        mem_type = "System"
-                    else:
-                        total_mem = psutil.virtual_memory().total
-                        mem_type = "System"
-                    if estimated_mem > total_mem:
-                        max_bs = total_mem // (tensor_size * workers)
-                        if max_bs <= 0:
-                            logger.error(
-                                f"Insufficient {mem_type} memory for shared inference tensors: "
-                                f"required {estimated_mem/1024**2:.2f}MB, available {total_mem/1024**2:.2f}MB"
-                            )
-                            raise MemoryError("Insufficient device memory for shared inference tensors")
-                        logger.warning(
-                            f"Reducing shared inference batch size from {optimized_batch_size} to {max_bs} "
-                            f"due to {mem_type} memory limits"
-                        )
-                        optimized_batch_size = int(max_bs)
-                    else:
-                        logger.info(
-                            f"Estimated shared tensor usage: {estimated_mem/1024**2:.2f}MB / "
-                            f"{total_mem/1024**2:.2f}MB {mem_type} memory"
-                        )
-                except Exception as e:
-                    logger.warning(f"Could not estimate shared tensor memory usage: {e}")
-
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
                         worker_id=i,
@@ -672,20 +632,14 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                 attempt += 1
         # Post self-play: compact data, validate/quarantine if requested
         logger.info("Compacting self-play data into replay buffer")
-        dm = DataManager(
-            base_dir=cfg.get("data_dir", "data"),
-            expected_planes=cfg.model().get("planes", 19),
-        )
+        dm = DataManager(base_dir=cfg.get("data_dir", "data"))
         try:
             dm.compact_selfplay_to_replay()
         except Exception as e:
             logger.warning(f"Data compaction failed: {e}")
 
         # Re-initialize DataManager to ensure it sees the new data
-        dm = DataManager(
-            base_dir=cfg.get("data_dir", "data"),
-            expected_planes=cfg.model().get("planes", 19),
-        )
+        dm = DataManager(base_dir=cfg.get("data_dir", "data"))
 
         if run_doctor_fix:
             try:
@@ -725,10 +679,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
 
         # Ensure we have usable data before training
         try:
-            stats = DataManager(
-                base_dir=cfg.get("data_dir", "data"),
-                expected_planes=cfg.model().get("planes", 19),
-            ).get_stats()
+            stats = DataManager(base_dir=cfg.get("data_dir", "data")).get_stats()
             if int(stats.total_samples) <= 0:
                 logger.warning("No training data available after ingestion; skipping training and evaluation.")
                 return
@@ -858,17 +809,39 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             logger.info("Candidate did not meet promotion threshold; keeping current best.")
 
 def main():
+    # Parse arguments first to get config
+    ap = argparse.ArgumentParser(description="Matrix0 Training Orchestrator - Flexible command-line configuration")
+
+    # Core configuration
+    ap.add_argument("--config", type=str, default="config.yaml", help="Configuration file path")
+
+    # Parse just the config argument first
+    temp_args, _ = ap.parse_known_args()
+
+    # Set MPS memory limits BEFORE any torch imports
+    try:
+        cfg = Config.load(temp_args.config)
+        import os
+
+        # Get memory limit from config and set appropriate ratios
+        memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
+        memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
+
+        # Set environment variables before PyTorch initializes
+        os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = str(memory_ratio)
+        os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = str(memory_ratio * 0.8)
+        os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+
+        print(f"✅ Set MPS memory limit to {memory_limit_gb}GB (ratio: {memory_ratio:.2f})")
+    except Exception as e:
+        print(f"⚠️  Could not set memory limits: {e}")
+
     # Force spawn start method for torch/multiprocessing compatibility on macOS
     import torch.multiprocessing as mp
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
         pass # Can only be set once
-
-    ap = argparse.ArgumentParser(description="Matrix0 Training Orchestrator - Flexible command-line configuration")
-    
-    # Core configuration
-    ap.add_argument("--config", type=str, default="config.yaml", help="Configuration file path")
     
     # Self-play parameters
     ap.add_argument("--games", type=int, default=None, help="Override total games per cycle")

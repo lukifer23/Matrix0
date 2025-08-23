@@ -63,19 +63,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     model.train()
-    # Batches may optionally include a legality mask. Support both 3- and 4-tuples
-    if len(batch) == 4:
-        s, pi, z, legal = batch
-    else:
-        s, pi, z = batch
-        legal = None
-
+    s, pi, z = batch
+    
     # Convert numpy arrays to PyTorch tensors and ensure contiguity immediately
     s = torch.from_numpy(s).to(device).contiguous()
     pi = torch.from_numpy(pi).to(device).contiguous()
     z = torch.from_numpy(z).to(device).contiguous()
-    if legal is not None:
-        legal = torch.from_numpy(legal).to(device).bool().contiguous()
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0)).contiguous()
@@ -87,8 +80,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         raise RuntimeError(f"Policy tensor is not contiguous after conversion. Shape: {pi.shape}, strides: {pi.stride()}")
     if not z.is_contiguous():
         raise RuntimeError(f"Value tensor is not contiguous after conversion. Shape: {z.shape}, strides: {z.stride()}")
-    if legal is not None and not legal.is_contiguous():
-        raise RuntimeError(f"Legal mask tensor is not contiguous after conversion. Shape: {legal.shape}, strides: {legal.stride()}")
     
     # Validate tensor shapes with detailed error messages
     try:
@@ -96,8 +87,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
         if pi.shape[1] != np.prod(POLICY_SHAPE):
             raise RuntimeError(f"Policy tensor shape mismatch: expected {np.prod(POLICY_SHAPE)}, got {pi.shape[1]}")
-        if legal is not None and legal.shape != pi.shape:
-            raise RuntimeError(f"Legal mask shape mismatch: expected {pi.shape}, got {legal.shape}")
         # Value tensor can be 1D (batch_size,) or 2D (batch_size, 1) - both are valid
         if len(z.shape) == 1:
             # 1D tensor: (batch_size,) - this is correct
@@ -126,13 +115,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
-            # Apply same transformation to legality mask if present
-            if legal is not None:
-                legal_cont = legal.contiguous()
-                legal_sh = legal_cont.reshape(-1, *POLICY_SHAPE)
-                legal_sh = torch.flip(legal_sh, dims=[2])
-                legal_sh = legal_sh.index_select(-1, perm_t)
-                legal = legal_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
         elif r < 0.75 and augment_rotate180:
@@ -146,12 +128,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
-            if legal is not None:
-                legal_cont = legal.contiguous()
-                legal_sh = legal_cont.reshape(-1, *POLICY_SHAPE)
-                legal_sh = torch.flip(legal_sh, dims=[1, 2])
-                legal_sh = legal_sh.index_select(-1, perm_t)
-                legal = legal_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
     
@@ -162,8 +138,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         raise RuntimeError(f"Policy tensor lost contiguity after augmentation. Shape: {pi.shape}, strides: {pi.stride()}")
     if not z.is_contiguous():
         raise RuntimeError(f"Value tensor lost contiguity after augmentation. Shape: {z.shape}, strides: {z.stride()}")
-    if legal is not None and not legal.is_contiguous():
-        raise RuntimeError(f"Legal mask tensor lost contiguity after augmentation. Shape: {legal.shape}, strides: {legal.stride()}")
 
     # Generate self-supervised learning targets (class indices for multi-class prediction)
     ssl_targets = None
@@ -206,8 +180,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     z = z.to(device, non_blocking=True)
     if ssl_targets is not None:
         ssl_targets = ssl_targets.to(device, non_blocking=True)
-    if legal is not None:
-        legal = legal.to(device, non_blocking=True)
 
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
         # Keep standard contiguous format during training to avoid MPS view/stride issues
@@ -232,7 +204,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Ensure contiguity to avoid view-related autograd errors on some backends
         p = p.contiguous()
         v = v.contiguous()
-        if ssl_out is not None and not ssl_out.is_contiguous():
+        if ssl_out is not None:
             # Force standard contiguous (NCHW) to avoid channels_last view issues in CrossEntropy backward (MPS)
             try:
                 ssl_out = ssl_out.contiguous(memory_format=torch.contiguous_format)
@@ -247,15 +219,16 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if ssl_out is not None and not ssl_out.is_contiguous():
             raise RuntimeError(f"SSL output tensor is not contiguous. Shape: {ssl_out.shape}, strides: {ssl_out.stride()}")
 
-        # Optional legality masking for stability.
-        # Use provided legality mask if available; otherwise treat all moves as legal
+        # Optional legality masking for stability: mask logits where target is zero
+        # Assumes pi provides positive mass only on legal actions
         if policy_masking:
             try:
                 with torch.no_grad():
-                    if legal is not None:
-                        keep_mask = legal.bool()
-                    else:
-                        keep_mask = torch.ones_like(p, dtype=torch.bool)
+                    legal_mask = (pi > 0)
+                    # If any row is all-zero (fallback), treat all as legal (no mask)
+                    valid_rows = legal_mask.any(dim=1, keepdim=True)
+                    # Build a keep mask: keep original logits where either row invalid or legal; else set to -1e9
+                    keep_mask = valid_rows & legal_mask
                 p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9)).contiguous()
             except Exception:
                 p_for_loss = p.contiguous()
@@ -350,7 +323,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if not loss.is_contiguous():
             loss = loss.contiguous()
         try:
-            if scaler is not None:
+            # Use scaler for mixed precision if available and not corrupted
+            if scaler is not None and hasattr(scaler, '_scale') and scaler._scale is not None:
                 scaler.scale(loss / accum_steps).backward()
             else:
                 (loss / accum_steps).backward()
@@ -577,10 +551,7 @@ def train_comprehensive(
         logger.info(f"Applied warmup LR: {learning_rate * warmup_factor:.6f}")
 
     # Setup data using DataManager
-    data_manager = DataManager(
-        base_dir=cfg.get("data_dir", "data"),
-        expected_planes=cfg.model().get("planes", 19),
-    )
+    data_manager = DataManager(base_dir=cfg.get("data_dir", "data"))
     data_stats = data_manager.get_stats()
     external_stats = data_manager.get_external_data_stats()
     
@@ -625,13 +596,16 @@ def train_comprehensive(
     # Get training config (needed for all device types)
     tr_cfg = cfg.training()  # Get training config
 
-    # Set MPS memory limit if specified
+    # Memory limits are now set at the beginning of the orchestrator main() function
     memory_limit_gb = tr_cfg.get('memory_limit_gb', 12)  # Default 12GB if not specified
     if device.startswith('mps'):
         import os
-        memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
-        os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = str(memory_ratio)
-        logger.info(f"Set MPS memory limit to {memory_limit_gb}GB (ratio: {memory_ratio:.2f})")
+        # Check current memory settings
+        current_high_ratio = os.environ.get('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '0.8')
+        current_low_ratio = os.environ.get('PYTORCH_MPS_LOW_WATERMARK_RATIO', '0.6')
+
+        logger.info(f"Current MPS memory settings - High: {current_high_ratio}, Low: {current_low_ratio}")
+        logger.info(f"Target memory limit: {memory_limit_gb}GB (configured in config.yaml)")
 
         # Enable model memory optimizations
         if hasattr(model, 'enable_memory_optimization'):
@@ -684,12 +658,7 @@ def train_comprehensive(
                         break
                     
                     # Convert dict format to tuple format for existing train_step
-                    if 'legal' in batch_dict:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal'])
-                    elif 'legal_mask' in batch_dict:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
-                    else:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
                     
                 elif batch_generator is None:
                     # External data training - use curriculum mixing
@@ -699,12 +668,7 @@ def train_comprehensive(
                         break
                     
                     # Convert dict format to tuple format for existing train_step
-                    if 'legal' in batch_dict:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal'])
-                    elif 'legal_mask' in batch_dict:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
-                    else:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
                     
                 else:
                     # Standard replay buffer training
@@ -764,8 +728,19 @@ def train_comprehensive(
                 try:
                     # Clear gradients and reset optimizer state
                     optimizer.zero_grad()
+
+                    # Handle scaler recovery - it may be corrupted after memory errors
                     if scaler:
-                        scaler.update()
+                        try:
+                            scaler.update()
+                        except Exception as scaler_error:
+                            logger.warning(f"Scaler corrupted after memory error, creating new one: {scaler_error}")
+                            # Recreate the scaler for MPS
+                            if device.startswith('mps'):
+                                scaler = torch.amp.GradScaler(device="mps")
+                            else:
+                                scaler = torch.cuda.amp.GradScaler()
+
                     logger.info("Recovered from training error, continuing...")
                 except Exception as recovery_error:
                     logger.error(f"Failed to recover from training error: {recovery_error}")
@@ -785,7 +760,10 @@ def train_comprehensive(
             
             if (current_step + 1) % accum_steps == 0:
                 try:
-                    if scaler:
+                    # Check if scaler is still valid before using it
+                    scaler_valid = scaler is not None and hasattr(scaler, '_scale') and scaler._scale is not None
+
+                    if scaler_valid:
                         scaler.unscale_(optimizer)
                     if grad_clip_norm > 0:
                         # CRITICAL: Ultra-aggressive gradient clipping to prevent NaN/Inf
@@ -796,11 +774,16 @@ def train_comprehensive(
                             nn.utils.clip_grad_norm_(model.parameters(), 0.01, error_if_nonfinite=False)
                             total_norm = 0.01
 
-                    if scaler:
+                    if scaler_valid:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
+                        # Recreate scaler if it was corrupted
+                        if device.startswith('mps'):
+                            scaler = torch.amp.GradScaler(device="mps")
+                        else:
+                            scaler = torch.cuda.amp.GradScaler()
 
                     # CRITICAL: Step scheduler AFTER optimizer to avoid LR warning
                     scheduler.step()
@@ -902,8 +885,7 @@ def train_comprehensive(
         raise
     finally:
         pbar.close()
-        writer.close()
-
+        
         # Save final checkpoint with enhanced prefix
         checkpoint_prefix = cfg.get("checkpoint_prefix", "enhanced")
         final_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_final.pt"
@@ -944,6 +926,8 @@ def train_comprehensive(
                 _f.write(_json.dumps(_rec) + "\n")
         except Exception:
             pass
+
+        writer.close()
 
 def save_checkpoint(model, ema, optimizer, scheduler, step, path):
     """Save a training checkpoint with robust error handling."""

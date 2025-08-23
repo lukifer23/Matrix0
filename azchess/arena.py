@@ -325,8 +325,12 @@ def play_match(
     try:
         if device == 'mps':
             import os as _os
-            _os.environ.setdefault('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '0.8')
-            _os.environ.setdefault('PYTORCH_MPS_LOW_WATERMARK_RATIO', '0.6')
+            # Use config-based memory settings if available, otherwise defaults
+            memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
+            memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
+
+            _os.environ.setdefault('PYTORCH_MPS_HIGH_WATERMARK_RATIO', str(memory_ratio))
+            _os.environ.setdefault('PYTORCH_MPS_LOW_WATERMARK_RATIO', str(memory_ratio * 0.8))
     except Exception:
         pass
     e = cfg.eval()
