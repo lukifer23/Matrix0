@@ -68,9 +68,8 @@ class DataManager:
         # Version tracking
         self.version = "1.0.0"
         
-    def _connect(self) -> sqlite3.Connection:
-        """Create a SQLite connection with WAL and busy timeout enabled."""
-        conn = sqlite3.connect(self.db_path, timeout=30)
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        """Apply SQLite PRAGMA settings to a connection."""
         c = conn.cursor()
         try:
             c.execute("PRAGMA journal_mode=WAL")
@@ -78,60 +77,55 @@ class DataManager:
             c.execute("PRAGMA busy_timeout=30000")
         except Exception:
             pass
-        return conn
 
     def _init_database(self):
         """Initialize SQLite database for metadata tracking."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS shards (
-                path TEXT PRIMARY KEY,
-                size_bytes INTEGER,
-                sample_count INTEGER,
-                created_at TEXT,
-                checksum TEXT,
-                version TEXT,
-                source TEXT,
-                corrupted BOOLEAN DEFAULT FALSE,
-                last_accessed TEXT
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS data_stats (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TEXT
-            )
-        """)
-        
-        conn.commit()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
 
-        # Lightweight migration: ensure expected columns exist
-        try:
-            cursor.execute("PRAGMA table_info(shards)")
-            cols = {row[1] for row in cursor.fetchall()}  # column names
-            migrations = []
-            if 'source' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN source TEXT")
-            if 'corrupted' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN corrupted BOOLEAN DEFAULT FALSE")
-            if 'last_accessed' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN last_accessed TEXT")
-            if 'version' not in cols:
-                migrations.append("ALTER TABLE shards ADD COLUMN version TEXT")
-            for sql in migrations:
-                try:
-                    cursor.execute(sql)
-                except Exception:
-                    pass
-            if migrations:
-                conn.commit()
-        except Exception:
-            pass
-        conn.close()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shards (
+                    path TEXT PRIMARY KEY,
+                    size_bytes INTEGER,
+                    sample_count INTEGER,
+                    created_at TEXT,
+                    checksum TEXT,
+                    version TEXT,
+                    source TEXT,
+                    corrupted BOOLEAN DEFAULT FALSE,
+                    last_accessed TEXT
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS data_stats (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TEXT
+                )
+            """)
+
+            # Lightweight migration: ensure expected columns exist
+            try:
+                cursor.execute("PRAGMA table_info(shards)")
+                cols = {row[1] for row in cursor.fetchall()}  # column names
+                migrations = []
+                if 'source' not in cols:
+                    migrations.append("ALTER TABLE shards ADD COLUMN source TEXT")
+                if 'corrupted' not in cols:
+                    migrations.append("ALTER TABLE shards ADD COLUMN corrupted BOOLEAN DEFAULT FALSE")
+                if 'last_accessed' not in cols:
+                    migrations.append("ALTER TABLE shards ADD COLUMN last_accessed TEXT")
+                if 'version' not in cols:
+                    migrations.append("ALTER TABLE shards ADD COLUMN version TEXT")
+                for sql in migrations:
+                    try:
+                        cursor.execute(sql)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def _with_retry(self, func, *args, **kwargs):
         """Retry a DB operation if the database is locked."""
@@ -787,34 +781,33 @@ class DataManager:
                 logger.error(f"Failed to import shard {f}: {e}")
         return count
 
-    def _record_shard(self, path: str, size_bytes: int, sample_count: int, 
+    def _record_shard(self, path: str, size_bytes: int, sample_count: int,
                       created_at: str, checksum: str, source: str = "selfplay"):
         """Record shard metadata in database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        def _do():
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO shards 
-                (path, size_bytes, sample_count, created_at, checksum, version, source, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (path, size_bytes, sample_count, created_at, checksum, self.version, source, created_at)
-            )
-            conn.commit()
-        self._with_retry(_do)
-        conn.close()
-    
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+
+            def _do():
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO shards
+                    (path, size_bytes, sample_count, created_at, checksum, version, source, last_accessed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                    (path, size_bytes, sample_count, created_at, checksum, self.version, source, created_at),
+                )
+
+            self._with_retry(_do)
+
     def _get_valid_shard_paths(self) -> List[str]:
         """Get paths of valid (non-corrupted) shards."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT path FROM shards WHERE corrupted = FALSE ORDER BY created_at DESC")
-        paths = [row[0] for row in cursor.fetchall()]
-        
-        conn.close()
-        
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+            cursor.execute("SELECT path FROM shards WHERE corrupted = FALSE ORDER BY created_at DESC")
+            paths = [row[0] for row in cursor.fetchall()]
+
         # Filter out paths that don't exist on disk
         valid_paths = []
         for path in paths:
@@ -823,34 +816,33 @@ class DataManager:
             else:
                 # Mark as corrupted if file doesn't exist
                 self._mark_shard_corrupted(path)
-        
+
         return valid_paths
-    
+
     def _get_all_shards(self) -> List[DataShard]:
         """Get all shards with metadata."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT path, size_bytes, sample_count, created_at, checksum, version, corrupted
-            FROM shards ORDER BY created_at DESC
-        """)
-        
-        shards = []
-        for row in cursor.fetchall():
-            shards.append(DataShard(
-                path=row[0],
-                size_bytes=row[1],
-                sample_count=row[2],
-                created_at=row[3],
-                checksum=row[4],
-                version=row[5],
-                corrupted=bool(row[6])
-            ))
-        
-        conn.close()
-        return shards
-    
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT path, size_bytes, sample_count, created_at, checksum, version, corrupted
+                FROM shards ORDER BY created_at DESC
+            """)
+
+            shards = []
+            for row in cursor.fetchall():
+                shards.append(DataShard(
+                    path=row[0],
+                    size_bytes=row[1],
+                    sample_count=row[2],
+                    created_at=row[3],
+                    checksum=row[4],
+                    version=row[5],
+                    corrupted=bool(row[6])
+                ))
+
+            return shards
     def _calculate_checksum(self, filepath: Path) -> str:
         """Calculate SHA256 checksum of file."""
         sha256_hash = hashlib.sha256()
@@ -926,23 +918,17 @@ class DataManager:
 
     def _mark_shard_corrupted(self, path: str):
         """Mark a shard as corrupted in the database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("UPDATE shards SET corrupted = TRUE WHERE path = ?", (path,))
-        
-        conn.commit()
-        conn.close()
-    
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE shards SET corrupted = TRUE WHERE path = ?", (path,))
+
     def _remove_shard_record(self, path: str):
         """Remove a shard record from the database."""
-        conn = self._connect()
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM shards WHERE path = ?", (path,))
-        
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM shards WHERE path = ?", (path,))
 
     def quarantine_corrupted_shards(self, quarantine_dir: str | None = None) -> int:
         """Move corrupted shards to a quarantine directory and remove their DB records.
@@ -951,10 +937,12 @@ class DataManager:
         """
         qdir = Path(quarantine_dir or (self.backups_dir / "quarantine"))
         qdir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT path FROM shards WHERE corrupted = TRUE")
-        rows = cursor.fetchall()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            self._configure_connection(conn)
+            cursor = conn.cursor()
+            cursor.execute("SELECT path FROM shards WHERE corrupted = TRUE")
+            rows = cursor.fetchall()
+
         count = 0
         for (pstr,) in rows:
             p = Path(pstr)
@@ -965,7 +953,6 @@ class DataManager:
                 count += 1
             except Exception:
                 continue
-        conn.close()
         return count
 
     def validate_all_data_sources(self) -> Dict[str, Dict[str, any]]:
