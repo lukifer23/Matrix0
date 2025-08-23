@@ -52,6 +52,53 @@ class EMA:
             if k in self.shadow:
                 p.copy_(self.shadow[k])
 
+
+def _ensure_contiguous(t: torch.Tensor, name: str) -> torch.Tensor:
+    """Force a tensor into standard contiguous memory format.
+
+    Some backends (e.g., MPS) are sensitive to tensors with channels_last
+    layout.  We attempt to set the contiguous memory format and log a warning
+    if that fails before falling back to the default ``contiguous`` call.
+    """
+    if t is None:
+        return None
+    try:
+        return t.contiguous(memory_format=torch.contiguous_format)
+    except Exception as e:  # pragma: no cover - backend specific
+        logger.warning(f"Failed to set contiguous format for {name}: {e}")
+        return t.contiguous()
+
+
+def _check_contiguous(outputs: dict):
+    """Validate that output tensors are contiguous.
+
+    Raises:
+        RuntimeError: if any tensor is not contiguous.
+    """
+    for name, tensor in outputs.items():
+        if tensor is not None and not tensor.is_contiguous():
+            raise RuntimeError(
+                f"{name} output tensor is not contiguous. Shape: {tensor.shape}, strides: {tensor.stride()}"
+            )
+
+
+def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
+    """Mask policy logits using the provided target distribution.
+
+    Any logits corresponding to zero-probability entries in ``pi`` are set to a
+    large negative value.  If masking fails for any reason the original logits
+    are returned and the error is logged.
+    """
+    try:
+        with torch.no_grad():
+            legal_mask = pi > 0
+            valid_rows = legal_mask.any(dim=1, keepdim=True)
+            keep_mask = valid_rows & legal_mask
+        return torch.where(keep_mask, p, torch.full_like(p, -1e9))
+    except Exception as e:
+        logger.error(f"Policy masking failed: {e}")
+        return p
+
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
@@ -236,33 +283,15 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         
         # Ensure contiguity to avoid view-related autograd errors on some backends
         if ssl_out is not None:
-            # Force standard contiguous (NCHW) to avoid channels_last view issues in CrossEntropy backward (MPS)
-            try:
-                ssl_out = ssl_out.contiguous(memory_format=torch.contiguous_format)
-            except Exception:
-                ssl_out = ssl_out.contiguous()
-        
+            ssl_out = _ensure_contiguous(ssl_out, "ssl_out")
+
         # Validate model outputs to catch any contiguity issues
-        if not p.is_contiguous():
-            raise RuntimeError(f"Policy output tensor is not contiguous. Shape: {p.shape}, strides: {p.stride()}")
-        if not v.is_contiguous():
-            raise RuntimeError(f"Value output tensor is not contiguous. Shape: {v.shape}, strides: {v.stride()}")
-        if ssl_out is not None and not ssl_out.is_contiguous():
-            raise RuntimeError(f"SSL output tensor is not contiguous. Shape: {ssl_out.shape}, strides: {ssl_out.stride()}")
+        _check_contiguous({"policy": p, "value": v, "ssl_out": ssl_out})
 
         # Optional legality masking for stability: mask logits where target is zero
         # Assumes pi provides positive mass only on legal actions
         if policy_masking:
-            try:
-                with torch.no_grad():
-                    legal_mask = (pi > 0)
-                    # If any row is all-zero (fallback), treat all as legal (no mask)
-                    valid_rows = legal_mask.any(dim=1, keepdim=True)
-                    # Build a keep mask: keep original logits where either row invalid or legal; else set to -1e9
-                    keep_mask = valid_rows & legal_mask
-                p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9))
-            except Exception:
-                p_for_loss = p
+            p_for_loss = apply_policy_mask(p, pi)
         else:
             p_for_loss = p
         # Policy loss with optional label smoothing
