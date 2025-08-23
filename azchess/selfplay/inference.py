@@ -97,6 +97,11 @@ def run_inference_server(
         server_ready_event.set()
         logger.info("Inference server ready")
 
+        # Add heartbeat logging to monitor server health
+        heartbeat_counter = 0
+        last_heartbeat = time.time()
+        heartbeat_interval = 30.0  # Log heartbeat every 30 seconds
+
         device_type = device.split(":")[0]
         use_amp = device_type in ("cuda", "mps")
 
@@ -264,6 +269,15 @@ def run_inference_server(
                     res["response_event"].set()  # Signal response is ready
                     logger.debug(f"Response sent to worker {worker_id}, size {size}")
                     offset += size
+
+                    # Inference server heartbeat monitoring
+                    current_time = time.time()
+                    if current_time - last_heartbeat > heartbeat_interval:
+                        heartbeat_counter += 1
+                        logger.info(f"INFERENCE_SERVER_HB: Active for {current_time - start_time:.1f}s | "
+                                  f"Processed {heartbeat_counter} heartbeats | "
+                                  f"Event recreations: {event_recreation_count}")
+                        last_heartbeat = current_time
 
             except Exception as e:
                 logger.error(f"Error in batch processing: {e}", exc_info=True)

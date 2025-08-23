@@ -297,13 +297,21 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     logger.info(f"Loading checkpoint from: {ckpt_for_sp}")
                     state = torch.load(ckpt_for_sp, map_location='cpu', weights_only=False)
                     logger.info(f"Checkpoint keys: {list(state.keys())}")
-                    model_state_dict = state.get("model_ema", state.get("model", state))
-                    if "model_ema" in state:
+                    # Extract the actual model state dict from the checkpoint
+                    if "model_state_dict" in state:
+                        model_state_dict = state["model_state_dict"]
+                        logger.info("Using model_state_dict from checkpoint")
+                    elif "model_ema" in state:
+                        model_state_dict = state["model_ema"]
                         logger.info("Using model_ema from checkpoint")
                     elif "model" in state:
+                        model_state_dict = state["model"]
                         logger.info("Using model from checkpoint")
                     else:
+                        # Fallback: assume the checkpoint itself is the model state dict
+                        model_state_dict = state
                         logger.info("Using checkpoint directly as model state dict")
+
                     logger.info(f"Model state dict loaded successfully with {len(model_state_dict)} layers")
                     
                     # Log actual parameter count for clarity
@@ -411,6 +419,25 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     # Start a new server process
                     stop_event = MPEvent()
                     server_ready_event = MPEvent()
+
+                    # CRITICAL: Recreate shared memory resources with fresh Event objects
+                    # This ensures workers and the new server use the same Event objects
+                    from .selfplay.inference import setup_shared_memory_for_worker
+                    new_shared_memory_resources = []
+                    for i in range(len(shared_memory_resources)):
+                        try:
+                            new_res = setup_shared_memory_for_worker(i)
+                            new_shared_memory_resources.append(new_res)
+                            logger.debug(f"Recreated shared memory resource {i} for inference server restart")
+                        except Exception as e:
+                            logger.error(f"Failed to recreate shared memory resource {i}: {e}")
+                            # Try to reuse old resource if recreation fails
+                            new_shared_memory_resources.append(shared_memory_resources[i])
+
+                    # Replace the old resources with new ones
+                    shared_memory_resources = new_shared_memory_resources
+                    logger.info("Updated shared memory resources with fresh Event objects for server restart")
+
                     infer_proc = Process(
                         target=run_inference_server,
                         args=(dev, sp_cfg["model"], model_state_dict, stop_event, server_ready_event, shared_memory_resources)
@@ -418,6 +445,17 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     infer_proc.start()
                     if not server_ready_event.wait(timeout=60):
                         logger.error("Restarted inference server failed to start in time.")
+                        logger.error("This may indicate a critical issue with shared memory or device initialization.")
+                        logger.error("Check logs for detailed error messages from the inference server process.")
+                        # Try to terminate the failed process
+                        try:
+                            if infer_proc.is_alive():
+                                infer_proc.terminate()
+                                infer_proc.join(timeout=5)
+                                logger.info("Terminated failed inference server process")
+                        except Exception as term_error:
+                            logger.error(f"Failed to terminate failed inference server: {term_error}")
+                        infer_proc = None  # Reset to None so it won't be checked again
 
             try:
                 if use_table:
