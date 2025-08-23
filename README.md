@@ -93,6 +93,12 @@ source .venv/bin/activate
 python -m azchess.orchestrator --workers 2 --sims 300 --lr 0.001 --batch-size 192 --epochs 10 --eval-games 50 --device mps
 ```
 
+Run the training loop directly without the orchestrator:
+
+```bash
+python -m azchess.training.train --config config.yaml
+```
+
 ### 4. Monitor & Interact
 ```bash
 # Interactive play against current model
