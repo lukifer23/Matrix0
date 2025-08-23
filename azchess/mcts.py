@@ -290,25 +290,27 @@ class Node:
 
 
 class MCTS:
-    def __init__(self, cfg: MCTSConfig, model, device: str = "cpu", inference_backend=None, num_threads: int = None):
+    def __init__(
+        self,
+        cfg: MCTSConfig,
+        model=None,
+        device: str = "cpu",
+        inference_backend=None,
+        num_threads: int = None,
+    ):
+        if isinstance(cfg, torch.nn.Module) or cfg is None:
+            cfg, model = model, cfg
+
         self.cfg = cfg
         self.device = device
         self.model = model
         self.inference_backend = inference_backend
-        self._enc = MoveEncoder()
+
         self._tt = {}
         self._tt_lock = threading.Lock()
         self._tt_cleanup_counter = 0
         self._last_cleanup_time = time.time()
-        
-        # FIXED: Proper ThreadPool initialization with deadlock prevention
-        self.num_threads = cfg.num_threads
-        if self.num_threads > 1:
-            self.thread_pool = ThreadPool(self.num_threads)
-            logger.info(f"MCTS initialized with {self.num_threads} threads for parallel simulation")
-        else:
-            self.thread_pool = None
-            logger.info("MCTS running in single-threaded mode")
+
         self.tt = OrderedDict()  # Transposition table
         self.nn_cache = LRUCache(10000)  # Neural network cache
         self.simulations_run = 0
@@ -319,15 +321,26 @@ class MCTS:
         self._memory_cleanup_threshold = 85.0
         self.tt_hits = 0
         self.tt_misses = 0
-        
+
         # Move encoder cache
-        self._enc: Optional[MoveEncoder] = MoveEncoder() if bool(cfg.encoder_cache) else None
+        self._enc: Optional[MoveEncoder] = (
+            MoveEncoder() if bool(cfg.encoder_cache) else None
+        )
         self._last_cleanup_wall: float = time.time()
 
-        # Use config num_threads if not specified, fallback to 1
-        self.num_threads = num_threads if num_threads is not None else getattr(cfg, 'num_threads', 1)
+        # Configure threading
+        self.num_threads = (
+            num_threads if num_threads is not None else getattr(cfg, "num_threads", 1)
+        )
         if self.num_threads > 1:
             self.thread_pool = ThreadPool(self.num_threads)
+            logger.info(
+                f"MCTS initialized with {self.num_threads} threads for parallel simulation"
+            )
+        else:
+            self.thread_pool = None
+            logger.info("MCTS running in single-threaded mode")
+
         self.lock = threading.Lock()
 
     @torch.no_grad()

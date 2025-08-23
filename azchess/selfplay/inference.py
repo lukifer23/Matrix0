@@ -26,6 +26,30 @@ def setup_shared_memory_for_worker(worker_id: int, planes: int, policy_size: int
         'batch_size_tensor': torch.tensor([0], dtype=torch.int32).share_memory_(),
     }
 
+
+def cleanup_shared_memory(resources: List[Dict[str, Any]]) -> None:
+    """Detach tensors, close events and remove references to shared memory."""
+    for res in resources:
+        # Close any events so that associated file descriptors are released
+        for name in ("request_event", "response_event"):
+            event = res.pop(name, None)
+            if event is not None:
+                try:
+                    event.close()
+                except Exception:
+                    pass
+        # Detach tensors from autograd and remove references
+        for name in ("request_tensor", "response_policy_tensor",
+                     "response_value_tensor", "batch_size_tensor"):
+            tensor = res.pop(name, None)
+            if tensor is not None:
+                try:
+                    tensor.detach_()
+                except Exception:
+                    pass
+                del tensor
+    resources.clear()
+
 def run_inference_server(
     device: str, 
     model_cfg: dict, 
