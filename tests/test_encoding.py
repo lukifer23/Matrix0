@@ -115,5 +115,17 @@ class TestMoveEncoding(unittest.TestCase):
         self.assertTrue(np.all(encoded[15] == 1.0)) # Black kingside
         self.assertTrue(np.all(encoded[16] == 1.0)) # Black queenside
 
+    def test_illegal_move_to_index_raises(self):
+        """Ensure move_to_index raises on illegal moves."""
+        illegal = chess.Move.from_uci("a1a8")
+        with self.assertRaises(ValueError):
+            move_to_index(self.board, illegal)
+
+    def test_encode_move_illegal_raises(self):
+        """Ensure MoveEncoder.encode_move raises on illegal moves."""
+        illegal = chess.Move.from_uci("a1a8")
+        with self.assertRaises(ValueError):
+            self.encoder.encode_move(self.board, illegal)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

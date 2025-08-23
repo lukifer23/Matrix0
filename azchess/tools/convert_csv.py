@@ -12,24 +12,25 @@ import chess
 from ..encoding import encode_board, move_to_index
 
 
-def _one_hot_policy(board: chess.Board, move_uci: str) -> Optional[np.ndarray]:
+def _one_hot_policy(board: chess.Board, move_uci: str) -> np.ndarray:
+    """Return a one-hot policy vector for a given move.
+
+    Raises ValueError if the move is not legal or cannot be parsed.
+    """
     try:
         mv = chess.Move.from_uci(move_uci)
-    except Exception:
-        return None
+    except Exception as e:
+        raise ValueError(f"Unable to parse move: {move_uci}") from e
     if mv not in board.legal_moves:
         # Try SAN if given accidentally
         try:
             mv = board.parse_san(move_uci)
-        except Exception:
-            return None
+        except Exception as e:
+            raise ValueError(f"Illegal move: {move_uci}") from e
         if mv not in board.legal_moves:
-            return None
+            raise ValueError(f"Illegal move: {move_uci}")
     pi = np.zeros(4672, dtype=np.float32)
-    try:
-        pi[move_to_index(board, mv)] = 1.0
-    except Exception:
-        return None
+    pi[move_to_index(board, mv)] = 1.0
     return pi
 
 
@@ -40,10 +41,7 @@ def _uniform_policy(board: chess.Board) -> np.ndarray:
         return pi
     p = 1.0 / float(len(legal))
     for mv in legal:
-        try:
-            pi[move_to_index(board, mv)] = p
-        except Exception:
-            continue
+        pi[move_to_index(board, mv)] = p
     return pi
 
 
@@ -72,10 +70,10 @@ def convert_fen_bestmove(csv_path: str, shard_size: int) -> Tuple[int, int, List
                 board = chess.Board(fen)
             except Exception:
                 continue
-            pi = _one_hot_policy(board, best)
-            if pi is None:
-                # Skip illegal mappings
-                continue
+            try:
+                pi = _one_hot_policy(board, best)
+            except ValueError as e:
+                raise ValueError(f"Invalid move {best} for FEN {fen}") from e
             # Value from winning percentage if present; interpret as side-to-move success likelihood
             if winp is not None and winp != "":
                 try:
@@ -161,9 +159,10 @@ def convert_puzzles(csv_path: str, shard_size: int) -> Tuple[int, int, List[np.n
                     continue
                 parts = str(mvseq).strip().split()
                 for u in parts:
-                    pi = _one_hot_policy(board, u)
-                    if pi is None:
-                        break
+                    try:
+                        pi = _one_hot_policy(board, u)
+                    except ValueError as e:
+                        raise ValueError(f"Invalid move {u} for FEN {fen}") from e
                     s_buf.append(encode_board(board))
                     pi_buf.append(pi)
                     z_buf.append(np.array(0.8, dtype=np.float32))
@@ -181,9 +180,10 @@ def convert_puzzles(csv_path: str, shard_size: int) -> Tuple[int, int, List[np.n
                     continue
                 parts = str(mvseq).strip().split()
                 for u in parts:
-                    pi = _one_hot_policy(board, u)
-                    if pi is None:
-                        break
+                    try:
+                        pi = _one_hot_policy(board, u)
+                    except ValueError as e:
+                        raise ValueError(f"Invalid move {u} for FEN {fen}") from e
                     s_buf.append(encode_board(board))
                     pi_buf.append(pi)
                     z_buf.append(np.array(0.8, dtype=np.float32))
