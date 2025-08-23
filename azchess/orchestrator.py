@@ -4,6 +4,7 @@ import argparse
 import glob
 import os
 import queue as pyqueue
+from dataclasses import dataclass
 from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
 from time import perf_counter, sleep
@@ -53,18 +54,41 @@ def _run_external_proc(proc_id: int, cfg_path: str, out_dir: str, n_games: int):
     _asyncio.run(_worker(proc_id=proc_id, config=_cfg, output_dir=out_dir, num_games=n_games))
 
 
-def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_override: int | None = None, 
-                workers_override: int | None = None, sims_override: int | None = None, cpuct_override: float | None = None,
-                dirichlet_alpha_override: float | None = None, selection_jitter_override: float | None = None,
-                opening_plies_override: int | None = None, resign_threshold_override: float | None = None,
-                max_game_length_override: int | None = None, lr_override: float | None = None,
-                batch_size_override: int | None = None, epochs_override: int | None = None,
-                steps_per_epoch_override: int | None = None, accum_steps_override: int | None = None,
-                weight_decay_override: float | None = None, ema_decay_override: float | None = None,
-                grad_clip_override: float | None = None, promotion_threshold_override: float | None = None,
-                device_override: str | None = None, max_retries_override: int | None = None,
-                backoff_seconds_override: int | None = None, doctor_fix: bool | None = None, seed: int | None = None,
-                tui_mode: str = "bars", no_shared_infer: bool | None = None, quick_start: bool = False):
+@dataclass
+class OrchestratorOverrides:
+    games: int | None = None
+    eval_games: int | None = None
+    workers: int | None = None
+    sims: int | None = None
+    cpuct: float | None = None
+    dirichlet_alpha: float | None = None
+    selection_jitter: float | None = None
+    opening_plies: int | None = None
+    resign_threshold: float | None = None
+    max_game_length: int | None = None
+    lr: float | None = None
+    batch_size: int | None = None
+    epochs: int | None = None
+    steps_per_epoch: int | None = None
+    accum_steps: int | None = None
+    weight_decay: float | None = None
+    ema_decay: float | None = None
+    grad_clip: float | None = None
+    promotion_threshold: float | None = None
+    device: str | None = None
+    max_retries: int | None = None
+    backoff_seconds: int | None = None
+    doctor_fix: bool | None = None
+    seed: int | None = None
+    no_shared_infer: bool | None = None
+
+
+def orchestrate(
+    cfg_path: str,
+    overrides: OrchestratorOverrides | None = None,
+    tui_mode: str = "bars",
+    quick_start: bool = False,
+):
     cfg = Config.load(cfg_path)
     logger = setup_logging(cfg.training().get("log_dir", "logs"))
 
@@ -105,24 +129,25 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     except Exception:
         pass
 
+    overrides = overrides or OrchestratorOverrides()
     orch = cfg.raw.get("orchestrator", {})
-    
+
     # Dynamic game count logic: check if this is first run
     initial_games = int(orch.get("initial_games", 64))
     subsequent_games = int(orch.get("subsequent_games", 64))
-    
+
     # Check if we have existing checkpoints to determine if this is first run
     checkpoint_dir = Path("checkpoints")
     existing_checkpoints = list(checkpoint_dir.glob("*.pt")) if checkpoint_dir.exists() else []
-    
+
     # Determine game count based on context and overrides
     if quick_start:
         # Force quick start mode regardless of checkpoints
         games_target = initial_games
         logger.info(f"Quick start mode: using {initial_games} games for rapid iteration")
-    elif games_override is not None:
+    elif overrides.games is not None:
         # Command-line override takes precedence
-        games_target = int(games_override)
+        games_target = int(overrides.games)
         logger.info(f"Command-line override: using {games_target} games")
     elif len(existing_checkpoints) <= 1:  # Only base model or no models
         games_target = initial_games
@@ -130,21 +155,21 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
     else:
         games_target = subsequent_games
         logger.info(f"Subsequent run: using {subsequent_games} games for full cycle")
-    
+
     eval_games = int(orch.get("eval_games_per_cycle", 20))
-    if eval_games_override is not None:
-        eval_games = int(eval_games_override)
+    if overrides.eval_games is not None:
+        eval_games = int(overrides.eval_games)
     promote_thr = float(orch.get("promotion_threshold", 0.55))
-    if promotion_threshold_override is not None:
-        promote_thr = float(promotion_threshold_override)
+    if overrides.promotion_threshold is not None:
+        promote_thr = float(overrides.promotion_threshold)
     keep_top_k = int(orch.get("keep_top_k", 3))
-    run_doctor_fix = bool(orch.get("doctor_fix", False)) if doctor_fix is None else bool(doctor_fix)
+    run_doctor_fix = bool(orch.get("doctor_fix", False)) if overrides.doctor_fix is None else bool(overrides.doctor_fix)
     max_retries = int(orch.get("max_retries", 0))
-    if max_retries_override is not None:
-        max_retries = int(max_retries_override)
+    if overrides.max_retries is not None:
+        max_retries = int(overrides.max_retries)
     backoff = int(orch.get("backoff_seconds", 5))
-    if backoff_seconds_override is not None:
-        backoff = int(backoff_seconds_override)
+    if overrides.backoff_seconds is not None:
+        backoff = int(overrides.backoff_seconds)
     external_engine_integration = bool(orch.get("external_engine_integration", False))
 
     sp_cfg = cfg.to_dict()
@@ -170,58 +195,58 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
         logger.warning(f"Failed to apply presets: {e}")
     
     # Apply command-line overrides to self-play config
-    if workers_override is not None:
-        sp_cfg["selfplay"]["num_workers"] = int(workers_override)
-    if sims_override is not None:
-        sp_cfg["selfplay"]["num_simulations"] = int(sims_override)
-    if cpuct_override is not None:
-        sp_cfg["selfplay"]["cpuct"] = float(cpuct_override)
-    if dirichlet_alpha_override is not None:
-        sp_cfg["selfplay"]["dirichlet_alpha"] = float(dirichlet_alpha_override)
-    if selection_jitter_override is not None:
-        sp_cfg["selfplay"]["selection_jitter"] = float(selection_jitter_override)
-    if opening_plies_override is not None:
-        sp_cfg["selfplay"]["opening_random_plies"] = int(opening_plies_override)
-    if resign_threshold_override is not None:
-        sp_cfg["selfplay"]["resign_threshold"] = float(resign_threshold_override)
-    if max_game_length_override is not None:
-        sp_cfg["selfplay"]["max_game_len"] = int(max_game_length_override)
-    if no_shared_infer is True:
+    if overrides.workers is not None:
+        sp_cfg["selfplay"]["num_workers"] = int(overrides.workers)
+    if overrides.sims is not None:
+        sp_cfg["selfplay"]["num_simulations"] = int(overrides.sims)
+    if overrides.cpuct is not None:
+        sp_cfg["selfplay"]["cpuct"] = float(overrides.cpuct)
+    if overrides.dirichlet_alpha is not None:
+        sp_cfg["selfplay"]["dirichlet_alpha"] = float(overrides.dirichlet_alpha)
+    if overrides.selection_jitter is not None:
+        sp_cfg["selfplay"]["selection_jitter"] = float(overrides.selection_jitter)
+    if overrides.opening_plies is not None:
+        sp_cfg["selfplay"]["opening_random_plies"] = int(overrides.opening_plies)
+    if overrides.resign_threshold is not None:
+        sp_cfg["selfplay"]["resign_threshold"] = float(overrides.resign_threshold)
+    if overrides.max_game_length is not None:
+        sp_cfg["selfplay"]["max_game_len"] = int(overrides.max_game_length)
+    if overrides.no_shared_infer is True:
         sp_cfg["selfplay"]["shared_inference"] = False
-    
+
     # Apply command-line overrides to training config
-    if lr_override is not None:
-        sp_cfg["training"]["lr"] = float(lr_override)
-    if batch_size_override is not None:
-        sp_cfg["training"]["batch_size"] = int(batch_size_override)
-    if epochs_override is not None:
-        sp_cfg["training"]["epochs"] = int(epochs_override)
-    if steps_per_epoch_override is not None:
-        sp_cfg["training"]["steps_per_epoch"] = int(steps_per_epoch_override)
-    if accum_steps_override is not None:
-        sp_cfg["training"]["accum_steps"] = int(accum_steps_override)
-    if weight_decay_override is not None:
-        sp_cfg["training"]["weight_decay"] = float(weight_decay_override)
-    if ema_decay_override is not None:
-        sp_cfg["training"]["ema_decay"] = float(ema_decay_override)
-    if grad_clip_override is not None:
-        sp_cfg["training"]["grad_clip_norm"] = float(grad_clip_override)
-    
+    if overrides.lr is not None:
+        sp_cfg["training"]["lr"] = float(overrides.lr)
+    if overrides.batch_size is not None:
+        sp_cfg["training"]["batch_size"] = int(overrides.batch_size)
+    if overrides.epochs is not None:
+        sp_cfg["training"]["epochs"] = int(overrides.epochs)
+    if overrides.steps_per_epoch is not None:
+        sp_cfg["training"]["steps_per_epoch"] = int(overrides.steps_per_epoch)
+    if overrides.accum_steps is not None:
+        sp_cfg["training"]["accum_steps"] = int(overrides.accum_steps)
+    if overrides.weight_decay is not None:
+        sp_cfg["training"]["weight_decay"] = float(overrides.weight_decay)
+    if overrides.ema_decay is not None:
+        sp_cfg["training"]["ema_decay"] = float(overrides.ema_decay)
+    if overrides.grad_clip is not None:
+        sp_cfg["training"]["grad_clip_norm"] = float(overrides.grad_clip)
+
     # Apply device override
-    if device_override is not None:
-        sp_cfg["device"] = str(device_override)
-    
+    if overrides.device is not None:
+        sp_cfg["device"] = str(overrides.device)
+
     # Apply reproducible seed if provided
-    if seed is not None:
+    if overrides.seed is not None:
         try:
             import random, numpy as np, torch as _torch
-            random.seed(seed)
-            np.random.seed(seed)
+            random.seed(overrides.seed)
+            np.random.seed(overrides.seed)
             try:
-                torch.manual_seed(seed)
+                torch.manual_seed(overrides.seed)
             except Exception:
                 pass
-            sp_cfg["seed"] = int(seed)
+            sp_cfg["seed"] = int(overrides.seed)
         except Exception:
             pass
     workers = sp_cfg["selfplay"].get("num_workers", 2)
@@ -936,36 +961,39 @@ def main():
     # Determine TUI mode: CLI overrides config; if CLI not provided, use config default
     tui_cfg = Config.load(args.config).orchestrator().get("tui", "bars")
     chosen_tui = args.tui or tui_cfg
+    overrides = OrchestratorOverrides(
+        games=args.games,
+        eval_games=args.eval_games,
+        workers=args.workers,
+        sims=args.sims,
+        cpuct=args.cpuct,
+        dirichlet_alpha=args.dirichlet_alpha,
+        selection_jitter=args.selection_jitter,
+        opening_plies=args.opening_plies,
+        resign_threshold=args.resign_threshold,
+        max_game_length=args.max_game_length,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        steps_per_epoch=args.steps_per_epoch,
+        accum_steps=args.accum_steps,
+        weight_decay=args.weight_decay,
+        ema_decay=args.ema_decay,
+        grad_clip=args.grad_clip,
+        promotion_threshold=args.promotion_threshold,
+        device=args.device,
+        max_retries=args.max_retries,
+        backoff_seconds=args.backoff_seconds,
+        doctor_fix=args.doctor_fix or None,
+        seed=args.seed,
+        no_shared_infer=True if args.no_shared_infer else None,
+    )
 
     orchestrate(
-        args.config, 
-        games_override=args.games, 
-        eval_games_override=args.eval_games,
-        workers_override=args.workers,
-        sims_override=args.sims,
-        cpuct_override=args.cpuct,
-        dirichlet_alpha_override=args.dirichlet_alpha,
-        selection_jitter_override=args.selection_jitter,
-        opening_plies_override=args.opening_plies,
-        resign_threshold_override=args.resign_threshold,
-        max_game_length_override=args.max_game_length,
-        lr_override=args.lr,
-        batch_size_override=args.batch_size,
-        epochs_override=args.epochs,
-        steps_per_epoch_override=args.steps_per_epoch,
-        accum_steps_override=args.accum_steps,
-        weight_decay_override=args.weight_decay,
-        ema_decay_override=args.ema_decay,
-        grad_clip_override=args.grad_clip,
-        promotion_threshold_override=args.promotion_threshold,
-        device_override=args.device,
-        max_retries_override=args.max_retries,
-        backoff_seconds_override=args.backoff_seconds,
-        doctor_fix=args.doctor_fix, 
-        seed=args.seed,
+        args.config,
+        overrides=overrides,
         tui_mode=chosen_tui,
-        no_shared_infer=bool(args.no_shared_infer),
-        quick_start=bool(args.quick_start)
+        quick_start=bool(args.quick_start),
     )
 
 def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
