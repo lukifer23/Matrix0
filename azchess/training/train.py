@@ -102,7 +102,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # PERFORMANCE PROFILING: Data prep complete
     data_prep_time = time.time() - data_prep_start
-    if current_step % 10 == 0:  # Log every 10 steps
+    if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):  # Log every 10 steps
         logger.info(f"PERF: Data preparation: {data_prep_time:.3f}s")
 
     # Setup precision and device type BEFORE moving tensors
@@ -182,7 +182,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: SSL target creation complete
     ssl_target_time = time.time() - ssl_target_start
     if current_step % 10 == 0:
-        logger.info(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.info(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
         if ssl_target_time > 5.0:  # Log if it's taking too long
             logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - this indicates a performance issue")
 
@@ -221,7 +222,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Forward pass complete
     forward_time = time.time() - forward_start
     if current_step % 10 == 0:
-        logger.info(f"PERF: Forward pass: {forward_time:.3f}s")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.info(f"PERF: Forward pass: {forward_time:.3f}s")
         logger.info(f"DEBUG: Output dtypes - p: {p.dtype}, v: {v.dtype}, ssl_out: {ssl_out.dtype if ssl_out is not None else 'None'}")
 
         # CRITICAL: Validate policy outputs before computing loss
@@ -333,7 +335,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
-        if current_step % 10 == 0:
+        if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
             logger.info(f"PERF: Loss computation: {loss_comp_time:.3f}s")
 
         # CRITICAL FIX: Ensure all loss components have consistent dtypes BEFORE arithmetic
@@ -389,12 +391,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
             # PERFORMANCE PROFILING: Backward pass complete
             backward_time = time.time() - backward_start
-            if current_step % 10 == 0:
+            if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                 logger.info(f"PERF: Backward pass: {backward_time:.3f}s")
 
             # PERFORMANCE PROFILING: Total step time
             total_step_time = time.time() - start_time
-            if current_step % 10 == 0:
+            if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                 logger.info(f"PERF: Total step time: {total_step_time:.3f}s")
                 logger.info(f"PERF: Breakdown - Data: {data_prep_time:.3f}s, SSL: {ssl_target_time:.3f}s, Forward: {forward_time:.3f}s, Loss: {loss_comp_time:.3f}s, Backward: {backward_time:.3f}s")
         except RuntimeError as e:
@@ -798,7 +800,7 @@ def train_comprehensive(
             try:
                 # PERFORMANCE PROFILING: Batch preparation complete
                 batch_prep_time = time.time() - batch_prep_start
-                if current_step % 10 == 0:
+                if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                     logger.info(f"PERF: Batch preparation: {batch_prep_time:.3f}s")
 
                 # PERFORMANCE PROFILING: Start train_step
@@ -829,7 +831,7 @@ def train_comprehensive(
                 
                 # PERFORMANCE PROFILING: train_step complete
                 train_step_time = time.time() - train_step_start
-                if current_step % 10 == 0:
+                if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                     logger.info(f"PERF: train_step call: {train_step_time:.3f}s")
 
                 loss, policy_loss, value_loss, ssl_loss, wdl_loss = loss_values
@@ -942,7 +944,7 @@ def train_comprehensive(
 
                     # PERFORMANCE PROFILING: Optimizer step complete
                     optimizer_time = time.time() - optimizer_start
-                    if current_step % 10 == 0:
+                    if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                         logger.info(f"PERF: Optimizer step: {optimizer_time:.3f}s")
 
                     # Update watchdog timer
@@ -950,12 +952,12 @@ def train_comprehensive(
 
                     # PERFORMANCE PROFILING: Post-processing complete
                     post_proc_time = time.time() - post_proc_start
-                    if current_step % 10 == 0:
+                    if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                         logger.info(f"PERF: Post-processing: {post_proc_time:.3f}s")
 
                     # PERFORMANCE PROFILING: Total iteration time
                     total_iter_time = time.time() - batch_prep_start
-                    if current_step % 10 == 0:
+                    if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                         logger.info(f"PERF: Total iteration: {total_iter_time:.3f}s")
                         logger.info(f"PERF: Full breakdown - Batch: {batch_prep_time:.3f}s, TrainStep: {train_step_time:.3f}s, Post: {post_proc_time:.3f}s, Optimizer: {optimizer_time:.3f}s")
 
