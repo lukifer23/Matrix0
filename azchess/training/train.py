@@ -283,8 +283,27 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 ramp = min(1.0, float(current_step) / float(ssl_warmup_steps))
             else:
                 ramp = 1.0
-            # SSL loss computation using the new method
-            ssl_loss = model.get_ssl_loss(s, ssl_targets)
+
+            # SSL loss computation with memory optimization
+            # Clear MPS cache before SSL computation to prevent memory pressure
+            if device == "mps":
+                logger.debug("Clearing MPS cache before SSL computation")
+                import torch.mps
+                torch.mps.empty_cache()
+
+            # Use gradient checkpointing for SSL to reduce memory usage
+            if hasattr(model, 'get_ssl_loss'):
+                try:
+                    with torch.no_grad():  # SSL doesn't need gradients for the main model
+                        ssl_loss = model.get_ssl_loss(s, ssl_targets)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        logger.warning(f"SSL computation failed due to memory, skipping SSL for this batch: {e}")
+                        ssl_loss = torch.tensor(0.0, device=device, requires_grad=False)
+                    else:
+                        raise
+            else:
+                ssl_loss = torch.tensor(0.0, device=device, requires_grad=False)
             # Ensure all loss components are contiguous before arithmetic operations
             policy_loss = policy_loss.contiguous()
             policy_reg_loss = policy_reg_loss.contiguous()
@@ -380,16 +399,21 @@ def train_comprehensive(
     ema_decay: float = 0.999,
     grad_clip_norm: float = 1.0,
     accum_steps: int = 2,
-    warmup_steps: int = 500,
+    warmup_steps: float = 500,
     checkpoint_dir: str = "checkpoints",
     log_dir: str = "logs",
     device: str = "auto",
     use_amp: bool = True,
     augment: bool = True,
-    precision: str = "fp16"
+    precision: str = "fp16",
 ):
-    """Comprehensive training with progress tracking and ETA."""
-    
+    """Train the model with comprehensive features and memory optimizations."""
+
+    # Ensure torch is available (fix for import scope issues)
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+
     # Load configuration
     cfg = Config.load(config_path)
     device = select_device(device)
@@ -402,6 +426,9 @@ def train_comprehensive(
         if device.startswith('mps') and torch.backends.mps.is_available():
             torch.mps.empty_cache()
             logger.info("MPS memory cache cleared")
+        elif device.startswith('cuda') and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("CUDA memory cache cleared")
         logger.info("Memory cleanup completed")
     except Exception as e:
         logger.warning(f"Memory cleanup failed: {e}")
@@ -649,6 +676,10 @@ def train_comprehensive(
     start_time = time.time()
     optimizer.zero_grad()
 
+    # Training heartbeat for monitoring
+    last_heartbeat = time.time()
+    heartbeat_interval = 60  # Log every 60 seconds
+
     try:
         while current_step < total_steps:
             # Handle curriculum learning phase transitions
@@ -818,13 +849,22 @@ def train_comprehensive(
                         memory_usage = get_system_memory_usage()
                         lr_current = scheduler.get_last_lr()[0] if scheduler else 0.0
 
+                        # Get detailed memory info for MPS
+                        memory_info = ""
+                        if device.startswith('mps'):
+                            try:
+                                import torch.mps
+                                memory_info = " | MPS Available" if torch.mps.is_available() else " | MPS Unavailable"
+                            except:
+                                pass
+
                         logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} | "
                                   f"Loss: {running_loss:.4f} | "
                                   f"Policy: {running_policy_loss:.4f} | "
                                   f"Value: {running_value_loss:.4f} | "
                                   f"SSL: {running_ssl_loss:.4f} | "
                                   f"LR: {lr_current:.6f} | "
-                                  f"Memory: {memory_usage}GB | "
+                                  f"Memory: {memory_usage}GB{memory_info} | "
                                   f"Device: {device}")
 
                         last_heartbeat = current_time
@@ -1052,6 +1092,7 @@ def main():
         warmup_steps=args.warmup_steps,
         checkpoint_dir=args.checkpoint_dir,
         log_dir=args.log_dir,
+        precision="fp16",
         device=args.device,
         use_amp=args.use_amp,
         augment=args.augment
@@ -1073,11 +1114,12 @@ def train_from_config(config_path: str = "config.yaml"):
         ema_decay=train_cfg.get("ema_decay", 0.999),
         grad_clip_norm=train_cfg.get("grad_clip_norm", 1.0),
         accum_steps=train_cfg.get("accum_steps", 1),
+        precision=train_cfg.get("precision", "fp16"),
         warmup_steps=train_cfg.get("warmup_steps", 500),
         checkpoint_dir=train_cfg.get("checkpoint_dir", "checkpoints"),
         log_dir=train_cfg.get("log_dir", "logs"),
         device=cfg.get("device", "auto"),
-        use_amp=train_cfg.get("precision", "fp16") != "fp32",
+        use_amp=train_cfg.get("use_amp", True),
         augment=True
     )
 

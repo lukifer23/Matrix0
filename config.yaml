@@ -45,6 +45,7 @@ training:
   grad_clip_norm: 0.5              # More aggressive gradient clipping to prevent NaN
   ssl_weight: 0.05                 # Reduced SSL weight to focus on stability
   ssl_warmup_steps: 200            # Longer SSL warmup for stability
+  ssl_chunk_size: 32               # Process SSL in chunks to prevent OOM
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # Enable automatic mixed precision
   warmup_steps: 200                # Shorter warmup for faster convergence

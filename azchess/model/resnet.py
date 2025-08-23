@@ -577,46 +577,72 @@ class PolicyValueNet(nn.Module):
         return sum(p.numel() for p in self.parameters())
     
     def get_ssl_loss(self, x: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute self-supervised learning loss for piece prediction - optimized for speed."""
+        """Compute self-supervised learning loss for piece prediction - memory optimized."""
         if self.ssl_piece_head is None:
             return torch.tensor(0.0, device=x.device, requires_grad=False)
 
-        # Get SSL output directly from the SSL head
-        x_processed = self.stem(x)
-        if self.chess_features is not None:
-            x_processed = self.chess_features(x_processed)
-        x_processed = self.tower(x_processed)
+        # Memory optimization: process SSL in smaller chunks to avoid OOM
+        batch_size = x.shape[0]
+        device = x.device
 
-        ssl_output = self.ssl_piece_head(x_processed)
+        # For large batches, process in chunks to reduce memory usage
+        # Use configurable chunk size or default to 32
+        default_chunk_size = getattr(self.cfg, 'ssl_chunk_size', 32)
+        chunk_size = min(default_chunk_size, batch_size)
+        total_loss = 0.0
+        valid_samples = 0
 
-        # Fast path: Use reshape for compatibility with permuted tensors
-        ssl_output = ssl_output.permute(0, 2, 3, 1).reshape(-1, 13)  # (B*64, 13)
-        targets = targets.reshape(-1).long()  # (B*64,)
+        for start_idx in range(0, batch_size, chunk_size):
+            end_idx = min(start_idx + chunk_size, batch_size)
+            chunk_x = x[start_idx:end_idx]
+            chunk_targets = targets[start_idx:end_idx]
 
-        # Validate targets efficiently - allow 13-class targets (0-12)
-        if targets.min() < 0 or targets.max() > 12:  # Changed from >= 13 to > 12
-            return torch.tensor(0.0, device=x.device, requires_grad=False)
+            # Process chunk through the model
+            try:
+                x_processed = self.stem(chunk_x)
+                if self.chess_features is not None:
+                    x_processed = self.chess_features(x_processed)
 
-        # Only return 0 if ALL targets are 0 (not just if sum is 0)
-        if torch.all(targets == 0):
-            return torch.tensor(0.0, device=x.device, requires_grad=False)
+                # Use gradient checkpointing for the tower to save memory
+                if hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                    x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                else:
+                    x_processed = self.tower(x_processed)
 
-        # Compute loss with optimized cross-entropy
-        loss = F.cross_entropy(ssl_output, targets, reduction='mean')
+                ssl_output = self.ssl_piece_head(x_processed)
 
-        # Debug: Log SSL loss statistics (more frequent during debugging)
-        if torch.rand(1).item() < 0.1:  # 10% chance to log (increased for debugging)
-            valid_targets = (targets >= 0) & (targets <= 12)
-            class_counts = torch.bincount(targets[valid_targets], minlength=13)
-            logger.info(f"SSL Loss Debug: loss={loss:.6f}, targets_sum={targets.sum().item()}, targets_range=[{targets.min().item()}, {targets.max().item()}], class_dist={class_counts.tolist()}")
+                # Fast path: Use reshape for compatibility with permuted tensors
+                ssl_output = ssl_output.permute(0, 2, 3, 1).reshape(-1, 13)  # (chunk_size*64, 13)
+                chunk_targets = chunk_targets.reshape(-1).long()  # (chunk_size*64,)
 
-        # TEMPORARY: Log SSL loss every time it's computed (remove after debugging)
-        if loss > 0.0:
-            logger.info(f"SSL LOSS > 0 DETECTED: {loss:.6f}")
-        elif torch.rand(1).item() < 0.05:  # 5% chance when loss is 0
-            logger.warning(f"SSL LOSS IS 0.0 - targets_sum={targets.sum().item()}, all_zeros={torch.all(targets == 0).item()}")
+                # Validate targets efficiently - allow 13-class targets (0-12)
+                if chunk_targets.min() < 0 or chunk_targets.max() > 12:
+                    continue
 
-        return loss
+                # Only process if not all targets are 0
+                if torch.all(chunk_targets == 0):
+                    continue
+
+                # Compute loss for this chunk
+                chunk_loss = F.cross_entropy(ssl_output, chunk_targets, reduction='sum')
+                total_loss += chunk_loss.item()
+                valid_samples += chunk_targets.numel()
+
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.warning(f"SSL chunk {start_idx}:{end_idx} failed due to memory, skipping")
+                    # Clear cache and continue
+                    if device.type == "mps":
+                        torch.mps.empty_cache()
+                    continue
+                else:
+                    raise
+
+        # Return average loss per sample
+        if valid_samples > 0:
+            return torch.tensor(total_loss / valid_samples, device=device, requires_grad=False)
+        else:
+            return torch.tensor(0.0, device=device, requires_grad=False)
     
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute SSL loss for supported tasks.

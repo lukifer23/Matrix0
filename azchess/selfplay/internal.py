@@ -136,9 +136,15 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 sd = state.get("model_ema", state.get("model", state))
                 missing, unexpected = model.load_state_dict(sd, strict=False)
                 if missing:
-                    logger.warning(f"Worker {proc_id}: Missing keys during load (initialized): {len(missing)}")
+                    total_expected = len(sd) + len(missing)
+                    logger.warning(
+                        f"Worker {proc_id}: Missing keys during load (initialized): {len(missing)}/{total_expected} keys "
+                        f"({len(sd)} loaded successfully)"
+                    )
+                    logger.warning(f"Worker {proc_id}: Missing keys: {sorted(list(missing))}")
                 if unexpected:
-                    logger.warning(f"Worker {proc_id}: Unexpected keys during load (ignored): {len(unexpected)}")
+                    logger.warning(f"Worker {proc_id}: Unexpected keys during load (ignored): {len(unexpected)} keys")
+                    logger.warning(f"Worker {proc_id}: Unexpected keys: {sorted(list(unexpected))}")
                 logger.info(f"Loaded checkpoint from {ckpt_path}")
             except Exception as e:
                 logger.warning(f"Failed to load checkpoint {ckpt_path}: {e}")

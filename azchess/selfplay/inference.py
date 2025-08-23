@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from torch.multiprocessing import Event
+from multiprocessing import Event
 from typing import Any, Dict, List, Optional, Tuple
 import time
 import logging
-from multiprocessing.connection import wait
+import threading
 
 import numpy as np
 import torch
@@ -51,7 +51,26 @@ def run_inference_server(
         logger.info(f"Inference server starting on device: {device}")
         logger.info(f"Available workers: {len(shared_memory_resources)}")
 
-        model = PolicyValueNet.from_config(model_cfg).to(device)
+        try:
+            logger.info(f"Creating model from config: {model_cfg}")
+            model = PolicyValueNet.from_config(model_cfg)
+            logger.info("Model created successfully, moving to device...")
+
+            # Clear MPS cache before moving model
+            if device == "mps":
+                logger.info("Clearing MPS cache before model placement")
+                import torch.mps
+                torch.mps.empty_cache()
+
+            # Move model to device with error handling
+            model = model.to(device)
+            logger.info(f"Model successfully moved to device: {device}")
+
+        except Exception as e:
+            logger.error(f"Failed to create or move model to device: {e}")
+            logger.error(f"Model config: {model_cfg}")
+            logger.error(f"Target device: {device}")
+            raise
         logger.info(
             f"Model created with {sum(p.numel() for p in model.parameters())} parameters"
         )
@@ -61,14 +80,21 @@ def run_inference_server(
                 f"Loading model from state_dict with {len(model_state_dict)} layers"
             )
             try:
+                # Clear cache before loading state dict
+                if device == "mps":
+                    torch.mps.empty_cache()
+
                 missing, unexpected = model.load_state_dict(
                     model_state_dict, strict=False
                 )
                 if missing:
+                    total_expected = len(model_state_dict) + len(missing)
                     logger.warning(
-                        f"Missing keys during load (initialized from defaults): {len(missing)} keys"
+                        f"Missing keys during load (initialized from defaults): {len(missing)}/{total_expected} keys "
+                        f"({len(model_state_dict)} loaded successfully)"
                     )
-                    logger.debug(f"Missing keys: {sorted(list(missing))[:10]}")  # Show more keys for debugging
+                    logger.warning(f"Missing keys: {sorted(list(missing))}")
+                    logger.debug(f"Successfully loaded keys: {sorted(list(model_state_dict.keys()))}")
                 if unexpected:
                     logger.warning(
                         f"Unexpected keys during load (ignored): {len(unexpected)} keys"
@@ -108,14 +134,32 @@ def run_inference_server(
                     raise
         else:
             logger.warning("No model state_dict provided, using random weights.")
-        model.eval()
+        try:
+            model.eval()
+            logger.info("Model set to eval mode")
+        except Exception as e:
+            logger.error(f"Failed to set model to eval mode: {e}")
+            raise
 
         # Log device and memory info
-        logger.info(f"Model device: {next(model.parameters()).device}")
+        try:
+            logger.info(f"Model device: {next(model.parameters()).device}")
+        except Exception as e:
+            logger.error(f"Failed to get model device info: {e}")
+            raise
         if torch.cuda.is_available():
             logger.info(
                 f"CUDA memory: {torch.cuda.memory_allocated()/1024/1024:.1f}MB allocated"
             )
+        elif device == "mps":
+            try:
+                import torch.mps
+                logger.info(
+                    f"MPS memory info: available={torch.mps.is_available()}, "
+                    f"built={torch.mps.is_built()}"
+                )
+            except Exception as e:
+                logger.debug(f"Could not get MPS memory info: {e}")
 
         server_ready_event.set()
         logger.info("Inference server ready")
@@ -140,19 +184,44 @@ def run_inference_server(
 
         while not stop_event.is_set():
             try:
-                ready = wait(worker_events + [stop_event], timeout)
-                if stop_event in ready:
+                # Custom wait implementation for multiprocessing.Event compatibility
+                ready_events = []
+                start_time = time.time()
+
+                while not stop_event.is_set():
+                    current_time = time.time()
+                    if timeout is not None and (current_time - start_time) > timeout:
+                        break
+
+                    ready_events = []
+                    for i, ev in enumerate(worker_events):
+                        if ev.is_set():
+                            ready_events.append(ev)
+                            # Clear the event for next use
+                            ev.clear()
+
+                    if stop_event.is_set():
+                        break
+
+                    if ready_events:
+                        break
+
+                    # Small sleep to avoid busy waiting
+                    time.sleep(0.001)
+
+                if stop_event.is_set():
                     break
-                if not ready:
+                if not ready_events:
                     continue
-                batch_indices = [event_to_worker[ev] for ev in ready]
+                batch_indices = [event_to_worker[ev] for ev in ready_events]
                 logger.debug(
                     f"Inference server processing batch from workers: {batch_indices}"
                 )
-            except ValueError as e:
-                if "Invalid file object" in str(e) and event_recreation_count < max_event_recreations:
+            except Exception as e:
+                logger.error(f"Error in inference server main loop: {e}")
+                if event_recreation_count < max_event_recreations:
                     event_recreation_count += 1
-                    logger.warning(f"Event objects became invalid, recreating them (attempt {event_recreation_count}/{max_event_recreations})")
+                    logger.warning(f"Event objects may be invalid, recreating them (attempt {event_recreation_count}/{max_event_recreations})")
 
                     # Recreate events for all workers
                     for i, res in enumerate(shared_memory_resources):
@@ -168,15 +237,11 @@ def run_inference_server(
                     event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
 
                     # Brief pause before continuing
-                    import time
                     time.sleep(0.1)
                     continue
                 else:
-                    logger.error(f"Critical error in inference server main loop: {e}")
-                    if event_recreation_count >= max_event_recreations:
-                        logger.error("Max event recreations reached, stopping inference server")
-                        break
-                    continue
+                    logger.error(f"Max event recreations reached, stopping inference server")
+                    break
             except Exception as e:
                 logger.error(f"Unexpected error in inference server main loop: {e}")
                 continue
@@ -248,12 +313,21 @@ def run_inference_server(
                         # Fallback to default if channels_last not supported
                         pass
 
-                # Run inference with performance monitoring
+                # Run inference with performance monitoring and error handling
                 start_time = time.time()
-                with torch.no_grad(), torch.autocast(
-                    device_type=device_type, enabled=use_amp
-                ):
-                    p, v = model(batch_tensor)
+                try:
+                    with torch.no_grad(), torch.autocast(
+                        device_type=device_type, enabled=use_amp
+                    ):
+                        p, v = model(batch_tensor)
+                except Exception as inference_error:
+                    logger.error(f"Model inference failed: {inference_error}")
+                    logger.error(f"Batch tensor shape: {batch_tensor.shape}")
+                    logger.error(f"Model device: {model.device}")
+                    if device == "mps":
+                        logger.info("Clearing MPS cache due to inference error")
+                        torch.mps.empty_cache()
+                    raise
                 inference_time = time.time() - start_time
 
                 # Log performance metrics
@@ -273,8 +347,12 @@ def run_inference_server(
                         f"Fast inference: {inference_time:.3f}s for batch size {batch_tensor.shape[0]} ({inference_time/batch_tensor.shape[0]:.3f}s per sample)"
                     )
 
-                p_cpu = p.detach().cpu()
-                v_cpu = v.detach().cpu().unsqueeze(-1)
+                try:
+                    p_cpu = p.detach().cpu()
+                    v_cpu = v.detach().cpu().unsqueeze(-1)
+                except Exception as tensor_error:
+                    logger.error(f"Failed to move tensors to CPU: {tensor_error}")
+                    raise
 
                 logger.debug(
                     f"Inference server sending responses to workers: {list(batch_sizes.keys())}"
@@ -284,14 +362,18 @@ def run_inference_server(
                 for worker_id in sorted(batch_sizes.keys()):  # Process in order
                     res = shared_memory_resources[worker_id]
                     size = batch_sizes[worker_id]
-                    # Use non-blocking copies for better performance
-                    res["response_policy_tensor"][:size].copy_(
-                        p_cpu[offset : offset + size], non_blocking=True
-                    )
-                    res["response_value_tensor"][:size].copy_(
-                        v_cpu[offset : offset + size], non_blocking=True
-                    )
-                    res["response_event"].set()  # Signal response is ready
+                    try:
+                        # Use non-blocking copies for better performance
+                        res["response_policy_tensor"][:size].copy_(
+                            p_cpu[offset : offset + size], non_blocking=True
+                        )
+                        res["response_value_tensor"][:size].copy_(
+                            v_cpu[offset : offset + size], non_blocking=True
+                        )
+                        res["response_event"].set()  # Signal response is ready
+                    except Exception as copy_error:
+                        logger.error(f"Failed to copy results to worker {worker_id}: {copy_error}")
+                        raise
                     logger.debug(f"Response sent to worker {worker_id}, size {size}")
                     offset += size
 

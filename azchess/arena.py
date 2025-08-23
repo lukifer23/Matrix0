@@ -59,10 +59,29 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
     sb = torch.load(ckpt_b_path, map_location=_P_DEVICE, weights_only=False)
     try:
         missing_a, unexpected_a = model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
+        if missing_a:
+            total_expected_a = len(sa.get("model_ema", sa.get("model", sa))) + len(missing_a)
+            logger.warning(
+                f"Model A: Missing keys during load: {len(missing_a)}/{total_expected_a} keys "
+                f"({len(sa.get('model_ema', sa.get('model', sa)))} loaded successfully)"
+            )
+            logger.warning(f"Model A missing keys: {sorted(list(missing_a))}")
+        if unexpected_a:
+            logger.warning(f"Model A: Unexpected keys (ignored): {len(unexpected_a)} keys")
     except Exception:
         model_a_local.load_state_dict(sa.get("model_ema", sa.get("model", sa)), strict=False)
+
     try:
         missing_b, unexpected_b = model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
+        if missing_b:
+            total_expected_b = len(sb.get("model_ema", sb.get("model", sb))) + len(missing_b)
+            logger.warning(
+                f"Model B: Missing keys during load: {len(missing_b)}/{total_expected_b} keys "
+                f"({len(sb.get('model_ema', sb.get('model', sb)))} loaded successfully)"
+            )
+            logger.warning(f"Model B missing keys: {sorted(list(missing_b))}")
+        if unexpected_b:
+            logger.warning(f"Model B: Unexpected keys (ignored): {len(unexpected_b)} keys")
     except Exception:
         model_b_local.load_state_dict(sb.get("model_ema", sb.get("model", sb)), strict=False)
     _P_MCTS_A = MCTS(_P_MCFG, model_a_local, _P_DEVICE)

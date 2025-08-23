@@ -392,7 +392,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             # Helper: monitor, respawn or adjust targets if workers die
             def _check_and_respawn_workers(last_progress_ts: float,
                                           per_worker_done: Dict[int, int]) -> None:
-                nonlocal infer_proc, stop_event, shared_memory_resources
+                nonlocal infer_proc, stop_event, shared_memory_resources, model_params, optimized_batch_size
                 now = time.time()
                 for i, p in enumerate(list(procs)):
                     if p.is_alive():
@@ -426,7 +426,12 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
                     new_shared_memory_resources = []
                     for i in range(len(shared_memory_resources)):
                         try:
-                            new_res = setup_shared_memory_for_worker(i)
+                            new_res = setup_shared_memory_for_worker(
+                                worker_id=i,
+                                planes=model_params['planes'],
+                                policy_size=model_params['policy_size'],
+                                max_batch_size=optimized_batch_size
+                            )
                             new_shared_memory_resources.append(new_res)
                             logger.debug(f"Recreated shared memory resource {i} for inference server restart")
                         except Exception as e:
