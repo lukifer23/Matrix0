@@ -15,9 +15,6 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import argparse
 
-# Add project root to path
-sys.path.append(str(Path(__file__).parent))
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -1257,4 +1254,5 @@ def train_from_config(config_path: str = "config.yaml"):
     )
 
 if __name__ == "__main__":
+    # Allows running with: python -m azchess.training.train
     main()
