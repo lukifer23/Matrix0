@@ -18,9 +18,11 @@ from ..model import PolicyValueNet
 def setup_shared_memory_for_worker(worker_id: int, planes: int, policy_size: int, max_batch_size: int) -> Dict[str, Any]:
     """Creates shared memory tensors and events for a single worker."""
     return {
-        'request_tensor': torch.zeros((max_batch_size, planes, 8, 8), dtype=torch.float32).share_memory_(),
-        'response_policy_tensor': torch.zeros((max_batch_size, policy_size), dtype=torch.float32).share_memory_(),
-        'response_value_tensor': torch.zeros((max_batch_size, 1), dtype=torch.float32).share_memory_(),
+        # Allocate without initializing memory. Callers must fully write to these
+        # tensors before reading to avoid undefined values.
+        'request_tensor': torch.empty((max_batch_size, planes, 8, 8), dtype=torch.float32).share_memory_(),
+        'response_policy_tensor': torch.empty((max_batch_size, policy_size), dtype=torch.float32).share_memory_(),
+        'response_value_tensor': torch.empty((max_batch_size, 1), dtype=torch.float32).share_memory_(),
         'request_event': Event(),
         'response_event': Event(),
         'batch_size_tensor': torch.tensor([0], dtype=torch.int32).share_memory_(),
@@ -175,14 +177,15 @@ def run_inference_server(
                 v_cpu = v.detach().cpu().unsqueeze(-1)
 
                 logger.debug(f"Inference server sending responses to workers: {list(batch_sizes.keys())}")
-                # Write results back to shared memory efficiently
+                # Write results back to shared memory. Tensors are allocated with
+                # torch.empty, so we must fully populate each slice before setting
+                # the response event.
                 offset = 0
                 for worker_id in sorted(batch_sizes.keys()):  # Process in order
                     res = shared_memory_resources[worker_id]
                     size = batch_sizes[worker_id]
-                    # Use non-blocking copies for better performance
-                    res['response_policy_tensor'][:size].copy_(p_cpu[offset:offset+size], non_blocking=True)
-                    res['response_value_tensor'][:size].copy_(v_cpu[offset:offset+size], non_blocking=True)
+                    res['response_policy_tensor'][:size].copy_(p_cpu[offset:offset+size])
+                    res['response_value_tensor'][:size].copy_(v_cpu[offset:offset+size])
                     res['response_event'].set()  # Signal response is ready
                     logger.debug(f"Response sent to worker {worker_id}, size {size}")
                     offset += size
@@ -243,10 +246,12 @@ class InferenceClient:
             # CRITICAL FIX: Set the batch size tensor so the server knows how much data to process
             self.res['batch_size_tensor'][0] = batch_size
             self.logger.debug(f"Set batch_size_tensor to {batch_size}")
-            
+
+            # request_tensor was allocated with torch.empty; fully write the slice
+            # before signaling to the server to avoid reading uninitialized data.
             self.res['request_tensor'][:batch_size].copy_(torch.from_numpy(arr_batch))
             self.logger.debug(f"Copied {batch_size} samples to request_tensor")
-            
+
             self.res['request_event'].set()
             self.logger.debug(f"Set request_event for batch size {batch_size}")
         except Exception as e:
