@@ -16,12 +16,16 @@ from typing import Dict, List, Any, Optional, Tuple
 import json
 import yaml
 
+from azchess.logging_utils import setup_logging
+
+logger = setup_logging(level=logging.INFO)
+
 try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    logging.warning("PyTorch not available - Matrix0 model loading disabled")
+    logger.warning("PyTorch not available - Matrix0 model loading disabled")
 
 from benchmarks.config import ConfigManager, BenchmarkConfig, UCIEngineConfig, TestScenario
 from benchmarks.uci_bridge import EngineManager
@@ -31,12 +35,6 @@ if TORCH_AVAILABLE:
     from azchess.model.resnet import PolicyValueNet
     from azchess.config import Config
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 
 class BenchmarkRunner:

@@ -9,6 +9,8 @@ import sys
 import torch
 import logging
 
+from azchess.logging_utils import setup_logging
+
 # Add the project root to the path
 sys.path.insert(0, '/Users/admin/Downloads/VSCode/Matrix0')
 
@@ -19,8 +21,7 @@ def create_v2_checkpoint():
     """Create a fresh V2 model checkpoint."""
 
     # Set up logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
+    logger = setup_logging(level=logging.INFO)
 
     try:
         # Load configuration
