@@ -14,12 +14,13 @@ import argparse
 import logging
 from typing import Dict, Optional, List, Tuple
 
+from azchess.logging_utils import setup_logging
+
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO)
 
 class ComprehensiveDataLoader:
     """Comprehensive data loader that combines multiple data sources."""

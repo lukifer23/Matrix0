@@ -31,10 +31,10 @@ from azchess.config import Config, select_device
 from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
 from azchess.encoding import encode_board, move_to_index, POLICY_SHAPE
+from azchess.logging_utils import setup_logging
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = setup_logging(level=logging.INFO)
 
 class EMA:
     """Exponential Moving Average for model weights."""
