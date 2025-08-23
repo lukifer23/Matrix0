@@ -8,3 +8,5 @@ psutil>=5.9.0  # Added for memory monitoring
 tensorboard>=2.9.0
 tqdm>=4.64.0
 pytest>=7.0.0
+fastapi>=0.110.0
+httpx>=0.28.0

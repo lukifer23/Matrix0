@@ -150,6 +150,28 @@ def _load_stockfish() -> Optional["chess.engine.SimpleEngine"]:
 # In-memory games (local only)
 GAMES: Dict[str, GameState] = {}
 
+# Remove games after they finish or exceed this TTL (seconds)
+GAME_TTL_SEC = 3600
+
+
+def _cleanup_games(ttl_sec: int = GAME_TTL_SEC) -> int:
+    """Remove finished or stale games.
+
+    Args:
+        ttl_sec: Time-to-live for unfinished games. Games older than this are removed.
+
+    Returns:
+        Number of games removed.
+    """
+    now = _now_ts()
+    to_del: List[str] = []
+    for gid, gs in list(GAMES.items()):
+        if gs.board.is_game_over(claim_draw=True) or now - gs.created_ts > ttl_sec:
+            to_del.append(gid)
+    for gid in to_del:
+        GAMES.pop(gid, None)
+    return len(to_del)
+
 
 @app.on_event("shutdown")
 def _cleanup() -> None:
@@ -199,6 +221,7 @@ def play_move(req: MoveRequest):
     finished = gs.board.is_game_over(claim_draw=True) or should_adjudicate_draw(gs.board, [chess.Move.from_uci(u) for u in gs.moves], draw_cfg)
     if finished:
         _save_pgn(gs)
+        _cleanup_games()
     return {
         "fen": gs.board.fen(),
         "turn": "w" if gs.board.turn == chess.WHITE else "b",
@@ -243,6 +266,7 @@ def engine_move(req: EngineMoveRequest):
     finished = gs.board.is_game_over(claim_draw=True) or should_adjudicate_draw(gs.board, [chess.Move.from_uci(u) for u in gs.moves], draw_cfg)
     if finished:
         _save_pgn(gs)
+        _cleanup_games()
     return {
         "uci": mv.uci(),
         "fen": gs.board.fen(),
@@ -485,6 +509,13 @@ def health():
         params = None
     sf_available = _load_stockfish() is not None
     return {"stockfish": sf_available, "model_params": params, "device": _device}
+
+
+@app.post("/admin/purge")
+def admin_purge():
+    """Endpoint to purge finished or stale games."""
+    removed = _cleanup_games()
+    return {"removed": removed, "active": len(GAMES)}
 
 if __name__ == "__main__":
     # Launch with: python webui/server.py  (uses uvicorn if available)
