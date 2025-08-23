@@ -968,61 +968,6 @@ def main():
         quick_start=bool(args.quick_start)
     )
 
-def _ingest_external_csvs(cfg: Config, dm: DataManager) -> None:
-    """Scan common CSV sources under project root and data/ and convert to replay shards.
-
-    Converts known formats using azchess.tools.convert_csv and registers resulting shards in the DB.
-    """
-    try:
-        from .tools.convert_csv import convert_fen_bestmove, convert_fen_eval, convert_puzzles, convert_opening_san, write_shards
-    except Exception:
-        return
-    root = Path('.')
-    data_root = Path(cfg.get('data_dir', 'data'))
-    targets = [
-        (root / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
-        (root / 'openings.csv', 'opening_san', 'openings'),
-        (root / 'chessData.csv', 'fen_eval', 'chesseval'),
-        (root / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
-        (data_root / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
-        (data_root / 'openings.csv', 'opening_san', 'openings'),
-        (data_root / 'chessData.csv', 'fen_eval', 'chesseval'),
-        (data_root / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
-        (data_root / 'openings' / 'openings_fen7.csv', 'fen_bestmove', 'openfen7'),
-        (data_root / 'openings' / 'openings.csv', 'opening_san', 'openings'),
-        (data_root / 'training' / 'chessData.csv', 'fen_eval', 'chesseval'),
-        (data_root / 'tactical' / 'lichess_db_puzzle.csv', 'puzzles', 'puzzles'),
-    ]
-    shard_size = int(cfg.training().get('replay_shard_size', 16384))
-    out_dir = dm.replays_dir
-    converted = 0
-    for path, kind, prefix in targets:
-        if not path.exists():
-            continue
-        try:
-            if kind == 'fen_bestmove':
-                _, _, s, p, z = convert_fen_bestmove(str(path), shard_size)
-            elif kind == 'fen_eval':
-                _, _, s, p, z = convert_fen_eval(str(path), shard_size)
-            elif kind == 'puzzles':
-                _, _, s, p, z = convert_puzzles(str(path), shard_size)
-            elif kind == 'opening_san':
-                _, _, s, p, z = convert_opening_san(str(path), shard_size)
-            else:
-                continue
-            if s:
-                sh, smp = write_shards(str(out_dir), prefix, shard_size, s, p, z)
-                logger = setup_logging(cfg.training().get('log_dir', 'logs'))
-                logger.info(f"Converted {path.name}: shards={sh} samples={smp}")
-                converted += sh
-        except Exception:
-            continue
-    if converted:
-        try:
-            dm.import_replay_dir(str(out_dir), source='external', move_files=False)
-        except Exception:
-            pass
-
 def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
     """Register NPZ shards in the DB from common replay directories.
 
