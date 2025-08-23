@@ -63,12 +63,19 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     model.train()
-    s, pi, z = batch
-    
+    # Batches may optionally include a legality mask. Support both 3- and 4-tuples
+    if len(batch) == 4:
+        s, pi, z, legal = batch
+    else:
+        s, pi, z = batch
+        legal = None
+
     # Convert numpy arrays to PyTorch tensors and ensure contiguity immediately
     s = torch.from_numpy(s).to(device).contiguous()
     pi = torch.from_numpy(pi).to(device).contiguous()
     z = torch.from_numpy(z).to(device).contiguous()
+    if legal is not None:
+        legal = torch.from_numpy(legal).to(device).bool().contiguous()
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0)).contiguous()
@@ -80,6 +87,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         raise RuntimeError(f"Policy tensor is not contiguous after conversion. Shape: {pi.shape}, strides: {pi.stride()}")
     if not z.is_contiguous():
         raise RuntimeError(f"Value tensor is not contiguous after conversion. Shape: {z.shape}, strides: {z.stride()}")
+    if legal is not None and not legal.is_contiguous():
+        raise RuntimeError(f"Legal mask tensor is not contiguous after conversion. Shape: {legal.shape}, strides: {legal.stride()}")
     
     # Validate tensor shapes with detailed error messages
     try:
@@ -87,6 +96,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
         if pi.shape[1] != np.prod(POLICY_SHAPE):
             raise RuntimeError(f"Policy tensor shape mismatch: expected {np.prod(POLICY_SHAPE)}, got {pi.shape[1]}")
+        if legal is not None and legal.shape != pi.shape:
+            raise RuntimeError(f"Legal mask shape mismatch: expected {pi.shape}, got {legal.shape}")
         # Value tensor can be 1D (batch_size,) or 2D (batch_size, 1) - both are valid
         if len(z.shape) == 1:
             # 1D tensor: (batch_size,) - this is correct
@@ -115,6 +126,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
+            # Apply same transformation to legality mask if present
+            if legal is not None:
+                legal_cont = legal.contiguous()
+                legal_sh = legal_cont.reshape(-1, *POLICY_SHAPE)
+                legal_sh = torch.flip(legal_sh, dims=[2])
+                legal_sh = legal_sh.index_select(-1, perm_t)
+                legal = legal_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
         elif r < 0.75 and augment_rotate180:
@@ -128,6 +146,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi_sh = pi_sh.index_select(-1, perm_t)
+            if legal is not None:
+                legal_cont = legal.contiguous()
+                legal_sh = legal_cont.reshape(-1, *POLICY_SHAPE)
+                legal_sh = torch.flip(legal_sh, dims=[1, 2])
+                legal_sh = legal_sh.index_select(-1, perm_t)
+                legal = legal_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
             # Ensure the final policy tensor is contiguous
             pi = pi_sh.reshape(-1, np.prod(POLICY_SHAPE)).contiguous()
     
@@ -138,6 +162,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         raise RuntimeError(f"Policy tensor lost contiguity after augmentation. Shape: {pi.shape}, strides: {pi.stride()}")
     if not z.is_contiguous():
         raise RuntimeError(f"Value tensor lost contiguity after augmentation. Shape: {z.shape}, strides: {z.stride()}")
+    if legal is not None and not legal.is_contiguous():
+        raise RuntimeError(f"Legal mask tensor lost contiguity after augmentation. Shape: {legal.shape}, strides: {legal.stride()}")
 
     # Generate self-supervised learning targets (class indices for multi-class prediction)
     ssl_targets = None
@@ -180,6 +206,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     z = z.to(device, non_blocking=True)
     if ssl_targets is not None:
         ssl_targets = ssl_targets.to(device, non_blocking=True)
+    if legal is not None:
+        legal = legal.to(device, non_blocking=True)
 
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
         # Keep standard contiguous format during training to avoid MPS view/stride issues
@@ -219,16 +247,15 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if ssl_out is not None and not ssl_out.is_contiguous():
             raise RuntimeError(f"SSL output tensor is not contiguous. Shape: {ssl_out.shape}, strides: {ssl_out.stride()}")
 
-        # Optional legality masking for stability: mask logits where target is zero
-        # Assumes pi provides positive mass only on legal actions
+        # Optional legality masking for stability.
+        # Use provided legality mask if available; otherwise treat all moves as legal
         if policy_masking:
             try:
                 with torch.no_grad():
-                    legal_mask = (pi > 0)
-                    # If any row is all-zero (fallback), treat all as legal (no mask)
-                    valid_rows = legal_mask.any(dim=1, keepdim=True)
-                    # Build a keep mask: keep original logits where either row invalid or legal; else set to -1e9
-                    keep_mask = valid_rows & legal_mask
+                    if legal is not None:
+                        keep_mask = legal.bool()
+                    else:
+                        keep_mask = torch.ones_like(p, dtype=torch.bool)
                 p_for_loss = torch.where(keep_mask, p, torch.full_like(p, -1e9)).contiguous()
             except Exception:
                 p_for_loss = p.contiguous()
@@ -657,7 +684,12 @@ def train_comprehensive(
                         break
                     
                     # Convert dict format to tuple format for existing train_step
-                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    if 'legal' in batch_dict:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal'])
+                    elif 'legal_mask' in batch_dict:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
+                    else:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
                     
                 elif batch_generator is None:
                     # External data training - use curriculum mixing
@@ -667,7 +699,12 @@ def train_comprehensive(
                         break
                     
                     # Convert dict format to tuple format for existing train_step
-                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    if 'legal' in batch_dict:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal'])
+                    elif 'legal_mask' in batch_dict:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
+                    else:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
                     
                 else:
                     # Standard replay buffer training

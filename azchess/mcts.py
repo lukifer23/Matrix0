@@ -290,7 +290,15 @@ class Node:
 
 
 class MCTS:
-    def __init__(self, cfg: MCTSConfig, model, device: str = "cpu", inference_backend=None, num_threads: int = None):
+    def __init__(self, model_or_cfg, cfg_or_model, device: str = "cpu", inference_backend=None, num_threads: int = None):
+        # Support both argument orders: (model, cfg) and (cfg, model)
+        if isinstance(model_or_cfg, MCTSConfig):
+            cfg = model_or_cfg
+            model = cfg_or_model
+        else:
+            model = model_or_cfg
+            cfg = cfg_or_model
+
         self.cfg = cfg
         self.device = device
         self.model = model
