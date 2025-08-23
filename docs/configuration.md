@@ -193,3 +193,19 @@ training:
   batch_size: 192                  # MPS-optimized batch size
   precision: "fp16"                # Mixed precision training
 ```
+
+### Performance Logging
+Matrix0 includes optional performance diagnostics that log timing information for
+training steps. These messages are prefixed with `PERF:` and are disabled by
+default. To enable them, configure logging at the `DEBUG` level:
+
+```python
+import logging
+from azchess.logging_utils import setup_logging
+
+# Enable performance diagnostics
+logger = setup_logging(level=logging.DEBUG)
+```
+
+With this configuration, the training scripts will emit detailed performance
+metrics. Running at the default `INFO` level suppresses these messages.
