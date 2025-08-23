@@ -76,8 +76,9 @@ class DataManager:
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("PRAGMA synchronous=NORMAL")
             c.execute("PRAGMA busy_timeout=30000")
-        except Exception:
-            pass
+        except sqlite3.Error:
+            logger.exception("Failed to set SQLite PRAGMA options")
+            raise
         return conn
 
     def _init_database(self):
@@ -125,12 +126,34 @@ class DataManager:
             for sql in migrations:
                 try:
                     cursor.execute(sql)
-                except Exception:
-                    pass
+                except sqlite3.Error:
+                    logger.exception("Migration failed: %s", sql)
+                    raise
             if migrations:
                 conn.commit()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            logger.exception("Database schema inspection failed")
+            raise
+
+        # Verify required tables and columns exist
+        required_schema = {
+            'shards': {
+                'path', 'size_bytes', 'sample_count', 'created_at',
+                'checksum', 'version', 'source', 'corrupted', 'last_accessed'
+            },
+            'data_stats': {'key', 'value', 'updated_at'}
+        }
+        try:
+            for table, required_cols in required_schema.items():
+                cursor.execute(f"PRAGMA table_info({table})")
+                existing = {row[1] for row in cursor.fetchall()}
+                missing = required_cols - existing
+                if missing:
+                    logger.exception("Missing required columns %s in table %s", missing, table)
+                    raise RuntimeError(f"Missing required columns {missing} in table {table}")
+        except sqlite3.Error:
+            logger.exception("Failed to verify database schema")
+            raise
         conn.close()
 
     def _with_retry(self, func, *args, **kwargs):
