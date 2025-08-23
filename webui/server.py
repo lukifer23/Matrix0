@@ -166,7 +166,10 @@ def _cleanup() -> None:
 def new_game(req: NewGameRequest):
     _load_matrix0()
     game_id = f"g_{int(_now_ts()*1000)}"
-    board = chess.Board(req.fen) if req.fen else chess.Board()
+    try:
+        board = chess.Board(req.fen) if req.fen else chess.Board()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid FEN")
     gs = GameState(
         game_id=game_id,
         created_ts=_now_ts(),
