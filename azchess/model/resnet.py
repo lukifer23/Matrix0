@@ -514,60 +514,7 @@ class PolicyValueNet(nn.Module):
         x = self.tower(x)
         return x
 
-    def forward(self, x: torch.Tensor, return_ssl: bool = False, visual_input: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = self._forward_features(x, visual_input)
-
-        # CRITICAL: Simplified policy head for stability
-        pfeat = self.policy_head(x)
-
-        # CRITICAL: Clamp features before any operations
-        pfeat = torch.clamp(pfeat, -5.0, 5.0)
-
-        # Single unified approach: flatten and process through FC layers
-        # This avoids the scale mismatch issues of dual-branch architecture
-        p = pfeat.contiguous().reshape(pfeat.size(0), -1)
-
-        # Apply FC layers with proper activation and clamping
-        if self.policy_fc is not None:
-            p = self.policy_fc(p)
-            p = torch.clamp(p, -10.0, 10.0)  # Clamp after FC
-        else:
-            p = F.relu(self.policy_fc1(p), inplace=True)
-            p = torch.clamp(p, -10.0, 10.0)  # Clamp after ReLU
-            p = self.policy_fc2(p)
-            p = torch.clamp(p, -10.0, 10.0)  # Final clamp
-
-        # Apply final normalization for unified policy head
-        p = self.policy_fc_norm(p)  # Use the FC normalization layer
-        
-        # CRITICAL: Handle NaN/Inf gracefully instead of crashing
-        if torch.isnan(p).any() or torch.isinf(p).any():
-            logger.warning(f"Policy output contains NaN/Inf: total={torch.isnan(p).sum() + torch.isinf(p).sum()}")
-            logger.warning("Replacing NaN/Inf with safe values to continue training")
-            # Replace NaN/Inf with zeros (safe fallback)
-            p = torch.where(torch.isfinite(p), p, torch.zeros_like(p))
-        
-        # CRITICAL: More aggressive clamping to prevent gradient explosion
-        p = torch.clamp(p, -5.0, 5.0)  # Reduced from -10.0, 10.0 to -5.0, 5.0
-
-        # Value head - ensure contiguity throughout
-        v = self.value_head(x)
-        v = v.contiguous().reshape(v.size(0), -1)
-        v = F.relu(self.value_fc1(v), inplace=True)
-        v = F.relu(self.value_fc2(v), inplace=True)
-        v = torch.tanh(self.value_fc3(v))
-        
-        # Self-supervised learning head (if enabled and requested)
-        ssl_output = None
-        if self.ssl_piece_head is not None and return_ssl:
-            ssl_output = self.ssl_piece_head(x).contiguous() # (B, 13, 8, 8)
-        # Return (policy, value); if return_ssl is True, also return SSL output
-        if return_ssl:
-            return p, v.squeeze(-1).contiguous(), ssl_output
-        return p, v.squeeze(-1).contiguous()
-
-    def forward_with_features(self, x: torch.Tensor, return_ssl: bool = False, visual_input: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
-        feats = self._forward_features(x, visual_input)
+    def _compute_policy_value(self, feats: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         # Policy - ensure contiguity throughout
         pfeat = self.policy_head(feats)
         pfeat = torch.clamp(pfeat, -5.0, 5.0)
@@ -590,17 +537,32 @@ class PolicyValueNet(nn.Module):
             p = torch.where(torch.isfinite(p), p, torch.zeros_like(p))
 
         p = torch.clamp(p, -5.0, 5.0)
+
         # Value - ensure contiguity throughout
         v = self.value_head(feats)
         v = v.contiguous().reshape(v.size(0), -1)
         v = F.relu(self.value_fc1(v), inplace=True)
         v = F.relu(self.value_fc2(v), inplace=True)
         v = torch.tanh(self.value_fc3(v))
+
         # SSL - ensure contiguity
         ssl_output = None
         if self.ssl_piece_head is not None and return_ssl:
             ssl_output = self.ssl_piece_head(feats).contiguous()
-        return p, v.squeeze(-1).contiguous(), ssl_output, feats
+
+        return p, v.squeeze(-1).contiguous(), ssl_output
+
+    def forward(self, x: torch.Tensor, return_ssl: bool = False, visual_input: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        feats = self._forward_features(x, visual_input)
+        p, v, ssl_output = self._compute_policy_value(feats, return_ssl)
+        if return_ssl:
+            return p, v, ssl_output
+        return p, v
+
+    def forward_with_features(self, x: torch.Tensor, return_ssl: bool = False, visual_input: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        feats = self._forward_features(x, visual_input)
+        p, v, ssl_output = self._compute_policy_value(feats, return_ssl)
+        return p, v, ssl_output, feats
 
     def compute_wdl_logits(self, feats: torch.Tensor) -> Optional[torch.Tensor]:
         if self.wdl_head is None:
