@@ -153,7 +153,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
         try:
             import signal
-            def timeout_handler(signum, frame):
+            def timeout_handler(_signum, _frame):
                 raise TimeoutError("SSL target creation timed out")
 
             # Set a 10-second timeout for SSL target creation
