@@ -392,7 +392,7 @@ def orchestrate(cfg_path: str, games_override: int | None = None, eval_games_ove
             # Helper: monitor, respawn or adjust targets if workers die
             def _check_and_respawn_workers(last_progress_ts: float,
                                           per_worker_done: Dict[int, int]) -> None:
-                nonlocal infer_proc, stop_event
+                nonlocal infer_proc, stop_event, shared_memory_resources
                 now = time.time()
                 for i, p in enumerate(list(procs)):
                     if p.is_alive():

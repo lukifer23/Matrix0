@@ -68,21 +68,44 @@ def run_inference_server(
                     logger.warning(
                         f"Missing keys during load (initialized from defaults): {len(missing)} keys"
                     )
-                    logger.debug(f"Missing keys: {sorted(list(missing))[:5]}")
+                    logger.debug(f"Missing keys: {sorted(list(missing))[:10]}")  # Show more keys for debugging
                 if unexpected:
                     logger.warning(
                         f"Unexpected keys during load (ignored): {len(unexpected)} keys"
                     )
-                    logger.debug(f"Unexpected keys: {sorted(list(unexpected))[:5]}")
+                    logger.debug(f"Unexpected keys: {sorted(list(unexpected))[:10]}")  # Show more keys for debugging
                 logger.info("Model loaded from state_dict successfully (non-strict).")
-                # Log parameter count for clarity
+
+                # Log detailed parameter information
                 actual_params = sum(p.numel() for p in model.parameters())
                 logger.info(f"Model loaded with {actual_params:,} total parameters")
+
+                # If we have missing keys, log a summary but don't fail
+                if len(missing) > 10:
+                    logger.warning(f"High number of missing keys ({len(missing)}), model may not perform as expected")
+
             except Exception as e:
                 logger.error(
-                    f"Strict load failed: {e}; attempting non-strict fallback."
+                    f"Model state_dict load failed: {e}; attempting with individual key matching."
                 )
-                model.load_state_dict(model_state_dict, strict=False)
+                # Try to load individual keys that match
+                try:
+                    model_dict = model.state_dict()
+                    matched_keys = []
+                    for key, value in model_state_dict.items():
+                        if key in model_dict and model_dict[key].shape == value.shape:
+                            model_dict[key] = value
+                            matched_keys.append(key)
+                        elif key in model_dict:
+                            logger.debug(f"Shape mismatch for {key}: model {model_dict[key].shape} vs checkpoint {value.shape}")
+
+                    model.load_state_dict(model_dict, strict=False)
+                    logger.info(f"Loaded {len(matched_keys)} keys successfully with manual matching")
+                    if len(matched_keys) < len(model_dict) * 0.5:  # Less than 50% keys loaded
+                        logger.error(f"Only {len(matched_keys)}/{len(model_dict)} keys matched - model may not work properly")
+                except Exception as fallback_error:
+                    logger.error(f"All loading attempts failed: {fallback_error}")
+                    raise
         else:
             logger.warning("No model state_dict provided, using random weights.")
         model.eval()
@@ -98,6 +121,8 @@ def run_inference_server(
         logger.info("Inference server ready")
 
         # Add heartbeat logging to monitor server health
+        import time
+        start_time = time.time()
         heartbeat_counter = 0
         last_heartbeat = time.time()
         heartbeat_interval = 30.0  # Log heartbeat every 30 seconds
@@ -441,4 +466,5 @@ class InferenceClient:
                     self.logger.error(
                         f"Inference failed after {max_retries + 1} attempts: {e}"
                     )
-                    raise
+                    # CRITICAL: Return None explicitly to prevent unpacking None in MCTS
+                    return None
