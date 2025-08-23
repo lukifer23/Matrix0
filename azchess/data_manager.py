@@ -12,6 +12,8 @@ import numpy as np
 import logging
 import argparse
 import time
+import uuid
+import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -148,64 +150,19 @@ class DataManager:
                     delay = min(0.5, delay * 2)
                 else:
                     raise
-    
-    def add_selfplay_data(self, data: Dict[str, np.ndarray], worker_id: int, game_id: int) -> str:
-        """Add self-play data to the buffer."""
-        # Use filesystem-safe timestamp
+
+    def _save_npz_shard(self, data: Dict[str, np.ndarray], dir_path: Path) -> Tuple[Path, str]:
+        """Save a data shard atomically and return its path and checksum."""
+        dir_path.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"selfplay_w{worker_id}_g{game_id}_{timestamp}.npz"
-        # Ensure directory exists (defensive; created in __init__ but workers may run in fresh procs)
-        self.selfplay_dir.mkdir(parents=True, exist_ok=True)
-        filepath = self.selfplay_dir / filename
-        
-        # Save atomically with retries: write to temp then replace
+        unique = uuid.uuid4().hex[:8]
+        filename = f"{dir_path.name}_{timestamp}_{unique}.npz"
+        filepath = dir_path / filename
+
         attempts = 0
         while True:
             try:
-                # Create temporary file in the same directory and write to its handle
-                import tempfile, os
-                with tempfile.NamedTemporaryFile(dir=str(self.selfplay_dir), suffix='.npz.tmp', delete=False) as tf:
-                    tmp_path = Path(tf.name)
-                    np.savez_compressed(tf, **data)  # write to the open handle to avoid suffix issues
-                os.replace(tmp_path, filepath)
-                break
-            except Exception as e:
-                attempts += 1
-                if attempts >= 3:
-                    logger.error(f"Failed to save selfplay data after {attempts} attempts: {e}")
-                    raise
-                logger.warning(f"Save attempt {attempts} failed, retrying: {e}")
-                time.sleep(0.1 * attempts)
-                # Clean up failed temp file if it exists
-                try:
-                    if 'tmp_path' in locals() and Path(tmp_path).exists():
-                        Path(tmp_path).unlink()
-                except Exception:
-                    pass
-        
-        # Calculate metadata
-        file_size = filepath.stat().st_size
-        sample_count = len(data.get('s', []))
-        checksum = self._calculate_checksum(filepath)
-        
-        # Record in database
-        self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source="selfplay")
-        
-        logger.info(f"Added self-play data: {filename} ({sample_count} samples, {file_size/1024:.1f}KB)")
-        return str(filepath)
-    
-    def add_training_data(self, data: Dict[str, np.ndarray], shard_id: int, source: str = "selfplay") -> str:
-        """Add processed training data to replay buffer."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"replay_{shard_id:06d}_{timestamp}.npz"
-        filepath = self.replays_dir / filename
-        
-        # Save atomically with retries
-        attempts = 0
-        while True:
-            try:
-                import tempfile, os
-                with tempfile.NamedTemporaryFile(dir=str(self.replays_dir), suffix='.npz.tmp', delete=False) as tf:
+                with tempfile.NamedTemporaryFile(dir=str(dir_path), suffix=".npz.tmp", delete=False) as tf:
                     tmp_path = Path(tf.name)
                     np.savez_compressed(tf, **data)
                 os.replace(tmp_path, filepath)
@@ -213,7 +170,7 @@ class DataManager:
             except Exception as e:
                 attempts += 1
                 if attempts >= 3:
-                    logger.error(f"Failed to save training data after {attempts} attempts: {e}")
+                    logger.error(f"Failed to save data shard after {attempts} attempts: {e}")
                     raise
                 logger.warning(f"Save attempt {attempts} failed, retrying: {e}")
                 time.sleep(0.1 * attempts)
@@ -222,16 +179,29 @@ class DataManager:
                         Path(tmp_path).unlink()
                 except Exception:
                     pass
-        
-        # Calculate metadata
+
+        checksum = self._calculate_checksum(filepath)
+        return filepath, checksum
+    
+    def add_selfplay_data(self, data: Dict[str, np.ndarray], worker_id: int, game_id: int) -> str:
+        """Add self-play data to the buffer."""
+        filepath, checksum = self._save_npz_shard(data, self.selfplay_dir)
         file_size = filepath.stat().st_size
         sample_count = len(data.get('s', []))
-        checksum = self._calculate_checksum(filepath)
-        
-        # Record in database
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source="selfplay")
+        logger.info(f"Added self-play data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
+        logger.debug(f"Saved by worker {worker_id} game {game_id}")
+        return str(filepath)
+    
+    def add_training_data(self, data: Dict[str, np.ndarray], shard_id: int, source: str = "selfplay") -> str:
+        """Add processed training data to replay buffer."""
+        filepath, checksum = self._save_npz_shard(data, self.replays_dir)
+        file_size = filepath.stat().st_size
+        sample_count = len(data.get('s', []))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source=source)
-        
-        logger.info(f"Added training data: {filename} ({sample_count} samples, {file_size/1024:.1f}KB)")
+        logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
         return str(filepath)
     
     def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
