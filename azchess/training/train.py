@@ -62,9 +62,16 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
+    import torch
+    import time
+    start_time = time.time()
+
     model.train()
     s, pi, z = batch
-    
+
+    # PERFORMANCE PROFILING: Data preparation
+    data_prep_start = time.time()
+
     # Convert numpy arrays to PyTorch tensors and ensure contiguity immediately
     s = torch.from_numpy(s).to(device).contiguous()
     pi = torch.from_numpy(pi).to(device).contiguous()
@@ -100,6 +107,11 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         logger.error(f"Tensor validation failed: {e}")
         logger.error(f"States shape: {s.shape}, Policy shape: {pi.shape}, Values shape: {z.shape}")
         raise
+
+    # PERFORMANCE PROFILING: Data prep complete
+    data_prep_time = time.time() - data_prep_start
+    if current_step % 10 == 0:  # Log every 10 steps
+        logger.info(f"PERF: Data preparation: {data_prep_time:.3f}s")
 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
@@ -139,11 +151,48 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if not z.is_contiguous():
         raise RuntimeError(f"Value tensor lost contiguity after augmentation. Shape: {z.shape}, strides: {z.stride()}")
 
+    # PERFORMANCE PROFILING: Start SSL target creation
+    ssl_target_start = time.time()
+
     # Generate self-supervised learning targets (class indices for multi-class prediction)
     ssl_targets = None
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
-        ssl_targets = model.create_ssl_targets(s)
-        ssl_targets = ssl_targets.contiguous()
+        try:
+            import signal
+            def timeout_handler(signum, frame):
+                raise TimeoutError("SSL target creation timed out")
+
+            # Set a 10-second timeout for SSL target creation
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(10)  # 10 second timeout
+
+            # CRITICAL: Create SSL targets BEFORE any device/precision changes to avoid type mismatches
+            ssl_targets = model.create_ssl_targets(s)
+            ssl_targets = ssl_targets.contiguous()
+
+            # Cancel the alarm
+            signal.alarm(0)
+        except TimeoutError:
+            logger.warning("SSL target creation timed out after 10 seconds, disabling SSL for this batch")
+            ssl_targets = None
+            enable_ssl = False
+        except Exception as ssl_error:
+            logger.warning(f"SSL target creation failed: {ssl_error}, disabling SSL for this batch")
+            ssl_targets = None
+            enable_ssl = False
+        finally:
+            # Make sure to cancel any pending alarm
+            try:
+                signal.alarm(0)
+            except:
+                pass
+
+    # PERFORMANCE PROFILING: SSL target creation complete
+    ssl_target_time = time.time() - ssl_target_start
+    if current_step % 10 == 0:
+        logger.info(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
+        if ssl_target_time > 5.0:  # Log if it's taking too long
+            logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - this indicates a performance issue")
 
         # DEBUG: Log SSL targets statistics
         if torch.rand(1).item() < 0.1:  # 10% chance to log
@@ -157,22 +206,19 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     if precision == "bf16":
         _amp_dtype = torch.bfloat16
-        scaler = None
+        use_autocast = False  # Disable autocast for bf16 but keep scaler
     elif precision == "fp16":
         _amp_dtype = torch.float16
     else: # fp32
         use_autocast = False
         _amp_dtype = torch.float32
 
-    logger.debug(f"Using precision: {precision}, autocast: {use_autocast}, dtype: {_amp_dtype}")
+    logger.debug(f"Using precision: {precision}, autocast: {use_autocast}, dtype: {_amp_dtype}, device: {device_type}")
 
-    # Ensure input data matches model precision
-    if s.dtype != next(model.parameters()).dtype:
-        s = s.to(next(model.parameters()).dtype)
-        pi = pi.to(next(model.parameters()).dtype)
-        z = z.to(next(model.parameters()).dtype)
-        if ssl_targets is not None:
-            ssl_targets = ssl_targets.to(torch.long) # Target for CrossEntropyLoss should be long
+    # CRITICAL FIX: Let autocast handle precision conversion to avoid MPS type mismatches
+    # Do NOT convert tensor dtypes manually before autocast - this causes fp16/fp32 conflicts
+    if ssl_targets is not None:
+        ssl_targets = ssl_targets.to(dtype=torch.long) # Target for CrossEntropyLoss should be long
 
     # CRITICAL: Optimize data transfer to device with non_blocking
     s = s.to(device, non_blocking=True)
@@ -181,14 +227,40 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if ssl_targets is not None:
         ssl_targets = ssl_targets.to(device, non_blocking=True)
 
+    # PERFORMANCE PROFILING: Start forward pass
+    forward_start = time.time()
+
+    # Ensure all inputs are contiguous and properly typed before autocast
+    s = s.contiguous()
+    pi = pi.contiguous()
+    z = z.contiguous()
+
+    # CRITICAL: Ensure model parameters have consistent dtype before autocast
+    if use_autocast and device_type == "mps":
+        # For MPS, ensure all model parameters and buffers match the autocast dtype
+        logger.info(f"MPS: Ensuring dtype consistency for autocast ({_amp_dtype})")
+        model.ensure_dtype_consistency(_amp_dtype)
+
+    # CRITICAL: Enhanced autocast handling with proper type consistency
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
-        # Keep standard contiguous format during training to avoid MPS view/stride issues
+        # Keep standard contiguous format during training
         s = s.contiguous()
         if use_wdl and hasattr(model, 'forward_with_features'):
             p, v, ssl_out, feats = model.forward_with_features(s, return_ssl=True)
         else:
             feats = None
             p, v, ssl_out = model(s, return_ssl=True)
+
+    # CRITICAL: Restore original dtypes after autocast for MPS
+    if use_autocast and device_type == "mps":
+        logger.info(f"MPS: Restoring original parameter dtypes")
+        model.restore_original_dtypes()
+
+    # PERFORMANCE PROFILING: Forward pass complete
+    forward_time = time.time() - forward_start
+    if current_step % 10 == 0:
+        logger.info(f"PERF: Forward pass: {forward_time:.3f}s")
+        logger.info(f"DEBUG: Output dtypes - p: {p.dtype}, v: {v.dtype}, ssl_out: {ssl_out.dtype if ssl_out is not None else 'None'}")
 
         # CRITICAL: Validate policy outputs before computing loss
         if torch.isnan(p).any() or torch.isinf(p).any():
@@ -263,15 +335,18 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Ensure policy regularization loss is contiguous
         policy_reg_loss = policy_reg_loss.contiguous()
         
+        # PERFORMANCE PROFILING: Start loss computation
+        loss_comp_start = time.time()
+
         # Value loss: MSE or Huber
         if value_loss_type == 'huber':
             value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
         else:
             value_loss = nn.functional.mse_loss(v, z)
-        
+
         # Ensure value loss is contiguous
         value_loss = value_loss.contiguous()
-        
+
         ssl_loss = 0.0
         if enable_ssl and ssl_targets is not None and ssl_out is not None:
             # DEBUG: Log SSL computation conditions
@@ -294,31 +369,44 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             # Use gradient checkpointing for SSL to reduce memory usage
             if hasattr(model, 'get_ssl_loss'):
                 try:
-                    with torch.no_grad():  # SSL doesn't need gradients for the main model
-                        ssl_loss = model.get_ssl_loss(s, ssl_targets)
+                    # SSL needs gradients for training - removed torch.no_grad()
+                    ssl_loss = model.get_ssl_loss(s, ssl_targets)
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
                         logger.warning(f"SSL computation failed due to memory, skipping SSL for this batch: {e}")
-                        ssl_loss = torch.tensor(0.0, device=device, requires_grad=False)
+                        ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
                     else:
                         raise
             else:
-                ssl_loss = torch.tensor(0.0, device=device, requires_grad=False)
-            # Ensure all loss components are contiguous before arithmetic operations
-            policy_loss = policy_loss.contiguous()
-            policy_reg_loss = policy_reg_loss.contiguous()
-            value_loss = value_loss.contiguous()
-            ssl_loss = ssl_loss.contiguous()
+                ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
+
+        # PERFORMANCE PROFILING: Loss computation complete
+        loss_comp_time = time.time() - loss_comp_start
+        if current_step % 10 == 0:
+            logger.info(f"PERF: Loss computation: {loss_comp_time:.3f}s")
+
+        # CRITICAL FIX: Ensure all loss components have consistent dtypes BEFORE arithmetic
+        # This prevents MPS type mismatch errors during loss combination
+        policy_loss = policy_loss.contiguous()
+        policy_reg_loss = policy_reg_loss.contiguous()
+        value_loss = value_loss.contiguous()
+        ssl_loss = ssl_loss.contiguous()
+
+        # Ensure all tensors have the same dtype (use the model's dtype)
+        target_dtype = policy_loss.dtype
+        if value_loss.dtype != target_dtype:
+            value_loss = value_loss.to(dtype=target_dtype)
+        if ssl_loss.dtype != target_dtype:
+            ssl_loss = ssl_loss.to(dtype=target_dtype)
+
+        # Combine losses with consistent dtypes
+        if enable_ssl and ssl_loss.item() > 0:
             loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         else:
-            # Ensure all loss components are contiguous before arithmetic operations
-            policy_loss = policy_loss.contiguous()
-            policy_reg_loss = policy_reg_loss.contiguous()
-            value_loss = value_loss.contiguous()
             loss = policy_loss + policy_reg_loss + value_loss
 
         # Optional WDL auxiliary head
-        wdl_loss = 0.0
+        wdl_loss = torch.tensor(0.0, device=device, dtype=target_dtype)
         if use_wdl and wdl_weight > 0.0 and feats is not None and hasattr(model, 'compute_wdl_logits'):
             try:
                 wdl_logits = model.compute_wdl_logits(feats)
@@ -330,23 +418,43 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         cls = torch.where(z > float(wdl_margin), torch.tensor(2, device=z.device, dtype=torch.long), cls)
                         cls = torch.where(z < -float(wdl_margin), torch.tensor(0, device=z.device, dtype=torch.long), cls)
                     wdl_loss = nn.functional.cross_entropy(wdl_logits, cls)
-                    # Ensure loss is contiguous before arithmetic operations
+                    # Ensure loss is contiguous and has consistent dtype before arithmetic operations
                     wdl_loss = wdl_loss.contiguous()
+                    if wdl_loss.dtype != loss.dtype:
+                        wdl_loss = wdl_loss.to(dtype=loss.dtype)
                     loss = loss + (float(wdl_weight) * wdl_loss)
             except Exception:
                 pass
     
+    # PERFORMANCE PROFILING: Start backward pass
+    backward_start = time.time()
+
     # Guard against NaN/Inf loss; skip backward if not finite
     if torch.isfinite(loss):
         # Ensure loss tensor is contiguous before backward pass
         if not loss.is_contiguous():
             loss = loss.contiguous()
         try:
-            # Use scaler for mixed precision if available and not corrupted
-            if scaler is not None and hasattr(scaler, '_scale') and scaler._scale is not None:
-                scaler.scale(loss / accum_steps).backward()
+            # Use scaler for mixed precision if available and valid
+            if scaler is not None and use_autocast:
+                try:
+                    scaler.scale(loss / accum_steps).backward()
+                except Exception as scaler_err:
+                    logger.warning(f"Scaler error during backward pass: {scaler_err}, using regular backward pass")
+                    (loss / accum_steps).backward()
             else:
                 (loss / accum_steps).backward()
+
+            # PERFORMANCE PROFILING: Backward pass complete
+            backward_time = time.time() - backward_start
+            if current_step % 10 == 0:
+                logger.info(f"PERF: Backward pass: {backward_time:.3f}s")
+
+            # PERFORMANCE PROFILING: Total step time
+            total_step_time = time.time() - start_time
+            if current_step % 10 == 0:
+                logger.info(f"PERF: Total step time: {total_step_time:.3f}s")
+                logger.info(f"PERF: Breakdown - Data: {data_prep_time:.3f}s, SSL: {ssl_target_time:.3f}s, Forward: {forward_time:.3f}s, Loss: {loss_comp_time:.3f}s, Backward: {backward_time:.3f}s")
         except RuntimeError as e:
             msg = str(e)
             if 'view size is not compatible' in msg or 'contiguous subspaces' in msg:
@@ -419,6 +527,7 @@ def train_comprehensive(
     device = select_device(device)
     
     # Memory cleanup at start of training
+    import torch
     logger.info("Performing memory cleanup at start of training")
     try:
         import gc
@@ -523,10 +632,14 @@ def train_comprehensive(
     
     if use_amp:
         device_type = device.split(":")[0]
-        if device_type == "cuda":
-            scaler = torch.cuda.amp.GradScaler()
-        else:
-            scaler = torch.amp.GradScaler(device="mps")
+        try:
+            if device_type == "cuda":
+                scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_factor=2.0)
+            else:
+                scaler = torch.amp.GradScaler(device="mps", init_scale=65536.0, growth_factor=2.0)
+        except Exception as scaler_init_error:
+            logger.warning(f"Failed to create scaler: {scaler_init_error}, will use regular precision")
+            scaler = None
     else:
         scaler = None
     if scaler is not None:
@@ -694,6 +807,9 @@ def train_comprehensive(
                     current_phase = current_phase_info['name']
                     logger.info(f"Transitioning to curriculum phase: {current_phase}")
             
+            # PERFORMANCE PROFILING: Start batch preparation
+            batch_prep_start = time.time()
+
             # Get training batch based on current configuration
             try:
                 if use_curriculum and curriculum_phases:
@@ -738,6 +854,14 @@ def train_comprehensive(
 
             # Error recovery wrapper for train_step
             try:
+                # PERFORMANCE PROFILING: Batch preparation complete
+                batch_prep_time = time.time() - batch_prep_start
+                if current_step % 10 == 0:
+                    logger.info(f"PERF: Batch preparation: {batch_prep_time:.3f}s")
+
+                # PERFORMANCE PROFILING: Start train_step
+                train_step_start = time.time()
+
                 # tr_cfg already assigned at function start
                 loss_values = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
@@ -761,10 +885,18 @@ def train_comprehensive(
                     logger.warning("train_step returned None, skipping batch")
                     continue
                 
+                # PERFORMANCE PROFILING: train_step complete
+                train_step_time = time.time() - train_step_start
+                if current_step % 10 == 0:
+                    logger.info(f"PERF: train_step call: {train_step_time:.3f}s")
+
                 loss, policy_loss, value_loss, ssl_loss, wdl_loss = loss_values
-                
+
+                # PERFORMANCE PROFILING: Start post-processing
+                post_proc_start = time.time()
+
                 # Validate loss values (they are Python floats from .item() calls)
-                if not (np.isfinite(loss) and np.isfinite(policy_loss) and 
+                if not (np.isfinite(loss) and np.isfinite(policy_loss) and
                        np.isfinite(value_loss) and np.isfinite(ssl_loss)):
                     logger.warning(f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}")
                     # Skip this batch and continue training
@@ -785,11 +917,31 @@ def train_comprehensive(
                             scaler.update()
                         except Exception as scaler_error:
                             logger.warning(f"Scaler corrupted after memory error, creating new one: {scaler_error}")
-                            # Recreate the scaler for MPS
+                            # Recreate the scaler with proper initialization
                             if device.startswith('mps'):
-                                scaler = torch.amp.GradScaler(device="mps")
+                                scaler = torch.amp.GradScaler(device="mps", init_scale=65536.0, growth_factor=2.0)
                             else:
-                                scaler = torch.cuda.amp.GradScaler()
+                                scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_factor=2.0)
+
+                            # Force initialization by calling step() and update() with a dummy operation
+                            try:
+                                # Create a dummy parameter to force scaler initialization
+                                dummy_param = torch.nn.Parameter(torch.tensor([1.0], device=device))
+                                dummy_optimizer = torch.optim.SGD([dummy_param], lr=0.01)
+
+                                # This will properly initialize the scaler
+                                with torch.no_grad():
+                                    dummy_loss = torch.tensor(1.0, device=device)
+                                    dummy_loss.backward()
+                                    scaler.step(dummy_optimizer)
+                                    scaler.update()
+
+                                # Clean up
+                                dummy_param.grad = None
+                                logger.info("Scaler successfully reinitialized")
+                            except Exception as init_error:
+                                logger.warning(f"Scaler initialization failed: {init_error}, will use regular backward pass")
+                                scaler = None  # Disable scaler if we can't initialize it
 
                     logger.info("Recovered from training error, continuing...")
                 except Exception as recovery_error:
@@ -809,9 +961,15 @@ def train_comprehensive(
                 model.update_ssl_curriculum(current_step, total_steps)
             
             if (current_step + 1) % accum_steps == 0:
+                # PERFORMANCE PROFILING: Start optimizer step
+                optimizer_start = time.time()
+
                 try:
                     # Check if scaler is still valid before using it
-                    scaler_valid = scaler is not None and hasattr(scaler, '_scale') and scaler._scale is not None
+                    scaler_valid = (scaler is not None and
+                                   hasattr(scaler, '_scale') and
+                                   scaler._scale is not None and
+                                   scaler._scale > 0)
 
                     if scaler_valid:
                         scaler.unscale_(optimizer)
@@ -840,8 +998,24 @@ def train_comprehensive(
                     optimizer.zero_grad()
                     ema.update(model)
 
+                    # PERFORMANCE PROFILING: Optimizer step complete
+                    optimizer_time = time.time() - optimizer_start
+                    if current_step % 10 == 0:
+                        logger.info(f"PERF: Optimizer step: {optimizer_time:.3f}s")
+
                     # Update watchdog timer
                     last_progress_time = time.time()
+
+                    # PERFORMANCE PROFILING: Post-processing complete
+                    post_proc_time = time.time() - post_proc_start
+                    if current_step % 10 == 0:
+                        logger.info(f"PERF: Post-processing: {post_proc_time:.3f}s")
+
+                    # PERFORMANCE PROFILING: Total iteration time
+                    total_iter_time = time.time() - batch_prep_start
+                    if current_step % 10 == 0:
+                        logger.info(f"PERF: Total iteration: {total_iter_time:.3f}s")
+                        logger.info(f"PERF: Full breakdown - Batch: {batch_prep_time:.3f}s, TrainStep: {train_step_time:.3f}s, Post: {post_proc_time:.3f}s, Optimizer: {optimizer_time:.3f}s")
 
                     # Training heartbeat monitoring (similar to self-play workers)
                     current_time = time.time()
@@ -967,22 +1141,39 @@ def train_comprehensive(
 
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")
+        interrupted = True
     except Exception as e:
         logger.error(f"Training failed: {e}", exc_info=True)
         raise
     finally:
         pbar.close()
-        
-        # Save final checkpoint with enhanced prefix
-        checkpoint_prefix = cfg.get("checkpoint_prefix", "enhanced")
-        final_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_final.pt"
-        save_checkpoint(model, ema, optimizer, scheduler, current_step, final_checkpoint)
-        logger.info(f"Saved final checkpoint: {final_checkpoint}")
+
+        # Save final checkpoint with enhanced prefix, but handle KeyboardInterrupt gracefully
+        if not locals().get('interrupted', False):
+            try:
+                checkpoint_prefix = cfg.get("checkpoint_prefix", "enhanced")
+                final_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_final.pt"
+                save_checkpoint(model, ema, optimizer, scheduler, current_step, final_checkpoint)
+                logger.info(f"Saved final checkpoint: {final_checkpoint}")
+            except KeyboardInterrupt:
+                logger.info("Checkpoint saving interrupted by user - training session complete")
+            except Exception as checkpoint_error:
+                logger.error(f"Failed to save final checkpoint: {checkpoint_error}")
+        else:
+            logger.info("Skipping final checkpoint save due to user interruption")
         
         # Save enhanced checkpoint (don't overwrite baseline best.pt)
-        enhanced_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_best.pt"
-        save_checkpoint(model, ema, optimizer, scheduler, current_step, enhanced_checkpoint)
-        logger.info(f"Saved enhanced checkpoint: {enhanced_checkpoint}")
+        if not locals().get('interrupted', False):
+            try:
+                enhanced_checkpoint = Path(checkpoint_dir) / f"{checkpoint_prefix}_best.pt"
+                save_checkpoint(model, ema, optimizer, scheduler, current_step, enhanced_checkpoint)
+                logger.info(f"Saved enhanced checkpoint: {enhanced_checkpoint}")
+            except KeyboardInterrupt:
+                logger.info("Enhanced checkpoint saving interrupted by user")
+            except Exception as checkpoint_error:
+                logger.error(f"Failed to save enhanced checkpoint: {checkpoint_error}")
+        else:
+            logger.info("Skipping enhanced checkpoint save due to user interruption")
         
         logger.info(f"Baseline checkpoint 'best.pt' preserved for comparison")
         

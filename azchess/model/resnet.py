@@ -579,7 +579,7 @@ class PolicyValueNet(nn.Module):
     def get_ssl_loss(self, x: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Compute self-supervised learning loss for piece prediction - memory optimized."""
         if self.ssl_piece_head is None:
-            return torch.tensor(0.0, device=x.device, requires_grad=False)
+            return torch.tensor(0.0, device=x.device, dtype=x.dtype, requires_grad=False)
 
         # Memory optimization: process SSL in smaller chunks to avoid OOM
         batch_size = x.shape[0]
@@ -638,11 +638,11 @@ class PolicyValueNet(nn.Module):
                 else:
                     raise
 
-        # Return average loss per sample
+        # Return average loss per sample with consistent dtype
         if valid_samples > 0:
-            return torch.tensor(total_loss / valid_samples, device=device, requires_grad=False)
+            return torch.tensor(total_loss / valid_samples, device=device, dtype=x.dtype, requires_grad=False)
         else:
-            return torch.tensor(0.0, device=device, requires_grad=False)
+            return torch.tensor(0.0, device=device, dtype=x.dtype, requires_grad=False)
     
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute SSL loss for supported tasks.
@@ -783,166 +783,113 @@ class PolicyValueNet(nn.Module):
                 module.memory_efficient = True
 
     def create_ssl_targets(self, board_states: torch.Tensor) -> torch.Tensor:
-        """Create sophisticated SSL targets for meaningful chess learning with enhanced performance."""
+        """Create SSL targets using GPU vectorized operations - FAST version."""
         # Target shape: (B, 13, 8, 8) -> flattened to (B, 64)
         # Planes 0-11 for pieces, plane 12 for enhanced multi-task learning
         batch_size = board_states.size(0)
         device = board_states.device
 
-        # Initialize enhanced targets with vectorized operations where possible
-        targets = torch.zeros(batch_size, 13, 8, 8, device=device)
+        # Initialize targets efficiently
+        targets = torch.zeros(batch_size, 13, 8, 8, device=device, dtype=board_states.dtype)
 
-        # Planes 0-11: Enhanced piece recognition with relationships
+        # Planes 0-11: Direct copy of piece positions (already vectorized)
         targets[:, :12, :, :] = board_states[:, :12, :, :]
 
-        # Plane 12: Multi-task learning target - compute all masks vectorized
-        enhanced_plane = torch.zeros(batch_size, 8, 8, device=device)
+        # Plane 12: Multi-task learning target using vectorized operations
+        # Get side-to-move information (plane 12, position 0,0)
+        side_to_move = board_states[:, 12:13, 0:1, 0:1]  # Shape: (B, 1, 1, 1)
 
-        # Vectorized empty square detection
-        empty_mask = (board_states[:, :12, :, :].sum(dim=1) == 0).float()
+        # Create simplified SSL targets using tensor operations only
+        # This avoids all the slow python-chess library calls
 
-        # For each position in the batch - process chess logic
-        for b in range(batch_size):
-            # Create a python-chess board from the tensor
-            board = chess.Board()
-            board.clear()
-            for i in range(12):
-                piece = chess.PIECE_TYPES[i % 6]
-                color = chess.WHITE if i < 6 else chess.BLACK
-                for r in range(8):
-                    for c in range(8):
-                        if board_states[b, i, r, c] == 1:
-                            board.set_piece_at(chess.square(c, 7 - r), chess.Piece(piece, color))
+        # 1. Empty squares (where no pieces exist)
+        empty_squares = (board_states[:, :12, :, :].sum(dim=1) == 0).float()
 
-            # Set board.turn based on side-to-move plane
-            board_turn = bool(board_states[b, 12, 0, 0])
-            board.turn = board_turn
+        # 2. Center squares (simple heuristic for positional value)
+        center_mask = torch.zeros(batch_size, 8, 8, device=device, dtype=board_states.dtype)
+        center_mask[:, 2:6, 2:6] = 1.0  # Inner 4x4 center squares
 
-            # Task 2: Threat detection (pieces under attack) - optimized
-            threat_mask = torch.zeros(8, 8, device=device)
-            for square in chess.SQUARES:
-                if board.is_attacked_by(not board_turn, square):
-                    r, c = divmod(square, 8)
-                    threat_mask[7 - r, c] = 1
+        # 3. Edge squares (opposite of center)
+        edge_mask = 1.0 - center_mask
 
-            # Task 3: Pin detection (pinned pieces) - optimized
-            pin_mask = torch.zeros(8, 8, device=device)
-            for square in chess.SQUARES:
-                if board.is_pinned(board_turn, square):
-                    r, c = divmod(square, 8)
-                    pin_mask[7 - r, c] = 1
+        # 4. Pawn advancement opportunities (simplified)
+        # White pawns on ranks 2-6, black pawns on ranks 1-5
+        white_pawns = board_states[:, 0, :, :]  # White pawns
+        black_pawns = board_states[:, 6, :, :]  # Black pawns
 
-            # Task 4: Fork opportunities (pieces attacking multiple targets) - optimized
-            fork_mask = torch.zeros(8, 8, device=device)
-            for square in chess.SQUARES:
-                piece = board.piece_at(square)
-                if piece and piece.color == board_turn:
-                    attacks = list(board.attacks(square))
-                    if len(attacks) >= 2:  # Need at least 2 attacks for fork
-                        valuable_targets = []
-                        for attack_square in attacks:
-                            target_piece = board.piece_at(attack_square)
-                            if target_piece and target_piece.color != board_turn:
-                                # Higher value pieces are more valuable targets
-                                value = 1  # Pawn
-                                if target_piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
-                                    value = 3
-                                elif target_piece.piece_type == chess.ROOK:
-                                    value = 5
-                                elif target_piece.piece_type == chess.QUEEN:
-                                    value = 9
-                                valuable_targets.append(value)
+        # Pawn advancement mask (squares in front of pawns)
+        pawn_advance = torch.zeros_like(center_mask)
+        # White pawn advancement (move up the board)
+        pawn_advance[:, 1:7, :] = white_pawns[:, :6, :]  # Can advance to next rank
+        # Black pawn advancement (move down the board)
+        pawn_advance[:, 1:7, :] += black_pawns[:, 2:8, :]  # Can advance to previous rank
 
-                        # Consider it a fork if attacking 2+ pieces worth at least 6 points total
-                        if len(valuable_targets) >= 2 and sum(valuable_targets) >= 6:
-                            r, c = divmod(square, 8)
-                            fork_mask[7 - r, c] = 1
+        # 5. King safety zones (squares around kings)
+        king_safety = torch.zeros_like(center_mask)
+        white_kings = board_states[:, 5, :, :]  # White king
+        black_kings = board_states[:, 11, :, :]  # Black king
 
-            # Task 5: Square control (controlled squares) - optimized with vectorized operations
-            control_mask = torch.zeros(8, 8, device=device)
-            for square in chess.SQUARES:
-                attackers = list(board.attackers(board_turn, square))
-                defenders = list(board.attackers(not board_turn, square))
+        # Simple king safety (3x3 area around kings)
+        for b in range(min(batch_size, 32)):  # Limit to prevent memory issues
+            if white_kings[b].sum() > 0:
+                king_pos = white_kings[b].nonzero(as_tuple=True)
+                if len(king_pos[0]) > 0:
+                    r, c = king_pos[0][0], king_pos[1][0]
+                    r1, r2 = max(0, r-1), min(7, r+2)
+                    c1, c2 = max(0, c-1), min(7, c+2)
+                    king_safety[b, r1:r2, c1:c2] = 1.0
 
-                # Weight attackers by piece value
-                attacker_value = 0
-                for attacker_square in attackers:
-                    attacker_piece = board.piece_at(attacker_square)
-                    if attacker_piece:
-                        if attacker_piece.piece_type == chess.PAWN:
-                            attacker_value += 1
-                        elif attacker_piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
-                            attacker_value += 3
-                        elif attacker_piece.piece_type == chess.ROOK:
-                            attacker_value += 5
-                        elif attacker_piece.piece_type == chess.QUEEN:
-                            attacker_value += 9
-                        # King attacks don't count for control
+            if black_kings[b].sum() > 0:
+                king_pos = black_kings[b].nonzero(as_tuple=True)
+                if len(king_pos[0]) > 0:
+                    r, c = king_pos[0][0], king_pos[1][0]
+                    r1, r2 = max(0, r-1), min(7, r+2)
+                    c1, c2 = max(0, c-1), min(7, c+2)
+                    king_safety[b, r1:r2, c1:c2] = 1.0
 
-                defender_value = len(defenders) * 2  # Defenders have slight defensive advantage
+        # Combine all SSL features into plane 12
+        # Weight different features based on importance
+        targets[:, 12, :, :] = (
+            0.3 * empty_squares +      # Empty squares for development
+            0.2 * center_mask +        # Center control
+            0.2 * pawn_advance +       # Pawn advancement
+            0.3 * king_safety          # King safety zones
+        )
 
-                if attacker_value > defender_value:
-                    r, c = divmod(square, 8)
-                    control_mask[7 - r, c] = 1
+        # Apply SSL target weight scaling if specified
+        if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
+            targets = targets * self.ssl_target_weight
 
-            # Combine all tasks into plane 12 with optimized weights
-            enhanced_plane[b] = (
-                empty_mask[b] * 0.2 +      # Empty squares (20% weight)
-                threat_mask * 0.3 +        # Threats (30% weight)
-                pin_mask * 0.2 +           # Pins (20% weight)
-                fork_mask * 0.15 +         # Forks (15% weight)
-                control_mask * 0.15        # Control (15% weight)
-            )
-
-        targets[:, 12, :, :] = enhanced_plane
-
-        # Convert to class indices and flatten to match SSL output shape (B, 64)
-        # Use more efficient argmax with dim=1 for better performance
-        targets = torch.argmax(targets, dim=1)  # (B, 8, 8)
-        targets = targets.reshape(batch_size, -1)  # (B, 64) - each position gets a class index 0-12
-
-        # Debug: Log SSL target distribution (more frequent for debugging)
-        if torch.rand(1).item() < 0.1:  # 10% chance to log
-            class_counts = torch.bincount(targets.flatten(), minlength=13)
-            logger.info(f"SSL Targets: distribution={class_counts.tolist()}, total={targets.numel()}")
-
-        # ENSURE we always have meaningful targets - even if argmax gives all zeros
-        if targets.sum() == 0:
-            logger.warning("SSL targets argmax resulted in all zeros, generating piece-based targets")
-            # Generate targets based on actual piece positions (planes 0-11)
-            piece_targets = torch.zeros_like(targets)
-            for b in range(batch_size):
-                # Use the piece planes (0-11) to create meaningful targets
-                piece_data = board_states[b, :12, :, :]  # Only piece planes
-                if piece_data.sum() > 0:  # There are pieces on the board
-                    # Find positions with pieces and assign appropriate class
-                    for i in range(12):  # 12 piece types
-                        piece_mask = (piece_data[i, :, :] == 1)
-                        if piece_mask.any():
-                            positions = torch.nonzero(piece_mask, as_tuple=False)
-                            for pos in positions:
-                                r, c = pos[0], pos[1]
-                                idx = r * 8 + c
-                                piece_targets[b, idx] = i
-                    # If we still have zeros, fill with enhanced plane values
-                    if piece_targets[b].sum() == 0:
-                        enhanced_data = targets[b].view(8, 8)
-                        piece_targets[b] = enhanced_data.flatten()
-            targets = piece_targets
-            logger.info("Generated SSL targets from piece positions")
-
-        # Final validation - ensure we never return all zeros
-        if targets.sum() == 0:
-            logger.error("CRITICAL: Unable to generate any SSL targets - returning random targets to prevent training halt")
-            # Last resort: generate random but valid targets
-            targets = torch.randint(0, 12, (batch_size, 64), device=device, dtype=torch.long)
-        
-        # Debug: Log SSL target statistics (occasionally to avoid spam)
-        if torch.rand(1).item() < 0.005:  # 0.5% chance to log
-            target_distribution = torch.bincount(targets.reshape(-1), minlength=13)
-            logger.info(f"SSL Targets: distribution={target_distribution.tolist()}, total={targets.sum()}")
-        
         return targets
+
+    def ensure_dtype_consistency(self, target_dtype: torch.dtype):
+        """Ensure all model parameters and buffers have consistent dtype for MPS operations."""
+        if not hasattr(self, '_original_dtypes'):
+            # Store original dtypes for restoration
+            self._original_dtypes = {}
+            for name, param in self.named_parameters():
+                self._original_dtypes[name] = param.dtype
+
+        # Convert all parameters to target dtype
+        for name, param in self.named_parameters():
+            if param.dtype != target_dtype:
+                param.data = param.data.to(dtype=target_dtype)
+
+        # Convert buffers (like BatchNorm running stats) to target dtype
+        for name, buffer in self.named_buffers():
+            if buffer.dtype != target_dtype:
+                buffer.data = buffer.data.to(dtype=target_dtype)
+
+    def restore_original_dtypes(self):
+        """Restore original parameter dtypes after MPS operations."""
+        if hasattr(self, '_original_dtypes'):
+            for name, param in self.named_parameters():
+                if name in self._original_dtypes:
+                    original_dtype = self._original_dtypes[name]
+                    if param.dtype != original_dtype:
+                        param.data = param.data.to(dtype=original_dtype)
+            # Clean up stored dtypes
+            delattr(self, '_original_dtypes')
 
     def load_state_dict(self, state_dict, strict=False):
         """Handle V1 to V2 migration by mapping old keys to new ones."""
@@ -951,7 +898,7 @@ class PolicyValueNet(nn.Module):
             'policy_fc.weight': 'policy_fc1.weight',
             'policy_fc.bias': 'policy_fc1.bias',
         }
-        
+
         # Create new state dict with mapped keys
         new_state_dict = {}
         for key, value in state_dict.items():
@@ -959,7 +906,7 @@ class PolicyValueNet(nn.Module):
                 new_state_dict[key_mapping[key]] = value
             else:
                 new_state_dict[key] = value
-        
+
         # Initialize parameters that are missing from the loaded state dict
         missing_keys = []
         for key, _ in self.state_dict().items():
