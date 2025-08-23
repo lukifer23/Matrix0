@@ -29,7 +29,7 @@ def test_mcts_runs_without_psutil():
 
     model = DummyModel()
     cfg = mcts_mod.MCTSConfig(num_simulations=1, batch_size=1)
-    mcts = mcts_mod.MCTS(model, cfg)
+    mcts = mcts_mod.MCTS(cfg, model)
     board = chess.Board()
     moves, policy, value = mcts.run(board, num_simulations=1)
 

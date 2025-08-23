@@ -977,18 +977,28 @@ class PolicyValueNet(nn.Module):
             else:
                 new_state_dict[key] = value
         
-        # Initialize new V2 layers with sensible defaults if they don't exist
+        # Initialize parameters that are missing from the loaded state dict
         missing_keys = []
-        for name, module in self.named_modules():
-            if name not in new_state_dict and hasattr(module, 'weight'):
-                if 'aux_' in name or 'policy_fc1' in name:
-                    # Initialize new V2 layers with small random weights
-                    if hasattr(module, 'weight'):
-                        if module.weight.dim() >= 2:
-                            torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
+        for key, _ in self.state_dict().items():
+            if key not in new_state_dict:
+                missing_keys.append(key)
+
+                # Walk the module hierarchy to get the actual parameter tensor
+                module_name, _, param_name = key.rpartition('.')
+                module = self
+                if module_name:
+                    for attr in module_name.split('.'):
+                        module = getattr(module, attr)
+
+                param_tensor = getattr(module, param_name, None)
+                if param_tensor is not None:
+                    # Initialize weights with small random values and biases with zeros
+                    if param_name == 'weight':
+                        if param_tensor.dim() >= 2:
+                            torch.nn.init.xavier_uniform_(param_tensor, gain=0.1)
                         else:
-                            torch.nn.init.normal_(module.weight, std=0.01)
-                    if hasattr(module, 'bias') and module.bias is not None:
-                        torch.nn.init.zeros_(module.bias)
-        
+                            torch.nn.init.normal_(param_tensor, std=0.01)
+                    elif param_name == 'bias':
+                        torch.nn.init.zeros_(param_tensor)
+
         return super().load_state_dict(new_state_dict, strict=False)
