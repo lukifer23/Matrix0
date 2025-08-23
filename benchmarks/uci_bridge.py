@@ -77,6 +77,7 @@ class UCIEngine:
             # Initialize UCI protocol
             if not self._initialize_uci():
                 logger.error(f"Failed to initialize UCI protocol for {self.name}")
+                self.stop()
                 return False
 
             # Set options
@@ -160,6 +161,7 @@ class UCIEngine:
         self._send_command("uci")
 
         lines = self._read_response(timeout=2.0)
+        uciok = False
 
         for line in lines:
             if line.startswith("id name"):
@@ -167,9 +169,12 @@ class UCIEngine:
             elif line.startswith("id author"):
                 self.engine_info["author"] = line[9:].strip()
             elif line.startswith("uciok"):
-                return True
+                uciok = True
 
-        # If we didn't get uciok, try anyway
+        if not uciok:
+            logger.error(f"No 'uciok' received from {self.name}")
+            return False
+
         return True
 
     def _set_options(self):
