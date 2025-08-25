@@ -60,7 +60,7 @@ training:
 
 orchestrator:
   initial_games: 500               # Generate all 500 games in initial phase
-  subsequent_games: 0              # No additional games needed
+  subsequent_games: 500            # Always generate 500 games (force self-play)
   games_per_cycle: 500             # Handle all games in one cycle
   train_epochs_per_cycle: 1        # Single training epoch for large dataset
   eval_games_per_cycle: 20         # Evaluate 20 games for quality check
