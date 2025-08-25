@@ -3,6 +3,7 @@
 [![Code Quality](https://github.com/lukifer23/Matrix0/workflows/Code%20Quality/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Model Validation](https://github.com/lukifer23/Matrix0/workflows/Model%20Validation/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Training Pipeline Test](https://github.com/lukifer23/Matrix0/workflows/Training%20Pipeline%20Test/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
+[![Bugbot Review](https://img.shields.io/badge/Bugbot-Review%20Ready-blue?logo=bug)](https://bugbot.dev)
 
 Matrix0 is a production-ready AlphaZero-style chess engine designed for Apple Silicon.
 It provides a complete self-play reinforcement learning pipeline with Monte Carlo
@@ -204,6 +205,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Built with PyTorch and optimized for Apple Silicon MPS architecture
 - Advanced SSL concepts from recent computer vision and NLP research
 - Community contributions and feedback
+- **Bugbot**: Code review and quality assurance via [Bugbot](https://bugbot.dev) (14-day trial via Cursor)
 
 ## 📈 Current Achievements & Next Steps
 
@@ -226,3 +228,9 @@ See [docs/roadmap.md](docs/roadmap.md) and [docs/status.md](docs/status.md) for 
 **Matrix0 v2.0 - Production Training Pipeline**
 
 *Advanced chess AI research platform with 53M parameter model and SSL foundation. Training pipeline operational with SSL algorithms implemented and ready for enhancement.*
+
+
+
+cd /Users/admin/Downloads/VSCode/Matrix0 && source .venv/bin/activate && python -m azchess.orchestrator --config config.yaml --workers 2
+
+
