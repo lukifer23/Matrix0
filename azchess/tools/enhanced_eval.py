@@ -13,27 +13,27 @@ Features:
 """
 
 import argparse
-import chess
-import chess.pgn
-import torch
-import time
 import json
 import logging
-from pathlib import Path
+import time
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
-import numpy as np
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
+import chess
+import chess.pgn
+import numpy as np
+import torch
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 
 from ..config import Config, select_device
-from ..model import PolicyValueNet
-from ..mcts import MCTS, MCTSConfig
-from ..elo import EloBook, update_elo
 from ..draw import should_adjudicate_draw
+from ..elo import EloBook, update_elo
 from ..logging_utils import setup_logging
+from ..mcts import MCTS, MCTSConfig
+from ..model import PolicyValueNet
 
 
 class EnhancedEvaluator:

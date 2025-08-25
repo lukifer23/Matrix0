@@ -5,11 +5,12 @@ Create visualizations and statistical analysis of performance data.
 """
 
 import json
-import numpy as np
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 from benchmarks.metrics import BenchmarkMetrics, GameMetrics
 
@@ -24,8 +25,8 @@ except ImportError:
     logger.warning("Pandas not available")
 
 try:
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     matplotlib.use('Agg')  # Use non-interactive backend
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
@@ -40,8 +41,8 @@ except ImportError:
     logger.warning("Seaborn not available")
 
 try:
-    import plotly.graph_objects as go
     import plotly.express as px
+    import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     PLOTLY_AVAILABLE = True
 except ImportError:

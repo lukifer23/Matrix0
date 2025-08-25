@@ -1,9 +1,11 @@
 
 import unittest
+
 import chess
 import numpy as np
 
-from azchess.encoding import MoveEncoder, move_to_index, encode_board
+from azchess.encoding import MoveEncoder, encode_board, move_to_index
+
 
 class TestMoveEncoding(unittest.TestCase):
     """

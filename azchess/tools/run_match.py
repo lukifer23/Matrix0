@@ -11,10 +11,9 @@ import chess
 import chess.pgn
 
 from azchess.config import Config, select_device
-from azchess.model import PolicyValueNet
-from azchess.mcts import MCTS, MCTSConfig
 from azchess.draw import should_adjudicate_draw
-
+from azchess.mcts import MCTS, MCTSConfig
+from azchess.model import PolicyValueNet
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 LOGS_DIR = BASE_DIR / "logs"

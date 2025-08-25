@@ -2,7 +2,7 @@ import chess
 import pytest
 
 from webui import server
-from webui.server import NewGameRequest, HTTPException
+from webui.server import HTTPException, NewGameRequest
 
 
 @pytest.fixture(autouse=True)

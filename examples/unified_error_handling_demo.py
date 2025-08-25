@@ -4,15 +4,27 @@ Unified Error Handling System Demo
 Showcases the comprehensive error handling and recovery system for Matrix0.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.utils import (
-    ErrorSeverity, ErrorCategory, Matrix0Error, ConfigurationError,
-    TensorError, MemoryError, InferenceError, TrainingError, ValidationError,
-    create_error_context, handle_matrix0_error, with_error_handling,
-    safe_operation, get_error_statistics, error_handler
+    ConfigurationError,
+    ErrorCategory,
+    ErrorSeverity,
+    InferenceError,
+    Matrix0Error,
+    MemoryError,
+    TensorError,
+    TrainingError,
+    ValidationError,
+    create_error_context,
+    error_handler,
+    get_error_statistics,
+    handle_matrix0_error,
+    safe_operation,
+    with_error_handling,
 )
 
 

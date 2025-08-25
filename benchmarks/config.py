@@ -5,10 +5,11 @@ Handles UCI engine configurations, test scenarios, and performance settings.
 """
 
 import json
-import yaml
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional
+
+import yaml
 
 
 @dataclass

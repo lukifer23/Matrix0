@@ -4,16 +4,21 @@ Memory Monitoring and Alerting System Demo
 Demonstrates the comprehensive memory monitoring capabilities of Matrix0.
 """
 
-import sys
 import os
-import time
+import sys
 import threading
+import time
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.utils import (
-    start_memory_monitoring, stop_memory_monitoring,
-    get_memory_stats, add_memory_alert_callback, MemoryAlert,
-    clear_memory_cache, get_memory_usage
+    MemoryAlert,
+    add_memory_alert_callback,
+    clear_memory_cache,
+    get_memory_stats,
+    get_memory_usage,
+    start_memory_monitoring,
+    stop_memory_monitoring,
 )
 
 

@@ -3,15 +3,17 @@
 Test script for SSL algorithms implementation.
 """
 
-import torch
-import numpy as np
-import sys
 import os
+import sys
+
+import numpy as np
+import torch
 
 # Add the azchess package to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
 
 from azchess.ssl_algorithms import ChessSSLAlgorithms
+
 
 def create_test_board():
     """Create a simple test board with some pieces."""
@@ -118,8 +120,8 @@ def test_ssl_method_integration():
     print("\n7. Testing SSL Method Integration...")
 
     # Import model and config
-    from azchess.model import PolicyValueNet, NetConfig
     from azchess.config import Config
+    from azchess.model import NetConfig, PolicyValueNet
 
     # Create a simple config for testing
     config_dict = {

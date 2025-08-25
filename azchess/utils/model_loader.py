@@ -5,8 +5,8 @@ from typing import Tuple
 import torch
 
 from ..config import Config, select_device
-from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
+from ..model import PolicyValueNet
 
 
 def load_model_and_mcts(cfg: Config, checkpoint: str) -> Tuple[PolicyValueNet, MCTS]:

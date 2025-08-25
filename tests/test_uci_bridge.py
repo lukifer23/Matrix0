@@ -4,6 +4,7 @@ import chess
 
 from azchess.engines.uci_bridge import SynchronousUCIClient
 
+
 def test_event_loop_restored_after_synchronous_client():
     loop = asyncio.new_event_loop()
     try:

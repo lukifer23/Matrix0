@@ -5,13 +5,13 @@ Provides consistent error handling patterns, classification, and recovery mechan
 
 from __future__ import annotations
 
-import logging
-import traceback
 import functools
+import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
+import traceback
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 

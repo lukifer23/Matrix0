@@ -5,7 +5,7 @@ from multiprocessing import Process, Queue
 from typing import List
 
 from ..config import Config
-from .internal import selfplay_worker, math_div_ceil
+from .internal import math_div_ceil, selfplay_worker
 
 
 def main():
@@ -30,8 +30,9 @@ def main():
     if args.external_engines:
         try:
             # Defer import to avoid hard dependency if not used
-            from .external_engine_worker import external_engine_worker
             import asyncio
+
+            from .external_engine_worker import external_engine_worker
 
             async def run_external_selfplay():
                 games = await external_engine_worker(0, cfg_obj, cfg["selfplay"].get("buffer_dir", "data/selfplay"), args.games)
@@ -52,7 +53,8 @@ def main():
         p = Process(target=selfplay_worker, args=(i, cfg, args.ckpt, games_per_worker, q))
         p.start()
         procs.append(p)
-    import time, queue as pyqueue
+    import queue as pyqueue
+    import time
     done = 0
     total = workers * games_per_worker
     last_msg_time = time.time()

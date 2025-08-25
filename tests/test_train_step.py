@@ -1,11 +1,12 @@
+import logging
+
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import logging
-import pytest
 
-from azchess.training.train import train_step, apply_policy_mask, POLICY_SHAPE
+from azchess.training.train import POLICY_SHAPE, apply_policy_mask, train_step
 
 
 class DummyModel(nn.Module):

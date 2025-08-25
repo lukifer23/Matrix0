@@ -1,26 +1,27 @@
 from __future__ import annotations
 
 import argparse
-import random
-from pathlib import Path
-import numpy as np
-import time
 import os
+import random
+import time
+from datetime import datetime
+from multiprocessing import Process, Queue
+from pathlib import Path
+
 import chess
 import chess.pgn
+import numpy as np
 import torch
 from tqdm import tqdm
-from datetime import datetime
 
 from .config import Config, select_device
-from .mcts import MCTS, MCTSConfig
-from .elo import EloBook, update_elo
 from .draw import should_adjudicate_draw
-from multiprocessing import Process, Queue
+from .elo import EloBook, update_elo
+from .mcts import MCTS, MCTSConfig
 from .selfplay.inference import (
-    setup_shared_memory_for_worker,
-    run_inference_server,
     InferenceClient,
+    run_inference_server,
+    setup_shared_memory_for_worker,
 )
 from .utils.model_loader import load_model_and_mcts
 
@@ -60,7 +61,10 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
 def _arena_run_one_game(args_tuple):
     """Worker function: play a single game and return (score_from_A_persp, moves, result_str)."""
     idx, max_moves, temp_local, temp_plies_local, debug_local = args_tuple
-    import chess, time, numpy as np
+    import time
+
+    import chess
+    import numpy as np
     global _P_DEVICE, _P_CFG, _P_MCTS_A, _P_MCTS_B
     board = chess.Board()
     moves_count = 0
@@ -156,7 +160,10 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
             pass
         return
 
-    import chess as _chess, time as _time, numpy as _np
+    import time as _time
+
+    import chess as _chess
+    import numpy as _np
     for idx in indices:
         t0 = _time.perf_counter()
         board = _chess.Board()
@@ -301,6 +308,7 @@ def play_match(
     try:
         if device == 'mps':
             import os as _os
+
             # Use config-based memory settings if available, otherwise defaults
             memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
             memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
@@ -365,6 +373,7 @@ def play_match(
             # Preload checkpoints once to state dicts (PyTorch 2.6 weights_only handling)
             import numpy
             from torch.serialization import add_safe_globals
+
             # Allow both legacy and new NumPy scalar paths
             try:
                 add_safe_globals([numpy.core.multiarray.scalar])
@@ -425,9 +434,10 @@ def play_match(
 
         # Live table display similar to orchestrator
         try:
+            import time as _time
+
             from rich.live import Live
             from rich.table import Table
-            import time as _time
             table = Table(title="Arena (parallel)")
             table.add_column("Worker", justify="left")
             table.add_column("Done/Total", justify="right")

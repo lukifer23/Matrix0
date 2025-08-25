@@ -7,33 +7,37 @@ Comprehensive Training Script for Matrix0
 - Proper checkpointing and TensorBoard logging.
 """
 
-import sys
-import os
-import time
-import json
-from pathlib import Path
-from datetime import datetime, timedelta
 import argparse
+import json
+import logging
+import os
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
-import numpy as np
 from tqdm import tqdm
-import logging
 
 from azchess.config import Config, select_device
-from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
-from azchess.utils import (
-    clear_memory_cache, get_memory_usage, emergency_memory_cleanup,
-    safe_config_get, log_tensor_stats, start_memory_monitoring,
-    add_memory_alert_callback
-)
-from azchess.encoding import encode_board, move_to_index, POLICY_SHAPE
+from azchess.encoding import POLICY_SHAPE, encode_board, move_to_index
 from azchess.logging_utils import setup_logging
+from azchess.model import PolicyValueNet
+from azchess.utils import (
+    add_memory_alert_callback,
+    clear_memory_cache,
+    emergency_memory_cleanup,
+    get_memory_usage,
+    log_tensor_stats,
+    safe_config_get,
+    start_memory_monitoring,
+)
 
 # Setup logging
 logger = setup_logging(level=logging.INFO)
@@ -111,8 +115,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
-    import torch
     import time
+
+    import torch
     start_time = time.time()
 
     model.train()
@@ -721,6 +726,7 @@ def train_comprehensive(
     memory_limit_gb = safe_config_get(cfg, 'memory_limit_gb', 12, section='training')  # Default 12GB if not specified
     if device.startswith('mps'):
         import os
+
         # Check current memory settings
         current_high_ratio = os.environ.get('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '0.8')
         current_low_ratio = os.environ.get('PYTORCH_MPS_LOW_WATERMARK_RATIO', '0.6')

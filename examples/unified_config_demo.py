@@ -4,14 +4,20 @@ Unified Configuration System Demo
 Showcases the centralized configuration management for Matrix0.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.config import Config
 from azchess.utils import (
-    set_global_config, config_get, config_get_typed, config_get_section,
-    validate_config_requirements, config_manager, ConfigPath
+    ConfigPath,
+    config_get,
+    config_get_section,
+    config_get_typed,
+    config_manager,
+    set_global_config,
+    validate_config_requirements,
 )
 
 

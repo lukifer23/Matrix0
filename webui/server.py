@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Dict, Optional, List
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import chess
 import chess.pgn
@@ -15,9 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from azchess.config import Config, select_device
-from azchess.model import PolicyValueNet
-from azchess.mcts import MCTS, MCTSConfig
 from azchess.draw import should_adjudicate_draw
+from azchess.mcts import MCTS, MCTSConfig
+from azchess.model import PolicyValueNet
 
 try:
     import chess.engine
@@ -288,6 +288,7 @@ def eval_position(req: EvalRequest):
     # Matrix0 value
     try:
         import torch
+
         from azchess.encoding import encode_board
         with torch.no_grad():
             arr = encode_board(gs.board)

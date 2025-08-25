@@ -1,27 +1,26 @@
 """External engine self-play worker for generating training data."""
 
+import io
 import json
 import logging
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
 from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import chess
 import chess.pgn
-
+import chess.polyglot as polyglot
+import numpy as np
 import torch
 
 from ..config import Config, select_device
-from ..model import PolicyValueNet
-from ..mcts import MCTS, MCTSConfig
 from ..encoding import encode_board, move_to_index
 from ..engines import EngineManager
-import chess.polyglot as polyglot
-import io
-import os
+from ..mcts import MCTS, MCTSConfig
+from ..model import PolicyValueNet
 
 logger = logging.getLogger(__name__)
 

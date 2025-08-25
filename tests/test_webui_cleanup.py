@@ -3,7 +3,6 @@ from fastapi.testclient import TestClient
 
 from webui import server
 
-
 # helper to play fool's mate
 FOOLS_MATE = ["f2f3", "e7e5", "g2g4", "d8h4"]
 

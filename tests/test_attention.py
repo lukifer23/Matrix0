@@ -1,7 +1,8 @@
 import unittest
+
 import torch
 
-from azchess.model.resnet import PolicyValueNet, NetConfig
+from azchess.model.resnet import NetConfig, PolicyValueNet
 
 
 class TestAttentionModule(unittest.TestCase):

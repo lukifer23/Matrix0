@@ -9,11 +9,12 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
-import json
+from typing import Any, Dict, List, Optional, Tuple
+
 import yaml
 
 from azchess.logging_utils import setup_logging
@@ -27,13 +28,23 @@ except ImportError:
     TORCH_AVAILABLE = False
     logger.warning("PyTorch not available - Matrix0 model loading disabled")
 
-from benchmarks.config import ConfigManager, BenchmarkConfig, UCIEngineConfig, TestScenario
+from benchmarks.config import (
+    BenchmarkConfig,
+    ConfigManager,
+    TestScenario,
+    UCIEngineConfig,
+)
+from benchmarks.metrics import (
+    BenchmarkMetrics,
+    GameMetrics,
+    MetricsAnalyzer,
+    MetricsCollector,
+)
 from benchmarks.uci_bridge import EngineManager
-from benchmarks.metrics import BenchmarkMetrics, GameMetrics, MetricsCollector, MetricsAnalyzer
 
 if TORCH_AVAILABLE:
-    from azchess.model.resnet import PolicyValueNet
     from azchess.config import Config
+    from azchess.model.resnet import PolicyValueNet
 
 
 
@@ -406,7 +417,7 @@ def main():
             config = ConfigManager.load_config(args.config)
         elif args.model and args.engine:
             # Create config from command line args
-            from benchmarks.config import UCIEngineConfig, TestScenario
+            from benchmarks.config import TestScenario, UCIEngineConfig
 
             engine_config = UCIEngineConfig(
                 name=args.engine,

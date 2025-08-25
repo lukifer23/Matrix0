@@ -4,10 +4,11 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
+
 import psutil
 
-from .uci_bridge import UCIClient, SynchronousUCIClient
+from .uci_bridge import SynchronousUCIClient, UCIClient
 
 logger = logging.getLogger(__name__)
 

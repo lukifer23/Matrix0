@@ -4,10 +4,10 @@ import argparse
 import csv
 import math
 from pathlib import Path
-from typing import Iterable, List, Tuple, Optional
+from typing import Iterable, List, Optional, Tuple
 
-import numpy as np
 import chess
+import numpy as np
 
 from ..encoding import encode_board, move_to_index
 

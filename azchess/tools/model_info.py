@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import logging
 
-from azchess.logging_utils import setup_logging
 from azchess.config import Config
+from azchess.logging_utils import setup_logging
 from azchess.model import PolicyValueNet
-
 
 logger = setup_logging(level=logging.INFO)
 

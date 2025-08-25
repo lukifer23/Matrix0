@@ -4,16 +4,16 @@ Example script showing how to run the Matrix0 benchmark system.
 This demonstrates proper usage from the project root directory.
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Add current directory to Python path for imports
 sys.path.append('.')
 
+from benchmarks.benchmark import BenchmarkRunner
 from benchmarks.config import ConfigManager
 from benchmarks.uci_bridge import EngineManager
-from benchmarks.benchmark import BenchmarkRunner
 
 
 def main():

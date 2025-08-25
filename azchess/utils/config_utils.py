@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Dict, Optional, Union, TypeVar
 from dataclasses import dataclass
 from functools import wraps
+from typing import Any, Dict, Optional, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 

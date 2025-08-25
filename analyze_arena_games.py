@@ -4,18 +4,19 @@ Analyze arena games to understand MCTS behavior and move quality.
 This script will help debug why MCTS is returning no visits in certain positions.
 """
 
+import argparse
+import os
+import sys
+from pathlib import Path
+
 import chess
 import chess.pgn
 import numpy as np
-from pathlib import Path
-import argparse
-import sys
-import os
 
 # Add the project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from azchess.arena import _arena_worker_init, _arena_run_one_game
+from azchess.arena import _arena_run_one_game, _arena_worker_init
 from azchess.config import Config
 from azchess.mcts import MCTS, MCTSConfig
 
@@ -29,8 +30,8 @@ def analyze_single_game(ckpt_a_path: str, ckpt_b_path: str, game_idx: int = 0,
     cfg_dict = cfg.to_dict()
     
     # Create MCTS instances directly
-    from azchess.model import PolicyValueNet
     from azchess.config import select_device
+    from azchess.model import PolicyValueNet
     
     device = select_device(device)
     mcfg_dict = dict(cfg.mcts())

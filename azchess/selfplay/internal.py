@@ -1,28 +1,29 @@
 from __future__ import annotations
 
-from torch.multiprocessing import Queue
-from time import perf_counter
-from typing import Dict, List, Tuple, Any
-from pathlib import Path
 import logging
-
-import numpy as np
-import chess
-import torch
 import os
 import random
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Dict, List, Tuple
+
+import chess
 import chess.pgn
+import chess.polyglot
 import chess.syzygy
+import numpy as np
+import torch
+from torch.multiprocessing import Queue
+
+from azchess.logging_utils import setup_logging
 
 from ..config import select_device
-from ..model import PolicyValueNet
-from ..mcts import MCTS, MCTSConfig
 from ..data_manager import DataManager
-from .inference import InferenceClient
-from ..encoding import encode_board, move_to_index
-import chess.polyglot
 from ..draw import should_adjudicate_draw
-from azchess.logging_utils import setup_logging
+from ..encoding import encode_board, move_to_index
+from ..mcts import MCTS, MCTSConfig
+from ..model import PolicyValueNet
+from .inference import InferenceClient
 
 
 def math_div_ceil(a: int, b: int) -> int:

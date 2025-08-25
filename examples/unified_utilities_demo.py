@@ -4,28 +4,30 @@ Demonstration of Unified Utilities in Matrix0
 This script shows how to use the newly unified utility modules for consistent behavior.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from azchess.utils import (
-    # Memory management
-    clear_memory_cache, get_memory_usage, emergency_memory_cleanup,
-
-    # Device management
-    select_device, validate_device, get_device_info, setup_device,
-
-    # Tensor utilities
-    ensure_contiguous, validate_tensor_shapes, check_tensor_health, create_tensor,
-
-    # Checkpoint management
-    save_checkpoint, load_checkpoint, get_checkpoint_info,
-
-    # Configuration utilities
-    safe_config_get, log_config_summary,
-
-    # Logging utilities
-    setup_logging, get_logger
+from azchess.utils import (  # Memory management; Device management; Tensor utilities; Checkpoint management; Configuration utilities; Logging utilities
+    check_tensor_health,
+    clear_memory_cache,
+    create_tensor,
+    emergency_memory_cleanup,
+    ensure_contiguous,
+    get_checkpoint_info,
+    get_device_info,
+    get_logger,
+    get_memory_usage,
+    load_checkpoint,
+    log_config_summary,
+    safe_config_get,
+    save_checkpoint,
+    select_device,
+    setup_device,
+    setup_logging,
+    validate_device,
+    validate_tensor_shapes,
 )
 
 
@@ -114,8 +116,9 @@ def demo_checkpoint_management():
     print("=" * 50)
 
     try:
-        import torch
         import tempfile
+
+        import torch
 
         # Create a simple model for demo
         model = torch.nn.Linear(10, 1)

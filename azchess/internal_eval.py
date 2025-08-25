@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import chess
+
 from .config import Config
 from .utils.model_loader import load_model_and_mcts
+
 
 def play_match(ckpt_a: str, ckpt_b: str, games: int, cfg: Config) -> float:
     """

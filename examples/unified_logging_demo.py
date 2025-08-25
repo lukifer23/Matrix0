@@ -4,15 +4,24 @@ Unified Logging System Demo
 Showcases the comprehensive logging utilities and standardized patterns for Matrix0.
 """
 
-import sys
 import os
+import sys
 import time
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.utils import (
-    setup_logging, get_logger, create_log_context, LogOperation,
-    log_print, log_progress, log_metrics, log_function, log_error_details,
-    set_logging_level, log_system_info
+    LogOperation,
+    create_log_context,
+    get_logger,
+    log_error_details,
+    log_function,
+    log_metrics,
+    log_print,
+    log_progress,
+    log_system_info,
+    set_logging_level,
+    setup_logging,
 )
 
 

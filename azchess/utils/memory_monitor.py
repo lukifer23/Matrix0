@@ -5,14 +5,14 @@ Provides comprehensive memory monitoring, alerting, and automatic optimization.
 
 from __future__ import annotations
 
-import time
-import threading
 import logging
-from typing import Dict, Any, Optional, Callable
-from dataclasses import dataclass
+import threading
+import time
 from collections import deque
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional
 
-from .memory import get_memory_usage, clear_memory_cache, emergency_memory_cleanup
+from .memory import clear_memory_cache, emergency_memory_cleanup, get_memory_usage
 
 logger = logging.getLogger(__name__)
 

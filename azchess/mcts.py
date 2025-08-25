@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import logging
 import math
 import random
-import time
 import threading
+import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
-from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import chess
+import numpy as np
 import torch
-import logging
 
 try:  # Optional dependency for memory monitoring
     import psutil  # Added for memory monitoring
@@ -28,7 +28,8 @@ try:
 except Exception:
     pass
 
-from .encoding import encode_board, move_to_index, MoveEncoder
+from .encoding import MoveEncoder, encode_board, move_to_index
+
 # Import unified utilities individually to avoid circular imports
 # from .utils import (
 #     ensure_contiguous, validate_tensor_shapes, check_tensor_health,

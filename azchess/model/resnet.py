@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple
 
+import chess
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import chess
-import logging
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)

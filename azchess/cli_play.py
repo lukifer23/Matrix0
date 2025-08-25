@@ -7,8 +7,8 @@ import chess
 import torch
 
 from .config import Config, select_device
-from .model import PolicyValueNet
 from .mcts import MCTS, MCTSConfig
+from .model import PolicyValueNet
 
 
 def print_board(board: chess.Board):

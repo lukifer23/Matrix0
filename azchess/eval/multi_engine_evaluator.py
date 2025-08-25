@@ -6,17 +6,17 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
 from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple
 
 import chess
 import torch
 
 from ..config import Config, select_device
-from ..model import PolicyValueNet
-from ..mcts import MCTS, MCTSConfig
-from ..engines import EngineManager
 from ..elo import EloBook, update_elo
+from ..engines import EngineManager
+from ..mcts import MCTS, MCTSConfig
+from ..model import PolicyValueNet
 
 logger = logging.getLogger(__name__)
 

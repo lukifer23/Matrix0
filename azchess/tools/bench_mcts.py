@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import argparse
 import time
-from multiprocessing import Process, Event, Queue
+from multiprocessing import Event, Process, Queue
 
 import chess
 import torch
 
 from ..config import Config, select_device
-from ..model import PolicyValueNet
 from ..mcts import MCTS, MCTSConfig
-from ..selfplay.inference import run_inference_server, InferenceClient
+from ..model import PolicyValueNet
+from ..selfplay.inference import InferenceClient, run_inference_server
 from ..utils.board import random_board
 
 

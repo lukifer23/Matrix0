@@ -9,10 +9,10 @@ import logging
 import logging.handlers
 import sys
 import threading
-from pathlib import Path
-from typing import Optional, Dict, Any, Type
 from dataclasses import dataclass
 from functools import wraps
+from pathlib import Path
+from typing import Any, Dict, Optional, Type
 
 # Default logging format
 DEFAULT_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -306,6 +306,7 @@ def log_system_info() -> None:
         """Log system information for debugging."""
         try:
             import platform
+
             import torch
 
             logger = self.get_logger('system')

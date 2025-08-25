@@ -18,10 +18,11 @@ import bz2
 import logging
 import os
 from pathlib import Path
-import requests
-from tqdm import tqdm
+
 import chess.pgn
 import numpy as np
+import requests
+from tqdm import tqdm
 
 from azchess.encoding import encode_board, move_to_index
 from azchess.logging_utils import setup_logging

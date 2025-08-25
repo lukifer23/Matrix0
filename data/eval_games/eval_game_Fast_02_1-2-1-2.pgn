@@ -1,11 +1,11 @@
 [Event "Matrix0 Enhanced Evaluation Game 2"]
 [Site "Matrix0 Arena"]
-[Date "2025.08.22"]
+[Date "2025.08.25"]
 [Round "Fast - Game 2"]
-[White "Model A (trained)"]
-[Black "Model B (baseline)"]
+[White "trained_pretrain_500"]
+[Black "baseline_v2_base"]
 [Result "1/2-1/2"]
 [TimeControl "unlimited"]
 [Termination "unknown"]
 
-1. b4 f6 2. Nf3 g5 3. e4 d5 4. d4 Qd6 5. Qd3 e5 6. Be2 exd4 7. Qe3 Bg4 8. Nc3 Qe5 9. Bc4 b6 10. b5 Qf5 11. Qf4 Nd7 12. Qxg5 h6 13. Nxd5 Qxe4+ 14. Kf1 Be6 15. Qd2 Bd6 16. Qxd4 Rh7 17. Qd1 Bc5 18. Ne3 Rh8 19. Qd6 Bd4 20. Rg1 Bb2 21. Qc6 Rh7 22. Rb1 a5 23. Ne1 Qd4 24. f4 Ra7 25. Nd5 a4 26. h3 h5 27. Qd6 Ra6 28. Nxf6+ Kd8 29. Rxb2 Ra8 30. Qd5 Qd2 31. Qxa8+ Ke7 32. Qe4 Qf2+ 33. Kxf2 Nb8 34. f5 Nd7 35. Ne8 Kf8 36. Nd3 Ne7 37. Ke1 c6 38. Qe5 h4 39. Rh1 Rf7 40. Qf6 Ng6 41. Qc3 Rf6 42. Kd1 Bxf5 43. Qe5 Ngxe5 44. c3 Ke7 45. Bd5 Rh6 46. Bg8 Be4 47. Bd5 cxd5 48. Nb4 Nf7 49. Rb3 Kf8 50. g3 Rg6 51. Bd2 Rg5 52. Rh2 Bd3 53. Rf2 Rg6 54. c4 Kxe8 55. Be1 Nf8 56. Rfb2 Ke7 57. Na6 Kd8 58. Ra3 Ne6 59. Rbb3 d4 60. Kd2 Kd7 61. g4 Nc5 62. Bf2 Rf6 63. Be1 Bxc4 64. Rg3 Ke7 65. Rgb3 Bd3 66. Nc7 Nxb3+ 67. axb3 Rg6 68. Rxa4 Rd6 69. Ra3 Rh6 70. Kxd3 Rg6 71. Ne8 Rg7 72. Kd2 Kf8 73. Ra7 Kxe8 74. Re7+ Kxe7 75. Kd1 Kf6 1/2-1/2
+1. f4 Nf6 2. c3 Na6 3. Nf3 Ng8 4. Ne5 b5 5. e4 Nh6 6. Bc4 c5 7. Bb3 Bb7 8. c4 Rg8 9. Qg4 Bd5 10. Qh5 Bxc4 11. Bc2 Qc7 12. Qh4 Ng4 13. Na3 Qb6 14. h3 Qe6 15. Nc6 Qxe4+ 16. Kd1 b4 17. Qf6 Qxf4 18. Na5 Nh6 19. Qg6 O-O-O 20. Qxh7 Qf3+ 21. Ke1 g5 22. Bb1 Qe3+ 23. dxe3 e5 24. b3 Bxb3 25. Qxg8 d5 26. Nc2 f6 27. Kd2 e4 28. Qxf8 Ng8 29. g4 Ne7 30. Qxf6 Rd6 31. a3 Ba4 32. Nc6 Bb3 33. Qxd6 bxa3 34. Qb8+ Nxb8 35. Ne5 Nbc6 36. Ra2 a6 37. Nxc6 Bxa2 38. Re1 Kb7 39. Ne5 Kb6 40. Nd4 Kb7 41. Nf5 a5 42. Nf7 Kc7 43. Ng3 d4 44. Nf5 Kb8 45. exd4 Ka7 46. Bb2 Kb6 47. Bxa3 Nc8 48. Nh8 Bf7 49. Rxe4 Ka6 50. Ba2 Kb5 51. Bxf7 Nd6 52. Ke1 cxd4 53. h4 Nxf5 54. Bh5 Ne3 55. Be7 Kb6 56. Bf7 a4 57. Bg8 Kc7 58. Bh7 Nxg4 59. Bc5 Nh2 60. Bf5 Ng4 61. Bd7 Ne3 62. Ba3 Nf5 63. Rg4 Ne3 64. Be6 Nd1 65. Bd7 d3 66. Bf8 Kb8 67. Bh6 Ne3 68. Ng6 Kc7 69. Kf2 Kb6 70. Bf5 Kc7 71. Re4 Kb8 72. Re6 Kb7 73. Rxe3 Kb8 74. Re2 d2 75. Re6 d1=R 1/2-1/2

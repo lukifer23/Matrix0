@@ -52,7 +52,8 @@ class MemoryManager:
 
         try:
             if device == "mps":
-                import torch, psutil
+                import psutil
+                import torch
                 if torch.backends.mps.is_available():
                     # Prefer backend-reported allocated memory if available
                     try:

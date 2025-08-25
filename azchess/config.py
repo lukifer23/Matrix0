@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import yaml
 from dataclasses import dataclass
 from typing import Any, Dict
+
+import yaml
 
 
 @dataclass
@@ -90,6 +91,7 @@ def select_device(cfg_device: str = "auto") -> str:
     """
     try:
         import torch
+
         # Honor explicit request if possible
         if cfg_device == "cuda" and torch.cuda.is_available():
             return "cuda"

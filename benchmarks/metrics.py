@@ -4,13 +4,14 @@ Comprehensive performance monitoring for benchmark runs.
 Collects CPU, memory, GPU usage, and timing metrics.
 """
 
-import time
-import threading
-import psutil
-import logging
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
 import json
+import logging
+import threading
+import time
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
+
+import psutil
 
 logger = logging.getLogger(__name__)
 

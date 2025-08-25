@@ -20,20 +20,20 @@ produced checkpoint via config or CLI once validated.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import re
 import logging
+import re
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 from azchess.config import Config, select_device
-from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
+from azchess.model import PolicyValueNet
 from azchess.training.train import get_lr_scheduler, save_checkpoint
-from azchess.utils import setup_logging, clear_memory_cache, get_memory_usage
+from azchess.utils import clear_memory_cache, get_memory_usage, setup_logging
 
 logger = setup_logging(level=logging.INFO)
 

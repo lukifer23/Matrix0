@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
 from rich.logging import RichHandler
-from logging.handlers import RotatingFileHandler
-import json
 
 
 class JSONLHandler(logging.Handler):

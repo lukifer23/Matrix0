@@ -5,7 +5,7 @@ from typing import List, Tuple
 
 import chess
 
-from .encoding import move_to_index, MoveEncoder
+from .encoding import MoveEncoder, move_to_index
 from .utils.board import random_board
 
 

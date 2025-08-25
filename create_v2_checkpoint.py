@@ -4,10 +4,11 @@ Create a fresh V2 base checkpoint for Matrix0.
 This script initializes the V2 model architecture and saves it as a starting checkpoint.
 """
 
+import logging
 import os
 import sys
+
 import torch
-import logging
 
 # Add the project root to the path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -17,7 +18,8 @@ sys.path.insert(0, project_root)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from azchess.model.resnet import PolicyValueNet, NetConfig
+from azchess.model.resnet import NetConfig, PolicyValueNet
+
 
 def create_v2_checkpoint():
     """Create a fresh V2 model checkpoint."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Sequence, Dict, Any
+from typing import Any, Dict, Sequence
+
 import chess
 
 

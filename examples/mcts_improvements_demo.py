@@ -4,15 +4,17 @@ MCTS Improvements Demonstration
 Showcases the enhanced MCTS with unified tensor utilities and advanced logging.
 """
 
-import sys
 import os
+import sys
 import time
+
 import chess
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from azchess.config import Config, select_device
 from azchess.mcts import MCTS, MCTSConfig
 from azchess.model import PolicyValueNet
-from azchess.config import Config, select_device
 
 
 def demo_tensor_operations():

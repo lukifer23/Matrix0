@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import List, Tuple
 
-import numpy as np
 import chess
+import numpy as np
 
 from ..encoding import encode_board, move_to_index
 

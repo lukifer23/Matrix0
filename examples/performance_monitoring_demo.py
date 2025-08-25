@@ -4,17 +4,26 @@ Unified Performance Monitoring System Demo
 Showcases the comprehensive performance monitoring and metrics collection for Matrix0.
 """
 
-import sys
 import os
-import time
 import random
+import sys
+import time
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.utils import (
-    start_timing, end_timing, record_metric, increment_counter, set_gauge,
-    set_performance_threshold, add_performance_alert_callback,
-    get_performance_stats, get_performance_report, time_operation,
-    TimingContext, performance_monitor
+    TimingContext,
+    add_performance_alert_callback,
+    end_timing,
+    get_performance_report,
+    get_performance_stats,
+    increment_counter,
+    performance_monitor,
+    record_metric,
+    set_gauge,
+    set_performance_threshold,
+    start_timing,
+    time_operation,
 )
 
 

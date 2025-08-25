@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-import os
-import json
-import hashlib
-import sqlite3
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Iterator
-from datetime import datetime
-import numpy as np
-import logging
 import argparse
+import hashlib
+import json
+import logging
+import os
+import sqlite3
+import tempfile
 import time
 import uuid
-import tempfile
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional, Tuple
 
-from .utils import (
-    clear_memory_cache, get_memory_usage, safe_config_get
-)
+import numpy as np
+
+from .utils import clear_memory_cache, get_memory_usage, safe_config_get
 
 logger = logging.getLogger(__name__)
 

@@ -1,10 +1,10 @@
 """UCI protocol bridge for external chess engines."""
 
 import asyncio
+import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
-import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 import chess
 import chess.engine

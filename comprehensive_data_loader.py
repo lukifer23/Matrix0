@@ -6,13 +6,14 @@ Comprehensive Data Loader for Matrix0 Training
 - Integrates seamlessly with existing training pipeline
 """
 
-import sys
-import os
-import numpy as np
-from pathlib import Path
 import argparse
 import logging
-from typing import Dict, Optional, List, Tuple
+import os
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from azchess.logging_utils import setup_logging
 

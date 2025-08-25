@@ -1,5 +1,6 @@
-import numpy as np
 import os
+
+import numpy as np
 
 print("Training Data Analysis")
 print("=" * 50)

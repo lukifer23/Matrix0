@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from multiprocessing import Event
-from typing import Any, Dict, List, Optional, Tuple
-import time
 import logging
 import threading
+import time
+from multiprocessing import Event
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch

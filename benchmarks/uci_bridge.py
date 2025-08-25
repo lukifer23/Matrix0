@@ -4,16 +4,16 @@ UCI (Universal Chess Interface) communication bridge for chess engines.
 Handles communication with Stockfish, lc0, and other UCI-compliant engines.
 """
 
+import logging
+import os
+import re
+import shlex
+import shutil
 import subprocess
 import threading
 import time
-import logging
-import shlex
-import shutil
-import os
-from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
-import re
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 

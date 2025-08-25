@@ -1,35 +1,41 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
+import logging
 import os
 import queue as pyqueue
+import time
+import warnings
 from dataclasses import dataclass
-from torch.multiprocessing import Process, Queue, Event as MPEvent
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List
-import logging
 
-from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingColumn
-
-from .config import Config, select_device
-from .logging_utils import setup_logging
-from .utils import (
-    clear_memory_cache, get_memory_usage, safe_config_get, log_config_summary
-)
-from .selfplay.internal import selfplay_worker, math_div_ceil
-from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
-from azchess.training.train import train_from_config as train_main
-from .arena import play_match
-from .elo import EloBook, update_elo
-import gc
-import torch
-from .data_manager import DataManager
-from .monitor import dir_stats, disk_free, memory_usage_bytes
 import numpy as np
-import time
-import warnings
+import torch
+from rich.progress import BarColumn, Progress, TimeElapsedColumn, TimeRemainingColumn
+from torch.multiprocessing import Event as MPEvent
+from torch.multiprocessing import Process, Queue
+
+from azchess.training.train import train_from_config as train_main
+
+from .arena import play_match
+from .config import Config, select_device
+from .data_manager import DataManager
+from .elo import EloBook, update_elo
+from .logging_utils import setup_logging
+from .monitor import dir_stats, disk_free, memory_usage_bytes
+from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
+from .selfplay.internal import math_div_ceil, selfplay_worker
+from .utils import (
+    clear_memory_cache,
+    get_memory_usage,
+    log_config_summary,
+    safe_config_get,
+)
+
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
 
@@ -52,6 +58,7 @@ def cleanup_temp_files(data_dir: Path) -> None:
 # Top-level helper for external engine process (macOS spawn-safe)
 def _run_external_proc(proc_id: int, cfg_path: str, out_dir: str, n_games: int):
     import asyncio as _asyncio
+
     from .config import Config as _Cfg
     from .selfplay.external_engine_worker import external_engine_worker as _worker
     _cfg = _Cfg.load(cfg_path)
@@ -243,7 +250,10 @@ def orchestrate(
     # Apply reproducible seed if provided
     if overrides.seed is not None:
         try:
-            import random, numpy as np, torch as _torch
+            import random
+
+            import numpy as np
+            import torch as _torch
             random.seed(overrides.seed)
             np.random.seed(overrides.seed)
             try:

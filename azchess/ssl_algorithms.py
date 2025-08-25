@@ -21,11 +21,12 @@ This module focuses on SSL tasks that are specific to chess rules and tactics.
 
 from __future__ import annotations
 
-import torch
-import numpy as np
-import chess
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
+
+import chess
+import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 

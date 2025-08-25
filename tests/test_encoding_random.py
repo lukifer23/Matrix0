@@ -2,9 +2,9 @@ import chess
 import numpy as np
 
 from azchess.encoding import (
-    move_to_index,
     POLICY_SHAPE,
     build_horizontal_flip_permutation,
+    move_to_index,
 )
 from azchess.utils.board import random_board
 
