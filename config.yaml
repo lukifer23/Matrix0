@@ -16,14 +16,14 @@ model:
   aux_policy_from_square: true     # Auxiliary from-square prediction
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
-  self_supervised: true              # Enable SSL
-  ssl_tasks: ["piece"]  # SSL tasks (only piece task currently supported)
-  ssrl_tasks: ["position", "material", "rotation"]  # SSRL tasks (32M model)
+  self_supervised: true            # Enable SSL
+  ssl_tasks: ["piece"]            # Enable piece SSL head (stable)
+  ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
-  num_workers: 2                   # Conservative worker count for stability
+  num_workers: 2                   # Two workers minimum as required
   batch_size: 128                  # Larger batches for efficiency
-  max_games: 18                    # More games per cycle for better training data
+  max_games: 12                    # Restore 12 per cycle
   max_game_len: 100                # Shorter games for faster generation
   min_resign_plies: 20             # Earlier resignation for speed
   resign_threshold: -0.90          # More aggressive resignation

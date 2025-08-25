@@ -15,6 +15,9 @@ from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingC
 
 from .config import Config, select_device
 from .logging_utils import setup_logging
+from .utils import (
+    clear_memory_cache, get_memory_usage, safe_config_get, log_config_summary
+)
 from .selfplay.internal import selfplay_worker, math_div_ceil
 from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
 from azchess.training.train import train_from_config as train_main
@@ -91,10 +94,10 @@ def orchestrate(
     quick_start: bool = False,
 ):
     cfg = Config.load(cfg_path)
-    logger = setup_logging(cfg.training().get("log_dir", "logs"))
+    log_dir = safe_config_get(cfg, "log_dir", "logs", section="training")
+    logger = setup_logging(log_dir)
 
     # Clear structured log file at start of each run
-    log_dir = cfg.training().get("log_dir", "logs")
     structured_log_path = Path(log_dir) / "structured.jsonl"
     if structured_log_path.exists():
         try:
@@ -117,7 +120,7 @@ def orchestrate(
 
     try:
         import os as _os
-        dev_req = cfg.get("device", "auto")
+        dev_req = safe_config_get(cfg, "device", "auto")
         from .config import select_device as _sel
         dev_sel = _sel(dev_req)
         # Set MPS-friendly env if we are likely to use MPS
@@ -560,32 +563,7 @@ def orchestrate(
                                     progress.update(hb_task, completed=0)
                                 except Exception:
                                     pass
-                                # Refresh table to reflect heartbeat and memory
-                                new_table = Table(title=mem_title())
-                                new_table.add_column("Worker", justify="left")
-                                new_table.add_column("Done/Total", justify="right")
-                                new_table.add_column("Avg ms/move", justify="right")
-                                new_table.add_column("Avg sims", justify="right")
-                                new_table.add_column("Moves", justify="right")
-                                new_table.add_column("HB(s)", justify="right")
-                                new_table.add_column("W/L/D", justify="right")
-                                new_table.add_column("Res W/B", justify="right")
-                                for i in range(workers):
-                                    w = per_worker[i]
-                                    hb_age = 0.0
-                                    if w["hb_ts"] > 0:
-                                        hb_age = max(0.0, time.perf_counter() - w["hb_ts"])
-                                    new_table.add_row(
-                                        f"W{i}",
-                                        f"{w['done']}/{games_per_worker}",
-                                        f"{w['avg_ms']:.1f}",
-                                        f"{w['avg_sims']:.1f}",
-                                        f"{w['moves']}",
-                                        f"{hb_age:.0f}",
-                                        f"{stats['win']}/{stats['loss']}/{stats['draw']}",
-                                        f"{stats['res_w']}/{stats['res_b']}"
-                                    )
-                                live.update(new_table)
+                                # Heartbeat processed - no table refresh needed
                                 continue
                             if isinstance(msg, dict) and msg.get("type") == "game":
                                 done += 1
@@ -758,13 +736,7 @@ def orchestrate(
         # Memory cleanup between phases (especially important for MPS)
         logger.info("Performing memory cleanup between self-play and training phases")
         try:
-            import gc
-            import torch
-            gc.collect()
-            if torch.backends.mps.is_available():
-                # Force MPS memory cleanup
-                torch.mps.empty_cache()
-                logger.info("MPS memory cache cleared")
+            clear_memory_cache('auto')
             logger.info("Memory cleanup completed")
         except Exception as e:
             logger.warning(f"Memory cleanup failed: {e}")

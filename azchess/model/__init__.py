@@ -1,3 +1,3 @@
-from .resnet import PolicyValueNet
+from .resnet import PolicyValueNet, NetConfig
 
-__all__ = ["PolicyValueNet"]
+__all__ = ["PolicyValueNet", "NetConfig"]

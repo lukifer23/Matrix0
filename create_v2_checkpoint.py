@@ -9,29 +9,32 @@ import sys
 import torch
 import logging
 
-from azchess.logging_utils import setup_logging
-
 # Add the project root to the path
-sys.path.insert(0, '/Users/admin/Downloads/VSCode/Matrix0')
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
+
+# Set up basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 from azchess.model.resnet import PolicyValueNet, NetConfig
-from azchess.config import Config
 
 def create_v2_checkpoint():
     """Create a fresh V2 model checkpoint."""
 
-    # Set up logging
-    logger = setup_logging(level=logging.INFO)
-
     try:
-        # Load configuration
-        config_path = '/Users/admin/Downloads/VSCode/Matrix0/config.yaml'
-        config = Config.load(config_path)
+        # Load configuration from config.yaml in the same directory
+        config_path = os.path.join(project_root, 'config.yaml')
 
-        # Get model configuration
-        model_cfg = config.model()
+        # Simple config loading without external dependencies
+        import yaml
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f)
 
-        logger.info("Creating 32M PARAMETER BEAST - FULL V2 FEATURES!")
+        # Get model configuration from the config
+        model_cfg = config_data.get('model', {})
+
+        logger.info("Creating FRESH V2 CHECKPOINT - ALIGNED WITH CURRENT CONFIG!")
         logger.info(f"Model config: {model_cfg}")
 
         # Create model with V2 architecture
@@ -51,7 +54,7 @@ def create_v2_checkpoint():
             attention_relbias=model_cfg.get('attention_relbias', True),
             attention_every_k=model_cfg.get('attention_every_k', 3),
             chess_features=model_cfg.get('chess_features', True),
-            self_supervised=model_cfg.get('self_supervised', True),
+            self_supervised=model_cfg.get('self_supervised', False),  # Match current config
             piece_square_tables=model_cfg.get('piece_square_tables', True),
             wdl=model_cfg.get('wdl', False),
             policy_factor_rank=model_cfg.get('policy_factor_rank', 128),
@@ -63,9 +66,9 @@ def create_v2_checkpoint():
             aux_policy_move_type=model_cfg.get('aux_policy_move_type', True),
             enable_visual=model_cfg.get('enable_visual', False),
             visual_encoder_channels=model_cfg.get('visual_encoder_channels', 64),
-            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),  # only piece SSL task currently supported
+            ssl_tasks=model_cfg.get('ssl_tasks', []),  # Match current config (disabled)
             ssl_curriculum=model_cfg.get('ssl_curriculum', True),
-            ssrl_tasks=model_cfg.get('ssrl_tasks', ['position', 'material', 'rotation'])
+            ssrl_tasks=model_cfg.get('ssrl_tasks', [])  # Match current config (disabled)
         )
 
         model = PolicyValueNet(net_config)
@@ -75,7 +78,8 @@ def create_v2_checkpoint():
         logger.info("Model created with proper weight initialization")
 
         # Create checkpoint directory if it doesn't exist
-        os.makedirs('/Users/admin/Downloads/VSCode/Matrix0/checkpoints', exist_ok=True)
+        checkpoints_dir = os.path.join(project_root, 'checkpoints')
+        os.makedirs(checkpoints_dir, exist_ok=True)
 
         # Create checkpoint data
         checkpoint = {
@@ -86,7 +90,7 @@ def create_v2_checkpoint():
             'global_step': 0,
             'best_loss': float('inf'),
             'config': model_cfg,
-            'version': 'v2_large_32m_beast_fixed',
+            'version': 'v2_fresh_clean',
             'model_config': {
                 'channels': net_config.channels,
                 'blocks': net_config.blocks,
@@ -98,20 +102,22 @@ def create_v2_checkpoint():
         }
 
         # Save the checkpoint
-        checkpoint_path = '/Users/admin/Downloads/VSCode/Matrix0/checkpoints/v2_large_32m_fixed.pt'
+        checkpoint_path = os.path.join(checkpoints_dir, 'v2_fresh_clean.pt')
         torch.save(checkpoint, checkpoint_path)
 
         # Also save as the main v2_base.pt for compatibility
-        main_checkpoint_path = '/Users/admin/Downloads/VSCode/Matrix0/checkpoints/v2_base.pt'
+        main_checkpoint_path = os.path.join(checkpoints_dir, 'v2_base.pt')
         torch.save(checkpoint, main_checkpoint_path)
-
-        logger.info(f"✅ Successfully created 32M PARAMETER BEAST (FIXED):")
-        logger.info(f"   - Large checkpoint: {checkpoint_path}")
-        logger.info(f"   - Main checkpoint: {main_checkpoint_path}")
 
         # Log model parameters
         total_params = sum(p.numel() for p in model.parameters())
+        logger.info(f"✅ Successfully created FRESH V2 CHECKPOINT:")
+        logger.info(f"   - Fresh checkpoint: {checkpoint_path}")
+        logger.info(f"   - Main checkpoint: {main_checkpoint_path}")
         logger.info(f"   - Total parameters: {total_params:,}")
+        logger.info(f"   - SSL enabled: {net_config.self_supervised}")
+        logger.info(f"   - SSL tasks: {net_config.ssl_tasks}")
+        logger.info(f"   - SSRL tasks: {net_config.ssrl_tasks}")
 
         # Test loading the checkpoint
         logger.info("Testing checkpoint loading...")

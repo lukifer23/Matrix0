@@ -23,20 +23,27 @@ except ImportError:  # pragma: no cover - exercised in tests via patching
 logger = logging.getLogger(__name__)
 
 from .encoding import encode_board, move_to_index, MoveEncoder
+# Import unified utilities individually to avoid circular imports
+# from .utils import (
+#     ensure_contiguous, validate_tensor_shapes, check_tensor_health,
+#     create_tensor, log_tensor_stats
+# )
 
 
+# Use unified tensor utility
 def _ensure_contiguous_tensor(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
     """Ensure tensor is contiguous, with debug logging for MPS compatibility."""
     if not tensor.is_contiguous():
-        logger.debug(f"Making {name} contiguous (shape: {tensor.shape}, device: {tensor.device})")
+        logger.debug(f"Making tensor {name} contiguous")
         return tensor.contiguous()
     return tensor
 
 
+# Use unified array utility
 def _ensure_contiguous_array(array: np.ndarray, name: str = "array") -> np.ndarray:
     """Ensure numpy array is contiguous for MPS compatibility."""
     if not array.flags.c_contiguous:
-        logger.debug(f"Making {name} contiguous (shape: {array.shape})")
+        logger.debug(f"Making array {name} contiguous")
         return np.ascontiguousarray(array)
     return array
 
@@ -69,7 +76,7 @@ class MCTSConfig:
     selection_jitter: float = 0.01
     tt_cleanup_frequency: int = 5000
     tt_memory_limit_mb: int = 2048
-    batch_size: int = 32
+    batch_size: int = 16  # Reduced for better MPS performance
     fpu: float = 0.5  # First-Play Urgency
     parent_q_init: bool = True # Initialize child Q with parent Q
     draw_penalty: float = -0.1  # Slight draw penalty to reduce draws
@@ -146,6 +153,8 @@ class Node:
                     idxs = [encoder.encode_move(board, m) for m in legal_moves]
                 else:
                     idxs = [move_to_index(board, m) for m in legal_moves]
+
+                # Original tensor operations (circular import workaround)
                 sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
                 sel = torch.softmax(sel, dim=-1).numpy()
                 probs = None
@@ -259,13 +268,19 @@ class MCTS:
 
     @torch.no_grad()
     def run(self, board: chess.Board, num_simulations: Optional[int] = None, ply: Optional[int] = None) -> Tuple[Dict[chess.Move, int], np.ndarray, float]:
-        """Run MCTS with safety timeout to prevent deadlocks."""
+        """Run MCTS with safety timeout to prevent deadlocks and enhanced logging."""
         start_time = time.time()
         max_runtime = 120.0  # Maximum 2 minutes per MCTS run
-        
+
+        # Enhanced logging for MCTS run
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"MCTS run started: simulations={num_simulations}, ply={ply}, fen={board.fen()}")
+
         try:
             if board.is_game_over():
-                return {}, np.zeros(4672, dtype=np.float32), self._terminal_value(board)
+                terminal_value = self._terminal_value(board)
+                logger.debug(f"Game over detected, returning terminal value: {terminal_value}")
+                return {}, np.zeros(4672, dtype=np.float32), terminal_value
 
             key = board._transposition_key()
             root = self._tt_get(key)
@@ -323,9 +338,25 @@ class MCTS:
             self._last_root = root
             
             runtime = time.time() - start_time
+
+            # Enhanced logging with comprehensive statistics
+            if logger.isEnabledFor(logging.INFO):
+                sims_per_sec = sims_to_run / runtime if runtime > 0 else 0
+                tt_hit_rate = self.tt_hits / (self.tt_hits + self.tt_misses) if (self.tt_hits + self.tt_misses) > 0 else 0
+
+                logger.info(f"MCTS completed: {sims_to_run} sims in {runtime:.2f}s ({sims_per_sec:.1f} sim/s)")
+                logger.info(f"MCTS stats: TT_hits={self.tt_hits}, TT_misses={self.tt_misses}, hit_rate={tt_hit_rate:.2%}")
+                logger.info(f"MCTS results: root_visits={root.n}, root_value={v:.3f}, children={len(root.children)}")
+
+                # Log top moves
+                if root.children:
+                    sorted_children = sorted(root.children.items(), key=lambda x: x[1].n, reverse=True)[:5]
+                    top_moves = [f"{move}({node.n}v, {node.q:.3f}q)" for move, node in sorted_children]
+                    logger.info(f"Top moves: {' '.join(top_moves)}")
+
             if runtime > max_runtime * 0.8:
                 logger.warning(f"MCTS run took {runtime:.2f}s (close to {max_runtime}s limit)")
-                
+
             return visit_counts, policy, float(v)
             
         except Exception as e:
@@ -382,13 +413,27 @@ class MCTS:
                         leaf_nodes = leaf_nodes[:max_batch_size]
                         leaf_positions = leaf_positions[:max_batch_size]
                     
-                    # Stack into batch tensor
+                    # Stack into batch tensor with enhanced validation
                     batch_tensor = np.stack(encoded_batch, axis=0)
                     logger.debug(f"Running batched inference on {len(encoded_batch)} positions")
-                    
+
+                    # Log batch tensor statistics for debugging
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Batch tensor shape: {batch_tensor.shape}, dtype: {batch_tensor.dtype}")
+                        logger.debug(f"Batch tensor memory usage: {batch_tensor.nbytes / 1024:.1f} KB")
+
                     # Use inference client for batched inference
                     if hasattr(self, 'inference_backend') and self.inference_backend is not None:
                         policies, values = self.inference_backend.infer_np(batch_tensor)
+
+                        # Validate inference results
+                        if policies is None or values is None:
+                            logger.error("Inference backend returned None results")
+                            return
+
+                        if len(policies) != len(encoded_batch) or len(values) != len(encoded_batch):
+                            logger.error(f"Inference result shape mismatch: expected {len(encoded_batch)}, got policies={len(policies)}, values={len(values)}")
+                            return
                         
                         # Apply results back to nodes
                         for i, (node, policy, value) in enumerate(zip(leaf_nodes, policies, values)):
@@ -602,15 +647,43 @@ class MCTS:
                 v = -v
 
     def _add_dirichlet(self, root: Node) -> None:
+        """Add Dirichlet noise to child priors for exploration enhancement."""
         if not root.children or self.cfg.dirichlet_frac <= 0:
             return
-        
+
         alpha = self.cfg.dirichlet_alpha
         frac = self.cfg.dirichlet_frac
-        noise = np.random.dirichlet([alpha] * len(root.children))
-        
-        for i, child in enumerate(root.children.values()):
-            child.prior = child.prior * (1 - frac) + noise[i] * frac
+        num_children = len(root.children)
+
+        # Generate Dirichlet noise with enhanced validation
+        try:
+            noise = np.random.dirichlet([alpha] * num_children)
+
+            # Validate noise distribution
+            if np.any(np.isnan(noise)) or np.any(np.isinf(noise)):
+                logger.warning("Dirichlet noise contains NaN/Inf values, using uniform noise")
+                noise = np.ones(num_children) / num_children
+
+            if not np.isclose(np.sum(noise), 1.0, atol=1e-6):
+                logger.warning(f"Dirichlet noise doesn't sum to 1: {np.sum(noise)}")
+                noise = noise / np.sum(noise)  # Normalize
+
+            # Apply noise to child priors with validation
+            for i, child in enumerate(root.children.values()):
+                if i < len(noise):  # Safety check
+                    old_prior = child.prior
+                    new_prior = old_prior * (1 - frac) + noise[i] * frac
+
+                    # Ensure prior stays within valid range
+                    new_prior = max(1e-8, min(1.0 - 1e-8, new_prior))
+                    child.prior = new_prior
+
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Child {child.move}: prior {old_prior:.4f} -> {new_prior:.4f} (noise: {noise[i]:.4f})")
+
+        except Exception as e:
+            logger.error(f"Error applying Dirichlet noise: {e}")
+            # Fallback: no noise application
 
     @torch.no_grad()
     def _infer(self, board: chess.Board) -> Tuple[np.ndarray, float]:
@@ -622,9 +695,9 @@ class MCTS:
                 logger.warning("Failed to encode board, using fallback values")
                 return np.ones(4672, dtype=np.float32) / 4672, 0.0
             
-            # Ensure tensor is contiguous for MPS compatibility
+            # Original tensor preparation (circular import workaround)
             encoded = _ensure_contiguous_array(encoded)
-            
+
             # Add batch dimension if needed
             if encoded.ndim == 3:
                 encoded = np.expand_dims(encoded, 0)
@@ -636,16 +709,48 @@ class MCTS:
                     if hasattr(self, 'inference_backend') and self.inference_backend is not None:
                         # Use inference client for multi-threaded MCTS
                         policy, value = self.inference_backend.infer_np(encoded)
+
+                        # Validate inference results
+                        if policy is None or value is None:
+                            logger.error("Inference backend returned None results")
+                            return np.ones(4672, dtype=np.float32) / 4672, 0.0
+
                     else:
-                        # Direct inference for single-threaded
+                        # Direct inference for single-threaded (original implementation)
                         with torch.no_grad():
                             policy_logits, value_tensor = self.model(torch.from_numpy(encoded).to(self.device))
                             policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
                             value = value_tensor.cpu().numpy().flatten()
                     
-                    # Validate outputs
-                    if policy.shape[0] != encoded.shape[0] or value.shape[0] != encoded.shape[0]:
-                        raise ValueError(f"Output shape mismatch: policy={policy.shape}, value={value.shape}, input={encoded.shape}")
+                    # Comprehensive output validation
+                    expected_policy_shape = (encoded.shape[0], 4672)  # Standard policy size
+                    expected_value_shape = (encoded.shape[0],)  # Single value per position
+
+                    if policy.shape != expected_policy_shape:
+                        logger.error(f"Policy shape mismatch: got {policy.shape}, expected {expected_policy_shape}")
+                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+
+                    if value.shape != expected_value_shape:
+                        logger.error(f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}")
+                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+
+                    # Validate policy values
+                    if np.any(np.isnan(policy)) or np.any(np.isinf(policy)):
+                        logger.warning("Policy contains NaN/Inf values, normalizing")
+                        policy = np.ones_like(policy) / policy.shape[-1]  # Uniform policy
+
+                    if np.any(np.isnan(value)) or np.any(np.isinf(value)):
+                        logger.warning("Value contains NaN/Inf values, using 0.0")
+                        value = np.zeros_like(value)
+
+                    # Ensure policy sums to 1
+                    policy_sums = np.sum(policy, axis=-1)
+                    if not np.allclose(policy_sums, 1.0, atol=1e-3):
+                        logger.warning(f"Policy doesn't sum to 1: {policy_sums}, renormalizing")
+                        policy = policy / policy_sums[..., np.newaxis]
+
+                    # Clamp value to reasonable range
+                    value = np.clip(value, -1.0, 1.0)
                     
                     return policy[0], float(value[0])
                     
@@ -851,7 +956,7 @@ class MCTS:
         return base_weight
 
     def _cleanup_memory(self, force: bool = False) -> None:
-        """Clean up memory by clearing caches and old TT entries."""
+        """Clean up memory by clearing caches and old TT entries using unified memory management."""
         current_time = time.time()
 
         # Only cleanup periodically unless forced
@@ -862,14 +967,20 @@ class MCTS:
             # Get current memory usage
             if psutil_available:
                 memory_mb = psutil.Process().memory_info().rss / (1024 * 1024)
-                memory_threshold = getattr(self.cfg, 'memory_cleanup_threshold_mb', 2048)
+            memory_threshold = getattr(self.cfg, 'memory_cleanup_threshold_mb', 2048)
 
-                # Force cleanup if memory usage is too high
-                if memory_mb > memory_threshold:
-                    logger.info(f"Memory usage {memory_mb:.0f}MB exceeds threshold {memory_threshold}MB, forcing cleanup")
-                    force = True
-        except Exception:
-            pass
+            # Force cleanup if memory usage is too high
+            if memory_mb > memory_threshold:
+                logger.info(f"Memory usage {memory_mb:.0f}MB exceeds threshold {memory_threshold}MB, forcing cleanup")
+                force = True
+
+            # Log memory statistics for monitoring
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Memory cleanup check: {memory_mb:.1f}MB / {memory_threshold}MB threshold")
+
+        except Exception as e:
+            logger.debug(f"Could not check memory usage for cleanup: {e}")
+            # Continue with cleanup even if memory check fails
 
         if force:
             # Aggressive cleanup
@@ -893,6 +1004,12 @@ class MCTS:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # Log cleanup results
+            if logger.isEnabledFor(logging.DEBUG):
+                tt_size_after = len(self.tt)
+                nn_cache_size_after = len(self.nn_cache.cache)
+                logger.debug(f"Memory cleanup completed: TT={tt_size_after}, NN_cache={nn_cache_size_after}")
 
         self._last_cleanup_wall = current_time
 

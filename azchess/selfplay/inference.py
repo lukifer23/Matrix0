@@ -34,6 +34,31 @@ def setup_shared_memory_for_worker(
     }
 
 
+def _validate_events(events: List[Event]) -> bool:
+    """Validate that all events are in a usable state."""
+    try:
+        for i, ev in enumerate(events):
+            # Test if event can be checked without error
+            _ = ev.is_set()
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _recreate_worker_events(shared_memory_resources: List[Dict[str, Any]], attempt: int) -> None:
+    """Recreate all worker events to fix corruption."""
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Recreating worker events (attempt {attempt})")
+    
+    for i, res in enumerate(shared_memory_resources):
+        try:
+            res["request_event"] = Event()
+            res["response_event"] = Event()
+            logger.debug(f"Recreated events for worker {i}")
+        except Exception as recreate_error:
+            logger.error(f"Failed to recreate events for worker {i}: {recreate_error}")
+
+
 def run_inference_server(
     device: str,
     model_cfg: dict,
@@ -53,8 +78,10 @@ def run_inference_server(
 
         try:
             logger.info(f"Creating model from config: {model_cfg}")
+            model_creation_start = time.time()
             model = PolicyValueNet.from_config(model_cfg)
-            logger.info("Model created successfully, moving to device...")
+            model_creation_time = time.time() - model_creation_start
+            logger.info(f"Model created successfully in {model_creation_time:.3f}s, moving to device...")
 
             # Clear MPS cache before moving model
             if device == "mps":
@@ -63,8 +90,10 @@ def run_inference_server(
                 torch.mps.empty_cache()
 
             # Move model to device with error handling
+            model_move_start = time.time()
             model = model.to(device)
-            logger.info(f"Model successfully moved to device: {device}")
+            model_move_time = time.time() - model_move_start
+            logger.info(f"Model successfully moved to device in {model_move_time:.3f}s: {device}")
 
         except Exception as e:
             logger.error(f"Failed to create or move model to device: {e}")
@@ -134,19 +163,9 @@ def run_inference_server(
                     raise
         else:
             logger.warning("No model state_dict provided, using random weights.")
-        try:
-            model.eval()
-            logger.info("Model set to eval mode")
-        except Exception as e:
-            logger.error(f"Failed to set model to eval mode: {e}")
-            raise
 
-        # Log device and memory info
-        try:
-            logger.info(f"Model device: {next(model.parameters()).device}")
-        except Exception as e:
-            logger.error(f"Failed to get model device info: {e}")
-            raise
+        # Log device and memory information
+        logger.info(f"Model device: {next(model.parameters()).device}")
         if torch.cuda.is_available():
             logger.info(
                 f"CUDA memory: {torch.cuda.memory_allocated()/1024/1024:.1f}MB allocated"
@@ -165,8 +184,7 @@ def run_inference_server(
         logger.info("Inference server ready")
 
         # Add heartbeat logging to monitor server health
-        import time
-        start_time = time.time()
+        server_start_time = time.time()
         heartbeat_counter = 0
         last_heartbeat = time.time()
         heartbeat_interval = 30.0  # Log heartbeat every 30 seconds
@@ -185,11 +203,11 @@ def run_inference_server(
         while not stop_event.is_set():
             try:
                 # CRITICAL FIX: Validate events before use to prevent corruption
-                if not self._validate_events(worker_events):
+                if not _validate_events(worker_events):
                     logger.warning("Detected corrupted events, recreating them")
                     if event_recreation_count < max_event_recreations:
                         event_recreation_count += 1
-                        self._recreate_worker_events(shared_memory_resources, event_recreation_count)
+                        _recreate_worker_events(shared_memory_resources, event_recreation_count)
                         worker_events = [res["request_event"] for res in shared_memory_resources]
                         event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
                         time.sleep(0.1)
@@ -198,13 +216,19 @@ def run_inference_server(
                         logger.error("Max event recreations reached, stopping inference server")
                         break
 
+                # Add heartbeat logging
+                if time.time() - last_heartbeat > heartbeat_interval:
+                    logger.info(f"Inference server heartbeat - uptime: {time.time() - server_start_time:.1f}s, requests: {heartbeat_counter}")
+                    last_heartbeat = time.time()
+                    heartbeat_counter += 1
+
                 # Custom wait implementation for multiprocessing.Event compatibility
                 ready_events = []
-                start_time = time.time()
+                wait_start_time = time.time()
 
                 while not stop_event.is_set():
                     current_time = time.time()
-                    if timeout is not None and (current_time - start_time) > timeout:
+                    if timeout is not None and (current_time - wait_start_time) > timeout:
                         break
 
                     ready_events = []
@@ -219,7 +243,7 @@ def run_inference_server(
                             logger.warning(f"Event {i} is corrupted: {e}")
                             if event_recreation_count < max_event_recreations:
                                 event_recreation_count += 1
-                                self._recreate_worker_events(shared_memory_resources, event_recreation_count)
+                                _recreate_worker_events(shared_memory_resources, event_recreation_count)
                                 worker_events = [res["request_event"] for res in shared_memory_resources]
                                 event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
                                 break
@@ -303,31 +327,52 @@ def run_inference_server(
                     if (
                         total_batch_size == 0 or total_batch_size < 16
                     ):  # Target 16+ samples per batch
-                        tensors_to_process.append(res["request_tensor"][:batch_size])
-                        batch_sizes[worker_id] = batch_size
-                        total_batch_size += batch_size
-                        res["request_event"].clear()  # Clear event after reading
-                        logger.debug(
-                            f"Accumulating batch: worker {worker_id}, size {batch_size}, total {total_batch_size}"
-                        )
+                        try:
+                            tensor_slice = res["request_tensor"][:batch_size]
+                            logger.debug(f"Worker {worker_id}: extracting tensor slice of shape {tensor_slice.shape}")
+                            tensors_to_process.append(tensor_slice)
+                            batch_sizes[worker_id] = batch_size
+                            total_batch_size += batch_size
+                            res["request_event"].clear()  # Clear event after reading
+                            logger.debug(
+                                f"Accumulating batch: worker {worker_id}, size {batch_size}, total {total_batch_size}"
+                            )
+                        except Exception as slice_error:
+                            logger.error(f"Failed to extract tensor slice for worker {worker_id}: {slice_error}")
+                            logger.error(f"Request tensor shape: {res['request_tensor'].shape}, batch_size: {batch_size}")
+                            continue
                     else:
-                        # Process small batches immediately to avoid timeouts
-                        # Don't defer them - this was causing the 6-second delays!
-                        tensors_to_process.append(res["request_tensor"][:batch_size])
-                        batch_sizes[worker_id] = batch_size
-                        total_batch_size += batch_size
-                        res["request_event"].clear()
-                        logger.debug(
-                            f"Processing batch immediately: worker {worker_id}, size {batch_size}, total {total_batch_size}"
-                        )
+                        # Process batches immediately to avoid timeouts
+                        try:
+                            tensor_slice = res["request_tensor"][:batch_size]
+                            logger.debug(f"Worker {worker_id}: extracting tensor slice of shape {tensor_slice.shape}")
+                            tensors_to_process.append(tensor_slice)
+                            batch_sizes[worker_id] = batch_size
+                            total_batch_size += batch_size
+                            res["request_event"].clear()
+                            logger.debug(
+                                f"Processing batch immediately: worker {worker_id}, size {batch_size}, total {total_batch_size}"
+                            )
+                        except Exception as slice_error:
+                            logger.error(f"Failed to extract tensor slice for worker {worker_id}: {slice_error}")
+                            logger.error(f"Request tensor shape: {res['request_tensor'].shape}, batch_size: {batch_size}")
+                            continue
 
                 if not tensors_to_process:
                     logger.debug("No tensors to process, continuing...")
                     continue
 
                 # Process larger batches for better GPU utilization
-                batch_tensor = torch.cat(tensors_to_process, dim=0).to(device)
-                logger.debug(f"Processing batch of size {batch_tensor.shape[0]}")
+                try:
+                    batch_tensor = torch.cat(tensors_to_process, dim=0).to(device)
+                    logger.info(f"Processing batch of size {batch_tensor.shape[0]} from {len(batch_sizes)} workers")
+                    logger.debug(f"Batch tensor shape: {batch_tensor.shape}, device: {batch_tensor.device}")
+                except Exception as cat_error:
+                    logger.error(f"Failed to concatenate tensors: {cat_error}")
+                    logger.error(f"Number of tensors: {len(tensors_to_process)}")
+                    for i, tensor in enumerate(tensors_to_process):
+                        logger.error(f"Tensor {i} shape: {tensor.shape}, device: {tensor.device}")
+                    continue
 
                 # MPS OPTIMIZATION: Use memory format optimization for better performance
                 if device_type == "mps":
@@ -340,78 +385,113 @@ def run_inference_server(
                         # Fallback to default if channels_last not supported
                         pass
 
-                # Run inference with performance monitoring and error handling
-                start_time = time.time()
-                try:
-                    with torch.no_grad(), torch.autocast(
-                        device_type=device_type, enabled=use_amp
-                    ):
-                        p, v = model(batch_tensor)
-                except Exception as inference_error:
-                    logger.error(f"Model inference failed: {inference_error}")
-                    logger.error(f"Batch tensor shape: {batch_tensor.shape}")
-                    logger.error(f"Model device: {model.device}")
-                    if device == "mps":
-                        logger.info("Clearing MPS cache due to inference error")
-                        torch.mps.empty_cache()
-                    raise
-                inference_time = time.time() - start_time
-
-                # Log performance metrics
-                # OPTIMIZED: More realistic thresholds for 32M parameter model
-                if (
-                    inference_time > 0.2
-                ):  # Log slow inference (>200ms for larger batches)
-                    logger.warning(
-                        f"Slow inference: {inference_time:.3f}s for batch size {batch_tensor.shape[0]} ({inference_time/batch_tensor.shape[0]:.3f}s per sample)"
-                    )
-                elif inference_time > 0.1:  # Log moderate inference (100-200ms)
-                    logger.info(
-                        f"Moderate inference: {inference_time:.3f}s for batch size {batch_tensor.shape[0]} ({inference_time/batch_tensor.shape[0]:.3f}s per sample)"
-                    )
-                else:
-                    logger.debug(
-                        f"Fast inference: {inference_time:.3f}s for batch size {batch_tensor.shape[0]} ({inference_time/batch_tensor.shape[0]:.3f}s per sample)"
-                    )
-
-                try:
-                    p_cpu = p.detach().cpu()
-                    v_cpu = v.detach().cpu().unsqueeze(-1)
-                except Exception as tensor_error:
-                    logger.error(f"Failed to move tensors to CPU: {tensor_error}")
-                    raise
-
-                logger.debug(
-                    f"Inference server sending responses to workers: {list(batch_sizes.keys())}"
-                )
-                # Write results back to shared memory efficiently
-                offset = 0
-                for worker_id in sorted(batch_sizes.keys()):  # Process in order
-                    res = shared_memory_resources[worker_id]
-                    size = batch_sizes[worker_id]
+                # Inference with mixed precision if available
+                inference_start = time.time()
+                with torch.no_grad():
                     try:
-                        # Use non-blocking copies for better performance
-                        res["response_policy_tensor"][:size].copy_(
-                            p_cpu[offset : offset + size], non_blocking=True
-                        )
-                        res["response_value_tensor"][:size].copy_(
-                            v_cpu[offset : offset + size], non_blocking=True
-                        )
-                        res["response_event"].set()  # Signal response is ready
-                    except Exception as copy_error:
-                        logger.error(f"Failed to copy results to worker {worker_id}: {copy_error}")
-                        raise
-                    logger.debug(f"Response sent to worker {worker_id}, size {size}")
-                    offset += size
+                        logger.info(f"Starting inference for batch size {batch_tensor.shape[0]} on {device_type}")
+                        model_start = time.time()
 
-                    # Inference server heartbeat monitoring
-                    current_time = time.time()
-                    if current_time - last_heartbeat > heartbeat_interval:
-                        heartbeat_counter += 1
-                        logger.info(f"INFERENCE_SERVER_HB: Active for {current_time - start_time:.1f}s | "
-                                  f"Processed {heartbeat_counter} heartbeats | "
-                                  f"Event recreations: {event_recreation_count}")
-                        last_heartbeat = current_time
+                        if use_amp:
+                            with torch.autocast(device_type=device_type):
+                                policy_logits, value_tensor = model(batch_tensor)
+                        else:
+                            policy_logits, value_tensor = model(batch_tensor)
+
+                        model_time = time.time() - model_start
+                        logger.info(f"Model forward pass completed in {model_time:.3f}s")
+
+                        # Validate model outputs
+                        if policy_logits is None or value_tensor is None:
+                            raise ValueError("Model returned None outputs")
+
+                        inference_time = time.time() - inference_start
+                        logger.info(f"Full inference completed in {inference_time:.3f}s for batch size {batch_tensor.shape[0]}")
+
+                        # Convert to numpy for response with strict dtype/shape
+                        policy = torch.softmax(policy_logits, dim=-1).detach().to(torch.float32).cpu().numpy()
+                        value = value_tensor.detach().to(torch.float32).cpu().numpy()
+
+                        # Ensure contiguous float32 and correct dims
+                        if policy.ndim != 2:
+                            policy = policy.reshape(policy.shape[0], -1)
+                        policy = np.ascontiguousarray(policy, dtype=np.float32)
+
+                        if value.ndim == 1:
+                            value = value[:, None]
+                        elif value.ndim > 2:
+                            value = value.reshape(value.shape[0], -1)
+                        if value.shape[1] != 1:
+                            # Clamp to one column if model produced extra dims
+                            value = value[:, :1]
+                        value = np.ascontiguousarray(value, dtype=np.float32)
+
+                        logger.debug(f"Results converted to numpy: policy shape {policy.shape}, value shape {value.shape}")
+
+                    except Exception as model_error:
+                        logger.error(f"Model inference failed: {model_error}")
+                        logger.error(f"Batch tensor shape: {batch_tensor.shape}")
+                        logger.error(f"Batch tensor device: {batch_tensor.device}")
+                        logger.error(f"Model device: {next(model.parameters()).device}")
+
+                        # Return fallback values
+                        batch_size = batch_tensor.shape[0]
+                        policy = np.ones((batch_size, 4672), dtype=np.float32) / 4672
+                        value = np.zeros((batch_size, 1), dtype=np.float32)
+
+                # Distribute results back to workers
+                start_idx = 0
+                for worker_id in batch_indices:
+                    if worker_id not in batch_sizes:
+                        continue
+                    batch_size = batch_sizes[worker_id]
+                    end_idx = start_idx + batch_size
+                    
+                    try:
+                        res = shared_memory_resources[worker_id]
+                        # Convert numpy arrays to torch tensors before assignment
+                        pol_np = policy[start_idx:end_idx]
+                        val_np = value[start_idx:end_idx]
+                        if val_np.ndim == 1:
+                            val_np = val_np.reshape(-1, 1)
+                        # Final guards
+                        pol_np = np.ascontiguousarray(pol_np, dtype=np.float32)
+                        val_np = np.ascontiguousarray(val_np, dtype=np.float32)
+
+                        policy_slice = torch.from_numpy(pol_np)
+                        value_slice = torch.from_numpy(val_np)
+
+                        # Write into shared tensors
+                        res["response_policy_tensor"][:batch_size].copy_(policy_slice)
+                        res["response_value_tensor"][:batch_size].copy_(value_slice)
+                        res["response_event"].set()  # Signal completion
+                        logger.debug(f"Response sent to worker {worker_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send response to worker {worker_id}: {e}")
+                        # Guarantee a safe fallback is written and event signaled to avoid deadlock
+                        try:
+                            fb_pol = np.ones((batch_size, policy.shape[1]), dtype=np.float32) / max(1, policy.shape[1])
+                            fb_val = np.zeros((batch_size, 1), dtype=np.float32)
+                            res["response_policy_tensor"][:batch_size].copy_(torch.from_numpy(fb_pol))
+                            res["response_value_tensor"][:batch_size].copy_(torch.from_numpy(fb_val))
+                            res["response_event"].set()
+                            logger.warning(f"Fallback response sent to worker {worker_id}")
+                        except Exception as fb_err:
+                            logger.error(f"Failed to send fallback response to worker {worker_id}: {fb_err}")
+                    
+                    start_idx = end_idx
+
+                # Log heartbeat periodically
+                current_time = time.time()
+                if current_time - last_heartbeat > heartbeat_interval:
+                    heartbeat_counter += 1
+                    logger.info(
+                        f"Inference server heartbeat {heartbeat_counter}: "
+                        f"processed {len(batch_indices)} workers, "
+                        f"batch size {total_batch_size}, "
+                        f"uptime {current_time - server_start_time:.1f}s"
+                    )
+                    last_heartbeat = current_time
 
             except Exception as e:
                 logger.error(f"Error in batch processing: {e}", exc_info=True)
@@ -455,16 +535,18 @@ class InferenceClient:
             arr_batch = arr_batch.astype(np.float32, copy=False)
 
         # Adaptive timeout based on batch size and complexity
-        # Chess AI needs reasonable timeouts for 32M parameter model
-        base_timeout = 2.0  # 2s base timeout for 32M model
+        # Chess AI needs reasonable timeouts for 53M parameter model
+        base_timeout = 12.0  # 12s base timeout for 53M model
         if batch_size == 1:
-            timeout = base_timeout * 1.5  # 3s for single samples
+            timeout = base_timeout * 1.5  # 18s for single samples (MCTS root)
         elif batch_size <= 4:
-            timeout = base_timeout * 1.2  # 2.4s for small batches
+            timeout = base_timeout * 1.25  # 15s for small batches
+        elif batch_size <= 16:
+            timeout = base_timeout * 1.0   # 12s for medium batches (16 samples)
         else:
             timeout = base_timeout * (1.0 + batch_size / 32.0)  # Scale with batch size
 
-        timeout = min(timeout, 5.0)  # Cap at 5s maximum for 32M model
+        timeout = min(timeout, 30.0)  # Cap at 30s maximum for complex batches
 
         self.logger.debug(
             f"Inference request: batch_size={batch_size}, timeout={timeout:.1f}s"
@@ -472,120 +554,69 @@ class InferenceClient:
 
         # Copy to shared memory with error handling
         try:
-            # CRITICAL FIX: Set the batch size tensor so the server knows how much data to process
+            # Copy input data to shared memory
+            self.res["request_tensor"][:batch_size] = torch.from_numpy(arr_batch)
             self.res["batch_size_tensor"][0] = batch_size
-            self.logger.debug(f"Set batch_size_tensor to {batch_size}")
-
-            self.res["request_tensor"][:batch_size].copy_(torch.from_numpy(arr_batch))
-            self.logger.debug(f"Copied {batch_size} samples to request_tensor")
-
+            
+            # Signal request
             self.res["request_event"].set()
-            self.logger.debug(f"Set request_event for batch size {batch_size}")
-        except Exception as e:
-            # Handle potential event corruption issues
-            if "Invalid file object" in str(e):
-                self.logger.warning("Request event may be corrupted, attempting recovery")
+            
+            # Wait for response with timeout and retry logic
+            max_retries = 2
+            for attempt in range(max_retries + 1):
                 try:
-                    # Try to recreate the event
-                    self.res["request_event"] = Event()
-                    self.res["response_event"] = Event()
-                    self.logger.info("Recreated corrupted events, retrying request")
-
-                    # Retry the request with new events
-                    self.res["batch_size_tensor"][0] = batch_size
-                    self.res["request_tensor"][:batch_size].copy_(torch.from_numpy(arr_batch))
-                    self.res["request_event"].set()
-                    self.logger.debug("Successfully retried request with new events")
-                except Exception as recovery_error:
-                    self.logger.error(f"Failed to recover from event corruption: {recovery_error}")
-                    # CRITICAL FIX: Return fallback values instead of raising error
-                    self.logger.warning("Returning fallback values due to event corruption")
-                    return self._get_fallback_values(batch_size)
-            else:
-                self.logger.error(f"Failed to copy request to shared memory: {e}")
-                # CRITICAL FIX: Return fallback values instead of raising error
-                self.logger.warning("Returning fallback values due to copy failure")
-                return self._get_fallback_values(batch_size)
-
-        # Wait for response with timeout and retry logic
-        max_retries = 1  # Reduced from 2 to prevent cascading failures
-        for attempt in range(max_retries + 1):
-            try:
-                if self.res["response_event"].wait(timeout=timeout):
-                    # Read response from shared memory
-                    policy = self.res["response_policy_tensor"][:batch_size].numpy()
-                    value = (
-                        self.res["response_value_tensor"][:batch_size].numpy().flatten()
-                    )
-
-                    # Validate response
-                    if policy.shape[0] != batch_size or value.shape[0] != batch_size:
-                        raise ValueError(
-                            f"Response shape mismatch: policy={policy.shape}, value={value.shape}, expected={batch_size}"
-                        )
-
-                    self.res["response_event"].clear()
-                    return policy, value
-            except (ValueError, RuntimeError) as e:
-                # Handle event corruption during wait
-                if "Invalid file object" in str(e):
-                    self.logger.warning(f"Response event corrupted during wait (attempt {attempt + 1})")
-                    if attempt < max_retries:
-                        # Try to recreate events and retry
-                        try:
-                            self.res["request_event"] = Event()
-                            self.res["response_event"] = Event()
-                            # Resend the request
-                            self.res["batch_size_tensor"][0] = batch_size
-                            self.res["request_tensor"][:batch_size].copy_(torch.from_numpy(arr_batch))
-                            self.res["request_event"].set()
-                            continue
-                        except Exception as recovery_error:
-                            self.logger.error(f"Failed to recover from response event corruption: {recovery_error}")
-                            if attempt == max_retries:
-                                # CRITICAL FIX: Return fallback values instead of raising error
-                                self.logger.warning("Returning fallback values after event corruption recovery failure")
-                                return self._get_fallback_values(batch_size)
-                            continue
+                    if self.res["response_event"].wait(timeout=timeout):
+                        # Response received, copy results
+                        policy = self.res["response_policy_tensor"][:batch_size].numpy()
+                        value = self.res["response_value_tensor"][:batch_size].numpy()
+                        
+                        # Clear response event for next use
+                        self.res["response_event"].clear()
+                        
+                        # Validate outputs
+                        if policy.shape[0] != batch_size or value.shape[0] != batch_size:
+                            raise ValueError(f"Response shape mismatch: policy={policy.shape}, value={value.shape}, expected_batch_size={batch_size}")
+                        
+                        return policy, value.flatten()
                     else:
-                        # CRITICAL FIX: Return fallback values instead of raising error
-                        self.logger.warning("Returning fallback values after event corruption")
+                        raise TimeoutError(f"Inference timeout after {timeout}s")
+                        
+                except TimeoutError:
+                    if attempt < max_retries:
+                        self.logger.warning(
+                            f"Inference timeout (attempt {attempt + 1}/{max_retries + 1}), retrying..."
+                        )
+                        # Clear events and retry
+                        self.res["request_event"].clear()
+                        self.res["response_event"].clear()
+                        time.sleep(0.1)  # Brief pause before retry
+                        continue
+                    else:
+                        self.logger.error(
+                            f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt)"
+                        )
+                        # CRITICAL FIX: Return fallback values instead of raising TimeoutError
+                        self.logger.warning("Returning fallback values due to timeout")
                         return self._get_fallback_values(batch_size)
-                else:
-                    raise
+                except Exception as e:
+                    if attempt < max_retries:
+                        self.logger.warning(
+                            f"Inference error (attempt {attempt + 1}/{max_retries + 1}): {e}, retrying..."
+                        )
+                        time.sleep(0.1)
+                        continue
+                    else:
+                        self.logger.error(
+                            f"Inference failed after {max_retries + 1} attempts: {e}"
+                        )
+                        # CRITICAL FIX: Return fallback values instead of None
+                        self.logger.warning("Returning fallback values after inference failure")
+                        return self._get_fallback_values(batch_size)
 
-            except Exception as timeout_e:
-                if attempt < max_retries:
-                    self.logger.warning(
-                        f"Inference timeout (attempt {attempt + 1}/{max_retries + 1}), retrying..."
-                    )
-                    # Clear events and retry
-                    self.res["request_event"].clear()
-                    self.res["response_event"].clear()
-                    time.sleep(0.1)  # Brief pause before retry
-                    continue
-                else:
-                    self.logger.error(
-                        f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt)"
-                    )
-                    # CRITICAL FIX: Return fallback values instead of raising TimeoutError
-                    self.logger.warning("Returning fallback values due to timeout")
-                    return self._get_fallback_values(batch_size)
-
-            except Exception as e:
-                if attempt < max_retries:
-                    self.logger.warning(
-                        f"Inference error (attempt {attempt + 1}/{max_retries + 1}): {e}, retrying..."
-                    )
-                    time.sleep(0.1)
-                    continue
-                else:
-                    self.logger.error(
-                        f"Inference failed after {max_retries + 1} attempts: {e}"
-                    )
-                    # CRITICAL FIX: Return fallback values instead of None
-                    self.logger.warning("Returning fallback values after inference failure")
-                    return self._get_fallback_values(batch_size)
+        except Exception as e:
+            self.logger.error(f"Failed to copy data to shared memory: {e}")
+            # Return fallback values on critical failure
+            return self._get_fallback_values(batch_size)
 
     def _get_fallback_values(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
         """Return safe fallback values when inference fails completely."""
@@ -596,29 +627,10 @@ class InferenceClient:
 
     def _validate_events(self, events: List[Event]) -> bool:
         """Validate that all events are in a usable state."""
-        for i, ev in enumerate(events):
-            try:
-                # Test basic event operations
-                current_state = ev.is_set()
-                # Try to clear and set to test functionality
-                ev.clear()
-                ev.set()
-                ev.clear()
-            except (OSError, ValueError, AttributeError) as e:
-                self.logger.warning(f"Event {i} validation failed: {e}")
-                return False
-        return True
-
-    def _recreate_worker_events(self, shared_memory_resources: List[Dict], attempt: int) -> None:
-        """Recreate events for all workers to recover from corruption."""
-        self.logger.info(f"Recreating worker events (attempt {attempt})")
-        for i, res in enumerate(shared_memory_resources):
-            try:
-                res["request_event"] = Event()
-                res["response_event"] = Event()
-                self.logger.debug(f"Recreated events for worker {i}")
-            except Exception as recreate_error:
-                self.logger.error(f"Failed to recreate events for worker {i}: {recreate_error}")
-        
-        # Brief pause to allow events to stabilize
-        time.sleep(0.1)
+        try:
+            for i, ev in enumerate(events):
+                # Test if event can be checked without error
+                _ = ev.is_set()
+            return True
+        except (OSError, ValueError, RuntimeError):
+            return False

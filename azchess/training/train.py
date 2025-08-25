@@ -27,6 +27,11 @@ import logging
 from azchess.config import Config, select_device
 from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
+from azchess.utils import (
+    clear_memory_cache, get_memory_usage, emergency_memory_cleanup,
+    safe_config_get, log_tensor_stats, start_memory_monitoring,
+    add_memory_alert_callback
+)
 from azchess.encoding import encode_board, move_to_index, POLICY_SHAPE
 from azchess.logging_utils import setup_logging
 
@@ -192,7 +197,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
 
-    # Generate self-supervised learning targets (class indices for multi-class prediction)
+    # Generate self-supervised learning targets (enhanced multi-task SSL)
     ssl_targets = None
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
         try:
@@ -339,16 +344,28 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 ramp = 1.0
 
             # SSL loss computation with memory optimization
-            # Clear MPS cache before SSL computation to prevent memory pressure
-            if device == "mps":
-                logger.debug("Clearing MPS cache before SSL computation")
-                import torch.mps
-                torch.mps.empty_cache()
+            # Clear cache before SSL computation to prevent memory pressure
+            logger.debug("Clearing cache before SSL computation")
+            clear_memory_cache(device)
 
-            # Use gradient checkpointing for SSL to reduce memory usage
-            if hasattr(model, 'get_ssl_loss'):
+            # Unified SSL loss computation - use enhanced SSL if available and targets are dict
+            ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
+
+            if hasattr(model, 'get_enhanced_ssl_loss') and isinstance(ssl_targets, dict):
+                # Use enhanced SSL system (includes piece recognition + additional tasks)
                 try:
-                    # SSL needs gradients for training - removed torch.no_grad()
+                    ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets)
+                except Exception as e:
+                    logger.warning(f"Enhanced SSL loss computation failed: {e}, falling back to basic SSL")
+                    # Fallback to basic SSL if enhanced fails
+                    if hasattr(model, 'get_ssl_loss') and not isinstance(ssl_targets, dict):
+                        try:
+                            ssl_loss = model.get_ssl_loss(s, ssl_targets)
+                        except Exception as e2:
+                            logger.warning(f"Basic SSL computation also failed: {e2}")
+            elif hasattr(model, 'get_ssl_loss'):
+                # Use basic SSL system (piece recognition only)
+                try:
                     ssl_loss = model.get_ssl_loss(s, ssl_targets)
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
@@ -356,8 +373,6 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
                     else:
                         raise
-            else:
-                ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
@@ -497,17 +512,9 @@ def train_comprehensive(
     device = select_device(device)
     
     # Memory cleanup at start of training
-    import torch
     logger.info("Performing memory cleanup at start of training")
     try:
-        import gc
-        gc.collect()
-        if device.startswith('mps') and torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-            logger.info("MPS memory cache cleared")
-        elif device.startswith('cuda') and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("CUDA memory cache cleared")
+        clear_memory_cache(device)
         logger.info("Memory cleanup completed")
     except Exception as e:
         logger.warning(f"Memory cleanup failed: {e}")
@@ -524,15 +531,23 @@ def train_comprehensive(
     # Initialize model
     model = PolicyValueNet.from_config(cfg.model()).to(device)
     
-    # Enable memory optimizations
+    # Enable memory optimizations with configurable gradient checkpointing
     if hasattr(model, 'enable_gradient_checkpointing'):
-        model.enable_gradient_checkpointing()
-        logger.info("Gradient checkpointing enabled for memory efficiency")
+        # Get checkpointing strategy from config (default to adaptive)
+        checkpoint_strategy = safe_config_get(cfg, 'gradient_checkpointing_strategy', 'adaptive', section='training')
+        model.enable_gradient_checkpointing(strategy=checkpoint_strategy)
+        logger.info(f"Gradient checkpointing enabled with strategy '{checkpoint_strategy}' for memory efficiency")
     
-    # Log model memory usage
-    if hasattr(model, 'get_memory_usage'):
-        memory_stats = model.get_memory_usage()
-        logger.info(f"Model memory usage: {memory_stats}")
+    # Log memory usage
+    try:
+        system_memory = get_memory_usage(device)
+        logger.info(f"System memory usage: {system_memory['memory_gb']:.2f}GB on {device}")
+
+        if hasattr(model, 'get_memory_usage'):
+            model_memory_stats = model.get_memory_usage()
+            logger.info(f"Model memory usage: {model_memory_stats}")
+    except Exception as e:
+        logger.debug(f"Could not log memory usage: {e}")
     
     # Optional compile for speed (PyTorch 2.1+)
     try:
@@ -672,8 +687,8 @@ def train_comprehensive(
     logger.info(f"External training data: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples.")
     
     # Check if curriculum learning is enabled
-    use_curriculum = cfg.training().get("use_curriculum", False)
-    curriculum_phases = cfg.training().get("curriculum_phases", [])
+    use_curriculum = safe_config_get(cfg, "use_curriculum", False, section='training')
+    curriculum_phases = safe_config_get(cfg, "curriculum_phases", [], section='training')
     
     if use_curriculum and curriculum_phases:
         logger.info(f"Curriculum learning enabled with {len(curriculum_phases)} phases")
@@ -707,7 +722,7 @@ def train_comprehensive(
     tr_cfg = cfg.training()  # Get training config
 
     # Memory limits are now set at the beginning of the orchestrator main() function
-    memory_limit_gb = tr_cfg.get('memory_limit_gb', 12)  # Default 12GB if not specified
+    memory_limit_gb = safe_config_get(cfg, 'memory_limit_gb', 12, section='training')  # Default 12GB if not specified
     if device.startswith('mps'):
         import os
         # Check current memory settings
@@ -726,19 +741,43 @@ def train_comprehensive(
     last_heartbeat = time.time()
     heartbeat_interval = 30.0  # Heartbeat every 30 seconds (like self-play but less frequent)
 
+    # Initialize advanced memory monitoring system
+    memory_warning_threshold = safe_config_get(cfg, 'memory_warning_threshold', 0.85, section='training')  # 85% default
+    memory_critical_threshold = safe_config_get(cfg, 'memory_critical_threshold', 0.95, section='training')  # 95% default
+
+    # Start comprehensive memory monitoring
+    try:
+        start_memory_monitoring(
+            device=device,
+            warning_threshold=memory_warning_threshold,
+            critical_threshold=memory_critical_threshold,
+            check_interval=30.0  # Check every 30 seconds
+        )
+        logger.info("Advanced memory monitoring system started")
+
+        # Add custom alert callback for training-specific actions
+        def training_memory_alert_callback(alert):
+            if alert.alert_type == 'critical':
+                logger.critical(f"CRITICAL MEMORY: Training may become unstable. Memory: {alert.memory_usage_gb:.2f}GB")
+            elif alert.alert_type == 'warning':
+                logger.warning(f"HIGH MEMORY: Monitor training stability. Memory: {alert.memory_usage_gb:.2f}GB")
+
+        add_memory_alert_callback(training_memory_alert_callback)
+
+    except Exception as e:
+        logger.warning(f"Could not start advanced memory monitoring: {e}")
+        # Fallback to basic monitoring
+        last_memory_warning = 0
+        memory_warning_cooldown = 300  # 5 minutes between warnings
+
     def get_system_memory_usage():
         """Get current system memory usage in GB for heartbeat monitoring."""
         try:
-            if device.startswith('mps'):
-                # For MPS, estimate based on available memory
-                import psutil
-                return round(psutil.virtual_memory().used / (1024**3), 2)
-            elif device.startswith('cuda'):
-                return round(torch.cuda.memory_allocated(device) / (1024**3), 2)
-            else:
-                import psutil
-                return round(psutil.virtual_memory().used / (1024**3), 2)
-        except:
+            # Use unified memory management
+            usage = get_memory_usage(device)
+            return usage.get('memory_gb', 0.0)
+        except Exception as e:
+            logger.debug(f"Could not get memory usage: {e}")
             return 0.0
 
     # Training loop
@@ -835,7 +874,7 @@ def train_comprehensive(
                 # tr_cfg already assigned at function start
                 loss_values = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
-                augment_rotate180=bool(tr_cfg.get('augment_rotate180', True)),
+                augment_rotate180=safe_config_get(cfg, 'augment_rotate180', True, section='training'),
                 ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(cfg.model().get('self_supervised', False)),
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
@@ -1002,6 +1041,23 @@ def train_comprehensive(
                             except:
                                 pass
 
+                        # Memory monitoring and alerting
+                        memory_usage_gb = get_system_memory_usage()
+                        if memory_limit_gb > 0:
+                            memory_ratio = memory_usage_gb / memory_limit_gb
+                            current_time = time.time()
+
+                            if memory_ratio >= memory_critical_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
+                                logger.warning(f"CRITICAL MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})")
+                                logger.warning("Consider reducing batch size or enabling gradient checkpointing")
+                                emergency_memory_cleanup(device)
+                                last_memory_warning = current_time
+
+                            elif memory_ratio >= memory_warning_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
+                                logger.warning(f"HIGH MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})")
+                                clear_memory_cache(device)
+                                last_memory_warning = current_time
+
                         logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} | "
                                   f"Loss: {running_loss:.4f} | "
                                   f"Policy: {running_policy_loss:.4f} | "
@@ -1015,12 +1071,7 @@ def train_comprehensive(
 
                         # Aggressive memory cleanup during heartbeat
                         try:
-                            import gc
-                            gc.collect()
-                            if device.startswith('mps'):
-                                torch.mps.empty_cache()
-                            elif device.startswith('cuda'):
-                                torch.cuda.empty_cache()
+                            clear_memory_cache(device)
                         except Exception as cleanup_error:
                             logger.debug(f"Memory cleanup during heartbeat failed: {cleanup_error}")
 
@@ -1081,9 +1132,10 @@ def train_comprehensive(
                 eta = timedelta(seconds=int(eta_seconds))
                 
                 # Calculate memory usage
-                if hasattr(model, 'get_memory_usage'):
-                    memory_usage = model.get_memory_usage()
-                else:
+                try:
+                    system_memory = get_memory_usage(device)
+                    memory_usage = f"{system_memory['memory_gb']:.2f}GB"
+                except Exception:
                     memory_usage = "N/A"
                 
                 pbar.set_postfix({

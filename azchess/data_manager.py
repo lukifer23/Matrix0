@@ -15,6 +15,10 @@ import time
 import uuid
 import tempfile
 
+from .utils import (
+    clear_memory_cache, get_memory_usage, safe_config_get
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -417,16 +421,10 @@ class DataManager:
         # The original batches contain potentially 10K+ samples each
         # but we only need the final ~192 samples
         del tactical_batch, openings_batch, indices
-        import gc
-        gc.collect()  # Force garbage collection to free memory immediately
 
-        # Additional cleanup for MPS/CUDA devices
+        # Use unified memory cleanup
         try:
-            import torch
-            if torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-            elif torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clear_memory_cache('auto')
         except Exception:
             pass  # Ignore cleanup errors
 

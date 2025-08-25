@@ -604,9 +604,28 @@ class PolicyValueNet(nn.Module):
                     x_processed = self.chess_features(x_processed)
 
                 # Use gradient checkpointing for the tower to save memory
-                if hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                checkpoint_strategy = getattr(self, 'checkpoint_strategy', 'tower_only')
+
+                if checkpoint_strategy == "full" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                    # Full checkpointing - checkpoint the entire tower
                     x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                elif checkpoint_strategy == "tower_only" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                    # Tower-only checkpointing (default)
+                    x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                elif checkpoint_strategy == "adaptive" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                    # Adaptive checkpointing - check memory before deciding
+                    try:
+                        import psutil
+                        memory_percent = psutil.virtual_memory().percent
+                        if memory_percent > 80:
+                            x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                        else:
+                            x_processed = self.tower(x_processed)
+                    except ImportError:
+                        # Fallback to normal forward if psutil not available
+                        x_processed = self.tower(x_processed)
                 else:
+                    # No checkpointing
                     x_processed = self.tower(x_processed)
 
                 ssl_output = self.ssl_piece_head(x_processed)
@@ -645,43 +664,86 @@ class PolicyValueNet(nn.Module):
             return torch.tensor(0.0, device=device, dtype=x.dtype, requires_grad=False)
     
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute SSL loss for supported tasks.
+        """Compute SSL loss for supported tasks with advanced algorithms.
 
-        Currently only the 'piece' task is implemented; additional tasks
-        will be added in future updates.
+        This method handles multiple SSL tasks. Currently implements:
+        - Piece recognition (via existing SSL head)
+        - Threat/Pin/Fork/Control detection (target computation ready, loss computation pending model heads)
         """
         total_loss = 0.0
-        
-        # Piece prediction task
-        if 'piece' in targets and self.ssl_piece_head is not None:
-            piece_loss = self.get_ssl_loss(x, targets['piece'])
-            total_loss += piece_loss
-        
-        # Additional SSL tasks can be added here
-        # For now, just return the piece loss
-        return total_loss
+        device = x.device
+
+        # Get configuration for SSL tasks and weights
+        ssl_tasks = getattr(self.cfg, 'ssl_tasks', ['piece'])
+
+        # Piece prediction task (primary SSL task using existing SSL head)
+        if 'piece' in targets and self.ssl_piece_head is not None and 'piece' in ssl_tasks:
+            try:
+                piece_loss = self.get_ssl_loss(x, targets['piece'])
+                total_loss += piece_loss
+                logger.debug(f"Piece SSL loss: {piece_loss.item():.6f}")
+            except Exception as e:
+                logger.warning(f"Piece SSL loss computation failed: {e}")
+
+        # Advanced SSL tasks - currently target computation ready, awaiting model heads
+        # These would require separate model heads for each task in a full implementation
+
+        advanced_tasks = ['threat', 'pin', 'fork', 'control']
+        for task in advanced_tasks:
+            if task in targets and task in ssl_tasks:
+                # Log task activity and prepare for future model head integration
+                task_targets = targets[task]
+                if task_targets.numel() > 0:  # Only log if there are actual targets
+                    if task == 'threat':
+                        threatened_squares = task_targets.sum().item()
+                        logger.debug(f"Threat detection active: {threatened_squares} threatened squares")
+                    elif task == 'pin':
+                        pinned_pieces = task_targets.sum().item()
+                        logger.debug(f"Pin detection active: {pinned_pieces} pinned pieces")
+                    elif task == 'fork':
+                        fork_opportunities = task_targets.sum().item()
+                        logger.debug(f"Fork detection active: {fork_opportunities} fork opportunities")
+                    elif task == 'control':
+                        white_control = (task_targets > 0).sum().item()
+                        black_control = (task_targets < 0).sum().item()
+                        logger.debug(f"Square control active - White: {white_control}, Black: {black_control}")
+
+                # TODO: Add actual loss computation when model heads are implemented
+                # For now, these targets are computed but not used in loss computation
+                # This allows the SSL algorithms to be tested and refined
+
+        # Return total loss (currently only piece recognition contributes)
+        return total_loss if total_loss > 0 else torch.tensor(0.0, device=device, dtype=torch.float32)
     
     def get_ssrl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute SSRL loss for various tasks."""
+        """Compute SSRL (Self-Supervised Representation Learning) loss for general tasks.
+
+        SSRL focuses on general representation learning tasks:
+        - position: Predict board positions (rotation invariance)
+        - material: Predict material counts (counting skills)
+
+        This differs from SSL (chess-specific tactical tasks) in that SSRL learns
+        general visual and counting abilities rather than chess-specific tactics.
+        """
         if not self.ssrl_heads:
             raise RuntimeError("SSRL heads not enabled in model configuration")
-        
+
         total_loss = 0.0
         x_processed = self._forward_features(x)
-        
+
         for task, target in targets.items():
             if task in self.ssrl_heads:
                 output = self.ssrl_heads[task](x_processed)
                 if task == 'position':
-                    # Position prediction loss
+                    # Position prediction loss - encourages rotation invariance
                     loss = F.cross_entropy(output, target.long(), reduction='mean')
                 elif task == 'material':
-                    # Material count loss
+                    # Material count loss - encourages counting skills
                     loss = F.mse_loss(output, target.float(), reduction='mean')
                 else:
                     continue
                 total_loss += loss
-        
+
         return total_loss
     
     def get_auxiliary_policy_loss(self, x: torch.Tensor, aux_targets: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -732,11 +794,38 @@ class PolicyValueNet(nn.Module):
         )
         mlmodel.save(out_path)
     
-    def enable_gradient_checkpointing(self) -> None:
-        """Enable gradient checkpointing to save memory during training."""
-        for module in self.modules():
-            if hasattr(module, 'gradient_checkpointing'):
-                module.gradient_checkpointing = True
+    def enable_gradient_checkpointing(self, strategy: str = "tower_only") -> None:
+        """Enable gradient checkpointing to save memory during training.
+
+        Args:
+            strategy: Checkpointing strategy
+                - "tower_only": Only checkpoint the tower (default)
+                - "full": Checkpoint all major modules
+                - "adaptive": Use adaptive checkpointing based on memory
+        """
+        self.checkpoint_strategy = strategy
+
+        if strategy == "full":
+            # Enable checkpointing for all modules that support it
+            for module in self.modules():
+                if hasattr(module, 'gradient_checkpointing'):
+                    module.gradient_checkpointing = True
+                    logger.info(f"Enabled gradient checkpointing for {module.__class__.__name__}")
+
+        elif strategy == "adaptive":
+            # Adaptive checkpointing - only enable when memory is low
+            try:
+                import psutil
+                memory_percent = psutil.virtual_memory().percent
+                if memory_percent > 80:  # High memory usage threshold
+                    self.enable_gradient_checkpointing("full")
+                    logger.info("Adaptive checkpointing enabled due to high memory usage")
+            except ImportError:
+                # Fallback to tower-only if psutil not available
+                self.enable_gradient_checkpointing("tower_only")
+
+        # Default is tower_only which is handled in forward pass
+        logger.info(f"Gradient checkpointing enabled with strategy: {strategy}")
     
     def quantize_model(self, dtype: torch.dtype = torch.float16) -> None:
         """Quantize model to specified dtype for memory efficiency."""
@@ -782,85 +871,40 @@ class PolicyValueNet(nn.Module):
             if hasattr(module, 'memory_efficient') and hasattr(module, 'memory_efficient'):
                 module.memory_efficient = True
 
-    def create_ssl_targets(self, board_states: torch.Tensor) -> torch.Tensor:
-        """Create SSL targets using GPU vectorized operations - FAST version."""
-        # Target shape: (B, 13, 8, 8) -> flattened to (B, 64)
-        # Planes 0-11 for pieces, plane 12 for enhanced multi-task learning
-        batch_size = board_states.size(0)
-        device = board_states.device
+    def create_ssl_targets(self, board_states: torch.Tensor):
+        """Create enhanced SSL targets using advanced chess algorithms.
 
-        # Initialize targets efficiently
-        targets = torch.zeros(batch_size, 13, 8, 8, device=device, dtype=board_states.dtype)
+        Returns:
+            - If multiple SSL tasks: Dict of enhanced targets for get_enhanced_ssl_loss()
+            - If single 'piece' task: Tensor for backward compatibility with get_ssl_loss()
+        """
+        from ..ssl_algorithms import get_ssl_algorithms
 
-        # Planes 0-11: Direct copy of piece positions (already vectorized)
-        targets[:, :12, :, :] = board_states[:, :12, :, :]
+        # Get the SSL algorithms instance
+        ssl_alg = get_ssl_algorithms()
 
-        # Plane 12: Multi-task learning target using vectorized operations
-        # Get side-to-move information (plane 12, position 0,0)
-        side_to_move = board_states[:, 12:13, 0:1, 0:1]  # Shape: (B, 1, 1, 1)
+        # Create enhanced SSL targets for all supported tasks
+        ssl_targets = ssl_alg.create_enhanced_ssl_targets(board_states)
 
-        # Create simplified SSL targets using tensor operations only
-        # This avoids all the slow python-chess library calls
+        # Get configuration for SSL tasks
+        ssl_tasks = getattr(self.cfg, 'ssl_tasks', ['piece'])
 
-        # 1. Empty squares (where no pieces exist)
-        empty_squares = (board_states[:, :12, :, :].sum(dim=1) == 0).float()
+        # If only 'piece' task is enabled, return tensor for backward compatibility
+        if ssl_tasks == ['piece']:
+            targets = ssl_targets['piece']  # (B, 13, 8, 8)
+            # Apply SSL target weight scaling if specified
+            if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
+                targets = targets * self.ssl_target_weight
+            return targets
 
-        # 2. Center squares (simple heuristic for positional value)
-        center_mask = torch.zeros(batch_size, 8, 8, device=device, dtype=board_states.dtype)
-        center_mask[:, 2:6, 2:6] = 1.0  # Inner 4x4 center squares
-
-        # 3. Edge squares (opposite of center)
-        edge_mask = 1.0 - center_mask
-
-        # 4. Pawn advancement opportunities (simplified)
-        # White pawns on ranks 2-6, black pawns on ranks 1-5
-        white_pawns = board_states[:, 0, :, :]  # White pawns
-        black_pawns = board_states[:, 6, :, :]  # Black pawns
-
-        # Pawn advancement mask (squares in front of pawns)
-        pawn_advance = torch.zeros_like(center_mask)
-        # White pawn advancement (move up the board)
-        pawn_advance[:, 1:7, :] = white_pawns[:, :6, :]  # Can advance to next rank
-        # Black pawn advancement (move down the board)
-        pawn_advance[:, 1:7, :] += black_pawns[:, 2:8, :]  # Can advance to previous rank
-
-        # 5. King safety zones (squares around kings)
-        king_safety = torch.zeros_like(center_mask)
-        white_kings = board_states[:, 5, :, :]  # White king
-        black_kings = board_states[:, 11, :, :]  # Black king
-
-        # Simple king safety (3x3 area around kings)
-        for b in range(min(batch_size, 32)):  # Limit to prevent memory issues
-            if white_kings[b].sum() > 0:
-                king_pos = white_kings[b].nonzero(as_tuple=True)
-                if len(king_pos[0]) > 0:
-                    r, c = king_pos[0][0], king_pos[1][0]
-                    r1, r2 = max(0, r-1), min(7, r+2)
-                    c1, c2 = max(0, c-1), min(7, c+2)
-                    king_safety[b, r1:r2, c1:c2] = 1.0
-
-            if black_kings[b].sum() > 0:
-                king_pos = black_kings[b].nonzero(as_tuple=True)
-                if len(king_pos[0]) > 0:
-                    r, c = king_pos[0][0], king_pos[1][0]
-                    r1, r2 = max(0, r-1), min(7, r+2)
-                    c1, c2 = max(0, c-1), min(7, c+2)
-                    king_safety[b, r1:r2, c1:c2] = 1.0
-
-        # Combine all SSL features into plane 12
-        # Weight different features based on importance
-        targets[:, 12, :, :] = (
-            0.3 * empty_squares +      # Empty squares for development
-            0.2 * center_mask +        # Center control
-            0.2 * pawn_advance +       # Pawn advancement
-            0.3 * king_safety          # King safety zones
-        )
-
+        # If multiple SSL tasks are enabled, return dict for enhanced SSL processing
         # Apply SSL target weight scaling if specified
         if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
-            targets = targets * self.ssl_target_weight
+            for key in ssl_targets:
+                if ssl_targets[key].dtype in [torch.float32, torch.float16, torch.bfloat16]:
+                    ssl_targets[key] = ssl_targets[key] * self.ssl_target_weight
 
-        return targets
+        return ssl_targets
 
     def ensure_dtype_consistency(self, target_dtype: torch.dtype):
         """Ensure all model parameters and buffers have consistent dtype for MPS operations."""
