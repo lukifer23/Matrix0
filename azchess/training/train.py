@@ -1319,11 +1319,13 @@ def train_from_config(config_path: str = "config.yaml"):
     # Extract training parameters from config
     train_cfg = cfg.training()
     
+    # Support both 'lr' and 'learning_rate' in config for compatibility
+    lr_cfg = train_cfg.get("lr", train_cfg.get("learning_rate", 0.001))
     train_comprehensive(
         config_path=config_path,
         total_steps=train_cfg.get("steps_per_epoch", 10000),
         batch_size=train_cfg.get("batch_size", 256),
-        learning_rate=train_cfg.get("lr", 0.001),
+        learning_rate=lr_cfg,
         weight_decay=train_cfg.get("weight_decay", 1e-4),
         ema_decay=train_cfg.get("ema_decay", 0.999),
         grad_clip_norm=train_cfg.get("grad_clip_norm", 1.0),

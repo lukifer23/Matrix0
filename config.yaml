@@ -51,6 +51,11 @@ training:
   warmup_steps: 200                # Shorter warmup for faster convergence
   memory_limit_gb: 14              # Increase MPS memory limit to 14GB
   gradient_checkpointing_strategy: "tower_only"  # Always checkpoint tower for lower memory
+  steps_per_epoch: 4000            # Explicit steps per orchestrator epoch
+  use_curriculum: true
+  curriculum_phases:
+    - { name: openings, steps: 1500, description: "Bootstrap with openings-heavy data" }
+    - { name: mixed,    steps: 6500, description: "Blend external + self-play" }
 
 orchestrator:
   initial_games: 12                # Start with 12 games

@@ -421,9 +421,14 @@ class DataManager:
         # but we only need the final ~192 samples
         del tactical_batch, openings_batch, indices
 
-        # Use unified memory cleanup
+        # Gate memory cleanup to avoid churn: only clear when near threshold or periodically
         try:
-            clear_memory_cache('auto')
+            usage = get_memory_usage('auto')
+            mem_gb = float(usage.get('memory_gb', 0.0) or 0.0)
+            # Default threshold ~85% of config memory limit if available, else use 12GB heuristic
+            threshold_gb = float(os.environ.get('MATRIX0_MEM_THRESHOLD_GB', '12'))
+            if mem_gb >= threshold_gb:
+                clear_memory_cache('auto')
         except Exception:
             pass  # Ignore cleanup errors
 

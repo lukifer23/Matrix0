@@ -435,7 +435,7 @@ def orchestrate(
             # Helper: monitor, respawn or adjust targets if workers die
             def _check_and_respawn_workers(last_progress_ts: float,
                                           per_worker_done: Dict[int, int]) -> None:
-                nonlocal infer_proc, stop_event, shared_memory_resources, model_params, optimized_batch_size
+                nonlocal infer_proc, stop_event, shared_memory_resources
                 now = time.time()
                 for i, p in enumerate(list(procs)):
                     if p.is_alive():
@@ -803,7 +803,7 @@ def orchestrate(
                 ckpt_b=str(best_ckpt),
                 games=eval_games,
                 cfg=cfg,
-                seed=seed or int(time.time()),
+                seed=(overrides.seed if overrides.seed is not None else int(time.time())),
                 workers=eval_workers,
                 num_sims=eval_num_sims
             )

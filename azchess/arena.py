@@ -58,11 +58,7 @@ def _arena_worker_init(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch
 def _arena_run_one_game(args_tuple):
     """Worker function: play a single game and return (score_from_A_persp, moves, result_str)."""
     idx, max_moves, temp_local, temp_plies_local, debug_local = args_tuple
-    import time
-
-    import chess
-    import numpy as np
-    global _P_DEVICE, _P_CFG, _P_MCTS_A, _P_MCTS_B
+    # Global variables are initialized in arena_worker_loop
     board = chess.Board()
     moves_count = 0
     move_history = []

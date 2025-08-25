@@ -309,7 +309,7 @@ def log_system_info() -> None:
 
             import torch
 
-            logger = self.get_logger('system')
+            logger = get_logger('system')
 
             logger.info("System Information:")
             logger.info(f"  Platform: {platform.platform()}")

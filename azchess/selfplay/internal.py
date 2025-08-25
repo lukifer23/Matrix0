@@ -118,7 +118,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     try:
         if device != "cpu":
             # Use config thread count or default to 2 cores per worker
-            config_threads = getattr(config, 'num_threads', 2)
+            config_threads = getattr(cfg_dict, 'num_threads', 2)
             torch.set_num_threads(config_threads)
     except Exception:
         pass

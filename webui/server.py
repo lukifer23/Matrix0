@@ -176,7 +176,6 @@ def _cleanup_games(ttl_sec: int = GAME_TTL_SEC) -> int:
 @app.on_event("shutdown")
 def _cleanup() -> None:
     # Close stockfish if running
-    global _stockfish
     try:
         if _stockfish:
             _stockfish.quit()
