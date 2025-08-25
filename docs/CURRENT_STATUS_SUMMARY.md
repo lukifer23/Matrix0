@@ -6,7 +6,7 @@
 
 ## 🎯 Executive Summary
 
-Matrix0 has achieved **production training capability** with a sophisticated 53M parameter model and operational training pipeline. The system demonstrates enterprise-grade stability with comprehensive error handling and monitoring. **SSL foundation is established** with basic piece recognition working and advanced algorithms implemented, ready for integration.
+Matrix0 has achieved **production training capability** with a sophisticated 53M parameter model and operational training pipeline. The system demonstrates enterprise-grade stability with comprehensive error handling and monitoring. **SSL foundation is established** with basic piece recognition working and advanced algorithms implemented, ready for integration. **Currently addressing critical training stability issues** related to learning rate scheduling and gradient explosion.
 
 ## ✅ What's Actually Working (Current Reality)
 
@@ -20,7 +20,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 - **Model Size**: ✅ 53,161,185 parameters (53M) - ResNet-24 with complete architecture
 - **Architecture**: ✅ 320 channels, 24 blocks, 20 attention heads, full attention features
 - **SSL Foundation**: ✅ Basic piece recognition working, advanced algorithms implemented
-- **Training Stability**: ✅ Enhanced error handling, memory cleanup, and recovery mechanisms
+- **Training Stability**: 🔄 Enhanced error handling, memory cleanup, and recovery mechanisms implemented, but **critical scheduler and gradient stability issues remain**
 
 ### Apple Silicon Optimization
 - **MPS Memory**: ✅ 14GB limit with automatic management and cache clearing
@@ -60,9 +60,41 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 - **Position Evaluation**: ✅ Basic move analysis and suggestions
 - **Training Monitoring**: 🔄 Ready for enhanced training progress display
 
-## ❌ What's Not Working (Documentation vs Reality Gaps)
+## 🚨 Current Critical Challenge: Training Stability Issues
 
-### SSL Status Claims
+### Primary Problem: Learning Rate Scheduler and Gradient Explosion
+- **Issue**: Model training shows immediate gradient explosion and learning rate scheduling problems
+- **Symptoms**: 
+  - NaN/Inf gradients on first training steps
+  - Scheduler stepping before optimizer (PyTorch warning)
+  - Loss explosion from step 35 (3.63) to step 70 (4.61) and beyond
+  - Policy loss stuck at ~5.2-5.3 (extremely high for chess)
+  - Value loss stagnant at ~0.085-0.093
+- **Root Causes Identified**:
+  - Learning rate scheduler stepping incorrectly during gradient accumulation
+  - Policy head weight scaling too conservative (0.3) limiting learning capacity
+  - Policy masking disabled, causing model to learn from impossible moves
+  - Attention mechanism numerical instability
+
+### Attempted Fixes (August 25, 2025)
+1. ✅ **Fixed redundant scheduler logic** - Removed duplicate `if do_update:` checks
+2. ✅ **Enabled policy masking** - `policy_masking: true` in config
+3. ✅ **Improved weight initialization** - Policy head scaling from 0.3 to 0.8
+4. ✅ **Created fresh checkpoint** - `v2_base.pt` with corrected initialization
+
+### Current Status
+- **Fixes Applied**: All critical fixes implemented and fresh checkpoint created
+- **Testing**: Running 2-worker, 2-game test to validate fixes
+- **Remaining Issues**: Scheduler warning persists, gradient explosion continues
+- **Next Steps**: Investigate deeper training loop logic, potentially scheduler configuration issue
+
+### Technical Investigation Required
+- **Scheduler Configuration**: Verify `num_updates` vs `total_steps` calculation in scheduler creation
+- **Gradient Accumulation Logic**: Check if `accum_counter` and `do_update` logic is correct
+- **Training Loop Flow**: Trace exact sequence of optimizer.step() vs scheduler.step() calls
+- **Memory/Precision Issues**: Investigate if MPS/FP16 precision is causing gradient instability
+
+## ❌ What's Not Working (Documentation vs Reality Gaps)
 - **Documentation Claim**: "Multi-task SSL fully operational with curriculum progression"
 - **Reality**: Only basic piece recognition is working, advanced algorithms are implemented but not integrated
 - **Impact**: Misleading expectations about current SSL capabilities
@@ -78,6 +110,12 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 - **Impact**: Misleading about feature readiness
 
 ## 🎯 What Needs to Be Done (Development Priorities)
+
+### Priority 0: Training Stability (IMMEDIATE - 1-2 days)
+1. **Fix Learning Rate Scheduler**: Resolve PyTorch warning about scheduler stepping before optimizer
+2. **Fix Gradient Explosion**: Identify and resolve root cause of NaN/Inf gradients
+3. **Validate Training Pipeline**: Ensure stable training can proceed beyond first few steps
+4. **Test Policy Masking**: Verify that legal move masking is working correctly
 
 ### Priority 1: SSL Algorithm Integration (2-4 weeks)
 1. **Integrate Advanced SSL Tasks**: Connect implemented algorithms with training pipeline
