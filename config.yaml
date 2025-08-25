@@ -56,7 +56,7 @@ training:
   curriculum_phases:
     - { name: openings, steps: 1500, description: "Bootstrap with openings-heavy data" }
     - { name: mixed,    steps: 6500, description: "Blend external + self-play" }
-  policy_masking: true             # Enable masking by target; focus learning on legal moves
+  policy_masking: false            # TEMPORARILY DISABLED - investigating zero policy targets
 
 orchestrator:
   initial_games: 12                # Start with 12 games
