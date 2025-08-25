@@ -21,13 +21,13 @@ model:
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
-  num_workers: 2                   # Two workers minimum as required
+  num_workers: 4                   # Four workers for intensive self-play generation
   batch_size: 128                  # Larger batches for efficiency
-  max_games: 12                    # Restore 12 per cycle
+  max_games: 500                   # Generate 500 games for robust training data
   max_game_len: 100                # Shorter games for faster generation
   min_resign_plies: 20             # Earlier resignation for speed
   resign_threshold: -0.90          # More aggressive resignation
-  num_simulations: 200             # Reduced for faster self-play generation
+  num_simulations: 200             # 200 simulations for good move quality
   draw:
     min_plies: 30                  # Minimum plies before draw
     window: 12                     # Draw detection window
@@ -59,11 +59,11 @@ training:
   policy_masking: false            # TEMPORARILY DISABLED - investigating zero policy targets
 
 orchestrator:
-  initial_games: 12                # Start with 12 games
-  subsequent_games: 12             # Generate 12 more games
-  games_per_cycle: 12              # 12 games per cycle
-  train_epochs_per_cycle: 2        # 2 training epochs per cycle
-  eval_games_per_cycle: 6          # Evaluate 6 games
+  initial_games: 500               # Generate all 500 games in initial phase
+  subsequent_games: 0              # No additional games needed
+  games_per_cycle: 500             # Handle all games in one cycle
+  train_epochs_per_cycle: 1        # Single training epoch for large dataset
+  eval_games_per_cycle: 20         # Evaluate 20 games for quality check
   keep_top_k: 1                    # Keep only best model
   continuous_mode: false           # Single run mode
   checkpoint_override: "v2_base.pt"  # Override default best.pt with fresh V2 base checkpoint
@@ -80,7 +80,7 @@ eval:
   strength_estimation_games: 4     # More strength estimation games
 
 mcts:
-  num_simulations: 300              # Increased for better quality
+  num_simulations: 200              # Match self-play config for consistency
   cpuct: 2.2
   cpuct_start: 2.8
   cpuct_end: 1.8
@@ -108,7 +108,7 @@ mcts:
   memory_cleanup_threshold_mb: 512
   max_tree_nodes: 50000
   # FIXED: Parallel MCTS with robust error handling and deadlock prevention
-  num_threads: 6
+  num_threads: 4                   # Match worker count for efficiency
   parallel_simulations: true
   simulation_batch_size: 16
   tree_parallelism: true
@@ -116,7 +116,7 @@ mcts:
 presets:
   mps:
     device: "mps"
-    num_threads: 4  # Reduced from 6
+    num_threads: 4  # Match worker count
     inference_batch_size: 32
-    mcts_threads: 4  # Reduced from 6
-    worker_threads: 2  # Keep 2 cores per worker
+    mcts_threads: 4  # Match worker count
+    worker_threads: 1  # 1 core per worker for 4 workers
