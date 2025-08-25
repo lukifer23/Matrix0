@@ -25,13 +25,13 @@ def _norm(channels: int, norm_type: str = "batch") -> nn.Module:
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int, se: bool = False, se_ratio: float = 0.25, 
-                 activation: str = "relu", preact: bool = False, droppath: float = 0.0):
+                 activation: str = "relu", preact: bool = False, droppath: float = 0.0, norm: str = "batch"):
         super().__init__()
         self.use_preact = preact
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = _norm(channels)
+        self.bn1 = _norm(channels, norm)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = _norm(channels)
+        self.bn2 = _norm(channels, norm)
         self.use_se = se
         if se:
             hidden = max(8, int(channels * se_ratio))
@@ -302,8 +302,8 @@ class PolicyValueNet(nn.Module):
         tower_layers = []
         _att_every = int(getattr(cfg, 'attention_every_k', 3))
         for i in range(cfg.blocks):
-            # Add residual block with SE
-            tower_layers.append(ResidualBlock(C, se=cfg.se, se_ratio=cfg.se_ratio, activation=cfg.activation, preact=cfg.preact, droppath=cfg.droppath))
+            # Add residual block with SE; respect cfg.norm
+            tower_layers.append(ResidualBlock(C, se=cfg.se, se_ratio=cfg.se_ratio, activation=cfg.activation, preact=cfg.preact, droppath=cfg.droppath, norm=cfg.norm))
             
             # Add attention every few blocks for efficiency
             if cfg.attention and _att_every > 0 and (i % _att_every) == (_att_every - 1):
@@ -509,7 +509,14 @@ class PolicyValueNet(nn.Module):
                     nn.init.constant_(m.bias, 0.0)
 
     def _forward_features(self, x: torch.Tensor, visual_input: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.stem(x)
+        # Run stem in fp32 regardless of autocast to satisfy MPS conv dtype rules
+        try:
+            device_type = x.device.type
+        except Exception:
+            device_type = 'cpu'
+        x_fp32 = x.float()
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = self.stem(x_fp32)
         if self.chess_features is not None:
             x = self.chess_features(x)
         
@@ -596,7 +603,8 @@ class PolicyValueNet(nn.Module):
         # Use configurable chunk size or default to 32
         default_chunk_size = getattr(self.cfg, 'ssl_chunk_size', 32)
         chunk_size = min(default_chunk_size, batch_size)
-        total_loss = 0.0
+        # Accumulate as a tensor so gradients flow through SSL head
+        total_loss = torch.tensor(0.0, device=device, dtype=x.dtype)
         valid_samples = 0
 
         for start_idx in range(0, batch_size, chunk_size):
@@ -606,39 +614,64 @@ class PolicyValueNet(nn.Module):
 
             # Process chunk through the model
             try:
-                x_processed = self.stem(chunk_x)
-                if self.chess_features is not None:
-                    x_processed = self.chess_features(x_processed)
-
-                # Use gradient checkpointing for the tower to save memory
-                checkpoint_strategy = getattr(self, 'checkpoint_strategy', 'tower_only')
-
-                if checkpoint_strategy == "full" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
-                    # Full checkpointing - checkpoint the entire tower
-                    x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
-                elif checkpoint_strategy == "tower_only" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
-                    # Tower-only checkpointing (default)
-                    x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
-                elif checkpoint_strategy == "adaptive" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
-                    # Adaptive checkpointing - check memory before deciding
-                    try:
-                        import psutil
-                        memory_percent = psutil.virtual_memory().percent
-                        if memory_percent > 80:
-                            x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
-                        else:
-                            x_processed = self.tower(x_processed)
-                    except ImportError:
-                        # Fallback to normal forward if psutil not available
-                        x_processed = self.tower(x_processed)
+                # Option: avoid backprop through tower for SSL to reduce memory on MPS
+                backprop_tower = bool(getattr(self.cfg, 'ssl_backprop_through_tower', False))
+                if not backprop_tower:
+                    # Compute features without grad; SSL head still trains
+                    device_type = chunk_x.device.type
+                    with torch.no_grad():
+                        with torch.autocast(device_type=device_type, enabled=False):
+                            feats = self.stem(chunk_x.float())
+                        if self.chess_features is not None:
+                            feats = self.chess_features(feats)
+                        feats = self.tower(feats)
+                    x_processed = feats
                 else:
-                    # No checkpointing
-                    x_processed = self.tower(x_processed)
+                    # Run SSL stem in fp32 regardless of autocast to satisfy MPS conv dtype rules
+                    device_type = chunk_x.device.type
+                    with torch.autocast(device_type=device_type, enabled=False):
+                        x_processed = self.stem(chunk_x.float())
+                    if self.chess_features is not None:
+                        x_processed = self.chess_features(x_processed)
+
+                    # Use gradient checkpointing for the tower to save memory
+                    checkpoint_strategy = getattr(self, 'checkpoint_strategy', 'tower_only')
+
+                    if checkpoint_strategy == "full" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                        x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                    elif checkpoint_strategy == "tower_only" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                        x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                    elif checkpoint_strategy == "adaptive" and hasattr(torch, 'checkpoint') and x_processed.requires_grad:
+                        try:
+                            import psutil
+                            memory_percent = psutil.virtual_memory().percent
+                            if memory_percent > 80:
+                                x_processed = torch.utils.checkpoint.checkpoint(self.tower, x_processed)
+                            else:
+                                x_processed = self.tower(x_processed)
+                        except ImportError:
+                            x_processed = self.tower(x_processed)
+                    else:
+                        x_processed = self.tower(x_processed)
 
                 ssl_output = self.ssl_piece_head(x_processed)
 
-                # Fast path: Use reshape for compatibility with permuted tensors
+                # Prepare logits and targets for cross-entropy: (N, 13) logits and (N,) class indices
                 ssl_output = ssl_output.permute(0, 2, 3, 1).reshape(-1, 13)  # (chunk_size*64, 13)
+
+                # Accept targets as either one-hot planes (B,13,8,8) or class map (B,8,8) or already flattened
+                if chunk_targets.dim() == 4 and chunk_targets.size(1) == 13:
+                    # One-hot → class indices per square
+                    chunk_targets = torch.argmax(chunk_targets, dim=1)
+                elif chunk_targets.dim() == 1:
+                    # Already flattened indices (N,)
+                    pass
+                elif chunk_targets.dim() == 3:
+                    # Class map (B,8,8)
+                    pass
+                else:
+                    raise ValueError(f"Unexpected SSL target shape: {tuple(chunk_targets.shape)}")
+
                 chunk_targets = chunk_targets.reshape(-1).long()  # (chunk_size*64,)
 
                 # Validate targets efficiently - allow 13-class targets (0-12)
@@ -649,10 +682,10 @@ class PolicyValueNet(nn.Module):
                 if torch.all(chunk_targets == 0):
                     continue
 
-                # Compute loss for this chunk
+                # Compute loss for this chunk (sum, then normalize at end)
                 chunk_loss = F.cross_entropy(ssl_output, chunk_targets, reduction='sum')
-                total_loss += chunk_loss.item()
-                valid_samples += chunk_targets.numel()
+                total_loss = total_loss + chunk_loss
+                valid_samples += int(chunk_targets.numel())
 
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
@@ -664,11 +697,11 @@ class PolicyValueNet(nn.Module):
                 else:
                     raise
 
-        # Return average loss per sample with consistent dtype
+        # Return average loss per sample; keep as tensor to allow gradients
         if valid_samples > 0:
-            return torch.tensor(total_loss / valid_samples, device=device, dtype=x.dtype, requires_grad=False)
+            return total_loss / float(valid_samples)
         else:
-            return torch.tensor(0.0, device=device, dtype=x.dtype, requires_grad=False)
+            return total_loss.detach()  # zero tensor
     
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute SSL loss for supported tasks with advanced algorithms.
@@ -879,38 +912,24 @@ class PolicyValueNet(nn.Module):
                 module.memory_efficient = True
 
     def create_ssl_targets(self, board_states: torch.Tensor):
-        """Create enhanced SSL targets using advanced chess algorithms.
+        """Create SSL targets efficiently.
 
-        Returns:
-            - If multiple SSL tasks: Dict of enhanced targets for get_enhanced_ssl_loss()
-            - If single 'piece' task: Tensor for backward compatibility with get_ssl_loss()
+        If only the 'piece' task is enabled, compute just that target to avoid slow extras.
         """
-        from ..ssl_algorithms import get_ssl_algorithms
-
-        # Get the SSL algorithms instance
-        ssl_alg = get_ssl_algorithms()
-
-        # Create enhanced SSL targets for all supported tasks
-        ssl_targets = ssl_alg.create_enhanced_ssl_targets(board_states)
-
-        # Get configuration for SSL tasks
         ssl_tasks = getattr(self.cfg, 'ssl_tasks', ['piece'])
-
-        # If only 'piece' task is enabled, return tensor for backward compatibility
         if ssl_tasks == ['piece']:
-            targets = ssl_targets['piece']  # (B, 13, 8, 8)
-            # Apply SSL target weight scaling if specified
+            from ..ssl_algorithms import get_ssl_algorithms
+            targets = get_ssl_algorithms()._create_piece_targets(board_states)
             if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
                 targets = targets * self.ssl_target_weight
             return targets
 
-        # If multiple SSL tasks are enabled, return dict for enhanced SSL processing
-        # Apply SSL target weight scaling if specified
+        from ..ssl_algorithms import get_ssl_algorithms
+        ssl_targets = get_ssl_algorithms().create_enhanced_ssl_targets(board_states)
         if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
             for key in ssl_targets:
                 if ssl_targets[key].dtype in [torch.float32, torch.float16, torch.bfloat16]:
                     ssl_targets[key] = ssl_targets[key] * self.ssl_target_weight
-
         return ssl_targets
 
     def ensure_dtype_consistency(self, target_dtype: torch.dtype):

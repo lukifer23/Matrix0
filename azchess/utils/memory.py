@@ -43,14 +43,39 @@ class MemoryManager:
 
     @staticmethod
     def get_memory_usage(device: str = "auto") -> dict:
-        """Get memory usage statistics."""
+        """Get memory usage statistics.
+
+        For MPS, attempt to report current allocated memory if available.
+        Fallback to process RSS when backend APIs are not present.
+        """
         usage = {"device": device, "memory_gb": 0.0}
 
         try:
             if device == "mps":
-                import torch.mps
-                if torch.mps.is_available():
-                    usage["memory_gb"] = 0.0  # MPS doesn't expose memory usage easily
+                import torch, psutil
+                if torch.backends.mps.is_available():
+                    # Prefer backend-reported allocated memory if available
+                    try:
+                        import torch.mps
+                        if hasattr(torch.mps, "current_allocated_memory"):
+                            allocated = torch.mps.current_allocated_memory()
+                            usage["memory_allocated_gb"] = float(allocated) / (1024**3)
+                            usage["memory_gb"] = usage["memory_allocated_gb"]
+                        if hasattr(torch.mps, "driver_allocated_memory"):
+                            driver = torch.mps.driver_allocated_memory()
+                            usage["memory_driver_gb"] = float(driver) / (1024**3)
+                    except Exception:
+                        pass
+
+                    # Fallback: process RSS if allocated not available
+                    if usage.get("memory_gb", 0.0) == 0.0:
+                        try:
+                            rss = psutil.Process().memory_info().rss
+                            usage["process_rss_gb"] = float(rss) / (1024**3)
+                            usage["memory_gb"] = usage["process_rss_gb"]
+                        except Exception:
+                            pass
+
                     usage["available"] = True
                 else:
                     usage["available"] = False

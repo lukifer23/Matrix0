@@ -35,21 +35,22 @@ selfplay:
     halfmove_cap: 50               # Halfmove clock cap
 
 training:
-  batch_size: 192                  # Reduced for memory efficiency
+  batch_size: 128                  # Reduced for MPS memory headroom
   epochs: 3                        # More training epochs for efficiency
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
   checkpoint: "v2_base.pt"         # Use our fresh V2 base checkpoint
-  gradient_accumulation_steps: 2   # Effective batch size = 384
+  gradient_accumulation_steps: 1   # Reduce graph lifetime on MPS
   grad_clip_norm: 0.5              # More aggressive gradient clipping to prevent NaN
   ssl_weight: 0.05                 # Reduced SSL weight to focus on stability
   ssl_warmup_steps: 200            # Longer SSL warmup for stability
-  ssl_chunk_size: 32               # Process SSL in chunks to prevent OOM
+  ssl_chunk_size: 16               # Smaller SSL chunks to prevent OOM
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # Enable automatic mixed precision
   warmup_steps: 200                # Shorter warmup for faster convergence
   memory_limit_gb: 14              # Increase MPS memory limit to 14GB
+  gradient_checkpointing_strategy: "tower_only"  # Always checkpoint tower for lower memory
 
 orchestrator:
   initial_games: 12                # Start with 12 games

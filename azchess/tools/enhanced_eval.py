@@ -37,7 +37,7 @@ from ..logging_utils import setup_logging
 
 
 class EnhancedEvaluator:
-    def __init__(self, config_path: str, model_a_path: str, model_b_path: str):
+    def __init__(self, config_path: str, model_a_path: str, model_b_path: str, label_a: Optional[str] = None, label_b: Optional[str] = None):
         self.console = Console()
         
         # Setup logging
@@ -49,6 +49,9 @@ class EnhancedEvaluator:
         # Model paths
         self.model_a_path = Path(model_a_path)
         self.model_b_path = Path(model_b_path)
+        # Labels (default to filename stems if not provided)
+        self.label_a = label_a if label_a else self.model_a_path.stem
+        self.label_b = label_b if label_b else self.model_b_path.stem
         
         # ELO tracking - initialize with default values if file doesn't exist
         self.elo_book = EloBook(Path("data/elo_ratings.json"))
@@ -109,13 +112,19 @@ class EnhancedEvaluator:
             checkpoint_b = torch.load(self.model_b_path, map_location=self.device, weights_only=False)
             self.logger.info(f"Checkpoint B loaded, keys: {len(checkpoint_b.keys())}")
             
-            # Load state dicts
+            # Load state dicts (handle None EMA gracefully and allow compatibility)
             self.logger.info("Loading state dict for model A")
-            self.model_a.load_state_dict(checkpoint_a.get("model_ema", checkpoint_a.get("model", checkpoint_a)))
+            state_a = checkpoint_a.get("model_ema") or checkpoint_a.get("model") or checkpoint_a.get("model_state_dict")
+            if state_a is None:
+                raise ValueError("Checkpoint A does not contain a valid model state dict")
+            self.model_a.load_state_dict(state_a, strict=False)
             self.logger.info("State dict loaded for model A")
-            
+
             self.logger.info("Loading state dict for model B")
-            self.model_b.load_state_dict(checkpoint_b.get("model_ema", checkpoint_b.get("model", checkpoint_b)))
+            state_b = checkpoint_b.get("model_ema") or checkpoint_b.get("model") or checkpoint_b.get("model_state_dict")
+            if state_b is None:
+                raise ValueError("Checkpoint B does not contain a valid model state dict")
+            self.model_b.load_state_dict(state_b, strict=False)
             self.logger.info("State dict loaded for model B")
             
             self.model_a.eval()
@@ -186,9 +195,22 @@ class EnhancedEvaluator:
             self.logger.error(f"Forward pass failed for {model_name}: {e}", exc_info=True)
             return False, 0
     
-    def _play_game(self, mcts_a: MCTS, mcts_b: MCTS, temperature: float, table: Table = None, game_num: int = None) -> Tuple[float, List[str], str, Dict]:
-        """Play a complete game between two models."""
-        self.logger.info(f"Starting new game with temperature {temperature}, max moves 150")
+    def _play_game(self,
+                   mcts_a: MCTS,
+                   mcts_b: MCTS,
+                   opening_temp: float,
+                   mid_temp: float,
+                   opening_plies: int,
+                   table: Table = None,
+                   game_num: int = None,
+                   start_fen: Optional[str] = None) -> Tuple[float, List[str], str, Dict]:
+        """Play a complete game between two models with opening temperature schedule and optional starting FEN.
+
+        - mcts_a controls the side to move when board.turn is WHITE; mcts_b when BLACK.
+        - opening_temp used for first `opening_plies` plies per side (2*opening_plies half-moves), then switch to mid_temp.
+        - start_fen: optional FEN to initialize the board.
+        """
+        self.logger.info(f"Starting new game with opening_temp {opening_temp}, mid_temp {mid_temp}, max moves 150")
         
         # Test model forward passes before game start
         self.logger.info("Testing model forward passes before game start")
@@ -197,7 +219,7 @@ class EnhancedEvaluator:
         self._test_model_forward_pass(self.model_b, test_input, "Model B")
         
         # Initialize game
-        board = chess.Board()
+        board = chess.Board() if not start_fen else chess.Board(fen=start_fen)
         moves = []
         move_times = []
         move_count = 0
@@ -250,14 +272,16 @@ class EnhancedEvaluator:
             self.logger.info(f"Move {move_count + 1}: MCTS returned {len(visits)} visit counts")
             
             # Select move with temperature
-            self.logger.info(f"Move {move_count + 1}: Selecting move with temperature {temperature}")
-            if temperature > 1e-3:
+            # Determine temperature schedule
+            temp_now = opening_temp if move_count < (opening_plies * 2) else mid_temp
+            self.logger.info(f"Move {move_count + 1}: Selecting move with temperature {temp_now}")
+            if temp_now > 1e-3:
                 # Apply temperature to visit counts for sampling
                 legal_moves = list(visits.keys())
                 visit_counts = np.array([visits[m] for m in legal_moves], dtype=np.float32)
                 
                 # Apply temperature
-                logits = np.log(visit_counts + 1e-8) / temperature
+                logits = np.log(visit_counts + 1e-8) / temp_now
                 probs = np.exp(logits - np.max(logits))
                 probs = probs / probs.sum()
                 
@@ -284,7 +308,7 @@ class EnhancedEvaluator:
             
             # Check for resignation based on position evaluation - much stricter now
             if move_count >= 35:  # Require 35+ moves before resignation
-                resign_threshold = -0.95 if temperature > 1.0 else -0.98  # Much stricter threshold
+                resign_threshold = -0.95 if temp_now > 1.0 else -0.98  # Much stricter threshold
                 if vroot < resign_threshold:
                     self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to truly hopeless position (value: {vroot:.3f} < {resign_threshold})")
                     # Determine winner based on whose turn it is
@@ -392,8 +416,8 @@ class EnhancedEvaluator:
         game.headers["Site"] = "Matrix0 Arena"
         game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
         game.headers["Round"] = f"{sim_level} - Game {game_num}"
-        game.headers["White"] = "Model A (trained)"
-        game.headers["Black"] = "Model B (baseline)"
+        game.headers["White"] = self.label_a
+        game.headers["Black"] = self.label_b
         game.headers["Result"] = game_meta["result_str"]
         game.headers["TimeControl"] = "unlimited"
         game.headers["Termination"] = game_meta["game_over_reason"]
@@ -560,6 +584,9 @@ class EnhancedEvaluator:
     def run_evaluation(self):
         """Run the complete enhanced evaluation with comprehensive logging."""
         self.console.print(Panel.fit("🚀 Matrix0 Enhanced Evaluation", style="bold blue"))
+        # Clarify model labels for this run
+        self.console.print(f"A: {self.label_a}")
+        self.console.print(f"B: {self.label_b}")
         self.logger.info("Starting enhanced evaluation")
         
         # Evaluation parameters - more aggressive settings for decisive games
@@ -574,6 +601,30 @@ class EnhancedEvaluator:
         self.console.print(table)
         
         # Run evaluation with simple table updates
+        # Load opening FENs
+        opening_fens: List[str] = []
+        try:
+            openings_arg = getattr(self, 'opening_fens_path', None)
+        except Exception:
+            openings_arg = None
+
+        if openings_arg:
+            try:
+                lines = Path(openings_arg).read_text().splitlines()
+                for line in lines:
+                    fen_line = line.strip()
+                    if not fen_line or fen_line.startswith('#'):
+                        continue
+                    if fen_line.lower() == 'startpos':
+                        opening_fens.append(chess.Board().fen())
+                    else:
+                        opening_fens.append(fen_line)
+            except Exception as e:
+                self.logger.warning(f"Failed to read opening FENs from {openings_arg}: {e}")
+
+        if not opening_fens:
+            opening_fens = [chess.Board().fen()]
+
         for config in eval_configs:
             self.console.print(f"\n🎯 Running {config['name']} evaluation: {config['sims']} sims, temp {config['temp']}")
             self.logger.info(f"Starting {config['name']} evaluation: {config['sims']} sims, temp {config['temp']}")
@@ -585,22 +636,23 @@ class EnhancedEvaluator:
             # mcts_b = MCTS(self.model_b, mcfg, self.device) # This line is removed
             self.logger.info(f"MCTS instances created for {config['name']} config")
             
-            # Play 3 games with this configuration
-            for game_num in range(1, 4):
+            # For each opening FEN, play a color-swapped pair
+            for fen in opening_fens:
+                # Game 1: A as White, B as Black
                 self.current_game += 1
-                self.logger.info(f"Starting game {self.current_game} ({config['name']} config, game {game_num})")
-                
+                self.logger.info(f"Starting game {self.current_game} ({config['name']} | A=White, B=Black)")
                 try:
-                    # Create completely fresh MCTS instances for each game to avoid state corruption
-                    self.logger.info(f"Game {self.current_game}: Creating fresh MCTS instances")
                     mcts_a_fresh = MCTS(mcfg, self.model_a, self.device)
                     mcts_b_fresh = MCTS(mcfg, self.model_b, self.device)
                     self.logger.info(f"Game {self.current_game}: Fresh MCTS instances created - A: {id(mcts_a_fresh)}, B: {id(mcts_b_fresh)}")
-                    
-                    # Play game
-                    self.logger.info(f"Game {self.current_game}: Starting game play")
                     result, moves, result_str, game_meta = self._play_game(
-                        mcts_a_fresh, mcts_b_fresh, config["temp"], table, self.current_game
+                        mcts_a_fresh, mcts_b_fresh,
+                        opening_temp=getattr(self, 'opening_temp', 1.0),
+                        mid_temp=getattr(self, 'mid_temp', 0.1),
+                        opening_plies=getattr(self, 'opening_plies', 10),
+                        table=table,
+                        game_num=self.current_game,
+                        start_fen=fen
                     )
                     self.logger.info(f"Game {self.current_game}: Game completed successfully")
                     
@@ -619,7 +671,7 @@ class EnhancedEvaluator:
                     
                     # Save game
                     self.logger.info(f"Game {self.current_game}: Saving game")
-                    pgn_path = self._save_game_pgn(game_meta, game_num, config["name"])
+                    pgn_path = self._save_game_pgn(game_meta, self.current_game, config["name"])
                     
                     # Store results
                     game_result = {
@@ -663,6 +715,73 @@ class EnhancedEvaluator:
                     self.logger.error(f"Game {self.current_game} failed: {e}", exc_info=True)
                     self.console.print(f"❌ Game {self.current_game} failed: {e}", style="red")
                     raise
+
+                # Game 2: B as White, A as Black (swap)
+                self.current_game += 1
+                self.logger.info(f"Starting game {self.current_game} ({config['name']} | B=White, A=Black)")
+                try:
+                    mcts_a_fresh = MCTS(mcfg, self.model_b, self.device)  # swap
+                    mcts_b_fresh = MCTS(mcfg, self.model_a, self.device)
+                    self.logger.info(f"Game {self.current_game}: Fresh MCTS instances created - A(White=B): {id(mcts_a_fresh)}, B(Black=A): {id(mcts_b_fresh)}")
+                    result, moves, result_str, game_meta = self._play_game(
+                        mcts_a_fresh, mcts_b_fresh,
+                        opening_temp=getattr(self, 'opening_temp', 1.0),
+                        mid_temp=getattr(self, 'mid_temp', 0.1),
+                        opening_plies=getattr(self, 'opening_plies', 10),
+                        table=table,
+                        game_num=self.current_game,
+                        start_fen=fen
+                    )
+                    self.logger.info(f"Game {self.current_game}: Game completed successfully")
+                    # Calculate variance
+                    self.logger.info(f"Game {self.current_game}: Calculating variance")
+                    variance_metrics = self._calculate_variance(game_meta["move_choices"])
+                    variance_score = variance_metrics.get("style_difference", 0)
+                    # Update ELO ratings
+                    self.logger.info(f"Game {self.current_game}: Updating ELO ratings")
+                    elo_a, elo_b = self._update_elo_ratings(result)
+                    self.logger.info(f"Game {self.current_game}: ELO values after update - A: {elo_a:.1f}, B: {elo_b:.1f}")
+                    self.logger.info(f"Game {self.current_game}: Current elo_data state: {self.elo_data}")
+                    # Save game
+                    self.logger.info(f"Game {self.current_game}: Saving game")
+                    pgn_path = self._save_game_pgn(game_meta, self.current_game, config["name"])
+                    # Store results
+                    game_result = {
+                        "game_num": self.current_game,
+                        "config": config["name"],
+                        "sims": config["sims"],
+                        "temperature": f"open:{getattr(self, 'opening_temp', 1.0)} mid:{getattr(self, 'mid_temp', 0.1)}",
+                        "result": result,
+                        "result_str": result_str,
+                        "moves": len(moves),
+                        "time": game_meta["total_time"],
+                        "elo_a": elo_a,
+                        "elo_b": elo_b,
+                        "variance": variance_score,
+                        "pgn_path": pgn_path,
+                        "variance_metrics": variance_metrics,
+                        "opening_fen": fen,
+                        "labels": {"white": self.label_b, "black": self.label_a}
+                    }
+                    self.results.append(game_result)
+                    # Add row
+                    table.add_row(
+                        str(self.current_game),
+                        config["name"],
+                        result_str,
+                        str(len(moves)),
+                        f"{game_meta['total_time']:.1f}s",
+                        f"{elo_a:.0f}",
+                        f"{elo_b:.0f}",
+                        f"{variance_score:.2f}"
+                    )
+                    self.console.clear()
+                    self.console.print(Panel.fit("🚀 Matrix0 Enhanced Evaluation", style="bold blue"))
+                    self.console.print(table)
+                except Exception as e:
+                    self.logger.error(f"Game {self.current_game} failed: {e}", exc_info=True)
+                    self.console.print(f"❌ Game {self.current_game} failed: {e}", style="red")
+                    raise
         
         # Final summary
         self._print_final_summary()
@@ -683,8 +802,15 @@ class EnhancedEvaluator:
         self.console.print(f"🏆 Model A Wins: {wins_a}")
         self.console.print(f"🏆 Model B Wins: {wins_b}")
         self.console.print(f"🤝 Draws: {draws}")
-        self.console.print(f"📈 Win Rate A: {wins_a/total_games*100:.1f}%")
-        self.console.print(f"📈 Win Rate B: {wins_b/total_games*100:.1f}%")
+        win_rate_a = (wins_a + 0.5*draws)/total_games if total_games else 0.0
+        win_rate_b = (wins_b + 0.5*draws)/total_games if total_games else 0.0
+        # Simple 95% CI using normal approximation
+        import math
+        se = math.sqrt(max(1e-9, win_rate_a*(1-win_rate_a)/max(1, total_games)))
+        ci_low = max(0.0, win_rate_a - 1.96*se)
+        ci_high = min(1.0, win_rate_a + 1.96*se)
+        self.console.print(f"📈 Win Rate A (incl. draws=0.5): {win_rate_a*100:.1f}% (95% CI {ci_low*100:.1f}–{ci_high*100:.1f}%)")
+        self.console.print(f"📈 Win Rate B (incl. draws=0.5): {win_rate_b*100:.1f}%")
         
         # ELO changes
         initial_elo_a = 1500.0
@@ -741,11 +867,23 @@ def main():
     parser.add_argument("--config", default="config.yaml", help="Configuration file")
     parser.add_argument("--model-a", required=True, help="Path to Model A (trained)")
     parser.add_argument("--model-b", required=True, help="Path to Model B (baseline)")
+    parser.add_argument("--label-a", default="", help="Label for Model A (shown as White)")
+    parser.add_argument("--label-b", default="", help="Label for Model B (shown as Black)")
+    parser.add_argument("--opening-fens", default="", help="Path to file containing opening FENs (one per line). Use 'startpos' for default.")
+    parser.add_argument("--opening-plies", type=int, default=10, help="Number of plies to apply opening temperature")
+    parser.add_argument("--opening-temp", type=float, default=1.0, help="Temperature during opening plies")
+    parser.add_argument("--mid-temp", type=float, default=0.1, help="Temperature after opening plies")
     
     args = parser.parse_args()
     
     # Run evaluation
-    evaluator = EnhancedEvaluator(args.config, args.model_a, args.model_b)
+    evaluator = EnhancedEvaluator(args.config, args.model_a, args.model_b, label_a=args.label_a or None, label_b=args.label_b or None)
+    # Attach opening/eval parameters
+    if args.opening_fens:
+        setattr(evaluator, 'opening_fens_path', args.opening_fens)
+    setattr(evaluator, 'opening_plies', int(args.opening_plies))
+    setattr(evaluator, 'opening_temp', float(args.opening_temp))
+    setattr(evaluator, 'mid_temp', float(args.mid_temp))
     evaluator.run_evaluation()
 
 

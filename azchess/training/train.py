@@ -236,10 +236,11 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if ssl_target_time > 5.0:  # Log if it's taking too long
             logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - this indicates a performance issue")
 
-        # DEBUG: Log SSL targets statistics
-        if torch.rand(1).item() < 0.1:  # 10% chance to log
+        # DEBUG: Log SSL targets statistics (only when available)
+        if ssl_targets is not None and torch.rand(1).item() < 0.1:  # 10% chance to log
             logger.info(f"SSL TARGETS DEBUG: shape={ssl_targets.shape}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}")
-    else:
+
+    if ssl_targets is None and enable_ssl:
         logger.warning(f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}")
 
     # Ensure SSL targets have correct dtype
@@ -249,13 +250,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start forward pass
     forward_start = time.time()
 
-    # CRITICAL: Ensure model parameters have consistent dtype before autocast
-    if use_autocast and device_type == "mps":
-        # For MPS, ensure all model parameters and buffers match the autocast dtype once
-        if getattr(model, "_dtype_enforced", None) != _amp_dtype:
-            logger.info(f"MPS: Ensuring dtype consistency for autocast ({_amp_dtype})")
-            model.ensure_dtype_consistency(_amp_dtype)
-            model._dtype_enforced = _amp_dtype
+    # Do not force model parameter dtypes; keep params/buffers in fp32 for stability on MPS
 
     # Prepare input dtype for forward to match parameter dtype on MPS
     s_forward = s
@@ -274,7 +269,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # PERFORMANCE PROFILING: Forward pass complete
     forward_time = time.time() - forward_start
-    if current_step % 10 == 0:
+    if True:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"PERF: Forward pass: {forward_time:.3f}s")
             logger.debug(f"DEBUG: Output dtypes - p: {p.dtype}, v: {v.dtype}, ssl_out: {ssl_out.dtype if ssl_out is not None else 'None'}")
@@ -349,41 +344,35 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             else:
                 ramp = 1.0
 
-            # SSL loss computation with memory optimization
-            # Clear cache before SSL computation to prevent memory pressure
-            logger.debug("Clearing cache before SSL computation")
-            clear_memory_cache(device)
-
-            # Unified SSL loss computation - use enhanced SSL if available and targets are dict
-            ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
-
-            if hasattr(model, 'get_enhanced_ssl_loss') and isinstance(ssl_targets, dict):
-                # Use enhanced SSL system (includes piece recognition + additional tasks)
-                try:
-                    ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets)
-                except Exception as e:
-                    logger.warning(f"Enhanced SSL loss computation failed: {e}, falling back to basic SSL")
-                    # Fallback to basic SSL if enhanced fails
-                    if hasattr(model, 'get_ssl_loss') and not isinstance(ssl_targets, dict):
-                        try:
-                            ssl_loss = model.get_ssl_loss(s, ssl_targets)
-                        except Exception as e2:
-                            logger.warning(f"Basic SSL computation also failed: {e2}")
-            elif hasattr(model, 'get_ssl_loss'):
-                # Use basic SSL system (piece recognition only)
-                try:
-                    ssl_loss = model.get_ssl_loss(s, ssl_targets)
-                except RuntimeError as e:
-                    if "out of memory" in str(e).lower():
-                        logger.warning(f"SSL computation failed due to memory, skipping SSL for this batch: {e}")
-                        ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype, requires_grad=False)
+            # Compute piece SSL loss directly from forward's ssl_out when using piece-only targets
+            ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype)
+            try:
+                # If ssl_targets is a Tensor, assume piece-only targets
+                if isinstance(ssl_targets, torch.Tensor) and ssl_out is not None:
+                    logits = ssl_out.permute(0, 2, 3, 1).reshape(-1, ssl_out.size(1))
+                    targets_flat = ssl_targets
+                    if targets_flat.dim() == 4 and targets_flat.size(1) == ssl_out.size(1):
+                        targets_flat = torch.argmax(targets_flat, dim=1)
+                    elif targets_flat.dim() == 3:
+                        pass
                     else:
-                        raise
+                        # Already flat or unexpected; reshape later
+                        pass
+                    targets_flat = targets_flat.reshape(-1).long()
+                    if targets_flat.numel() == logits.size(0):
+                        ssl_loss = nn.functional.cross_entropy(logits, targets_flat, reduction='mean')
+                else:
+                    # Fallback to enhanced SSL (dict) path if present
+                    if hasattr(model, 'get_enhanced_ssl_loss') and isinstance(ssl_targets, dict):
+                        ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets)
+            except Exception as e:
+                logger.warning(f"SSL-from-forward computation failed: {e}; setting ssl_loss=0 for this batch")
+                ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype)
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
-        if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"PERF: Loss computation: {loss_comp_time:.3f}s")
+        if current_step % 10 == 0:
+            logger.info(f"PERF: Loss computation: {loss_comp_time:.3f}s")
 
         # CRITICAL FIX: Ensure all loss components have consistent dtypes BEFORE arithmetic
         # This prevents MPS type mismatch errors during loss combination
@@ -395,7 +384,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             ssl_loss = ssl_loss.to(dtype=target_dtype)
 
         # Combine losses with consistent dtypes
-        if enable_ssl and ssl_loss.item() > 0:
+        if enable_ssl and (isinstance(ssl_loss, torch.Tensor) and ssl_loss.detach().item() > 0):
             loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         else:
             loss = policy_loss + policy_reg_loss + value_loss
@@ -423,16 +412,17 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start backward pass
     backward_start = time.time()
 
-    # Guard against NaN/Inf loss; skip backward if not finite
-    if torch.isfinite(loss):
+    # Guard against NaN/Inf loss; skip backward if not finite; also guard if loss wasn't set due to earlier skip
+    if 'loss' in locals() and isinstance(loss, torch.Tensor) and torch.isfinite(loss):
         try:
             # Use scaler for mixed precision if available and valid
             if scaler is not None and use_autocast:
                 try:
                     scaler.scale(loss / accum_steps).backward()
                 except Exception as scaler_err:
-                    logger.warning(f"Scaler error during backward pass: {scaler_err}, using regular backward pass")
-                    (loss / accum_steps).backward()
+                    logger.warning(f"Scaler error during backward pass: {scaler_err}, skipping this batch")
+                    optimizer.zero_grad(set_to_none=True)
+                    return None, None, None, None, None
             else:
                 (loss / accum_steps).backward()
 
@@ -474,7 +464,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 logger.error(f"Runtime error during backward pass: {e}", exc_info=True)
             raise
     else:
-        logger.warning("Non-finite loss encountered; skipping backward for this batch")
+        logger.warning("Skipping backward for this batch (loss not set or non-finite)")
     
     # Optimizer stepping and clipping are handled by the caller to support grad accumulation
     return loss.item(), policy_loss.item(), value_loss.item(), (ssl_loss.item() if ssl_targets is not None else 0.0), (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0)
@@ -1047,9 +1037,9 @@ def train_comprehensive(
                             except:
                                 pass
 
-                        # Memory monitoring and alerting
+                        # Memory monitoring and alerting (threshold-driven cache clears only)
                         memory_usage_gb = get_system_memory_usage()
-                        if memory_limit_gb > 0:
+                        if memory_limit_gb > 0 and memory_usage_gb > 0:
                             memory_ratio = memory_usage_gb / memory_limit_gb
                             current_time = time.time()
 
@@ -1061,6 +1051,7 @@ def train_comprehensive(
 
                             elif memory_ratio >= memory_warning_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
                                 logger.warning(f"HIGH MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})")
+                                # Threshold-based cleanup only
                                 clear_memory_cache(device)
                                 last_memory_warning = current_time
 
@@ -1075,11 +1066,7 @@ def train_comprehensive(
 
                         last_heartbeat = current_time
 
-                        # Aggressive memory cleanup during heartbeat
-                        try:
-                            clear_memory_cache(device)
-                        except Exception as cleanup_error:
-                            logger.debug(f"Memory cleanup during heartbeat failed: {cleanup_error}")
+                        # Skip unconditional cleanup; rely on threshold-driven cleanup above
 
                 except Exception as e:
                     logger.error(f"Error in optimization step: {e}")
@@ -1239,12 +1226,19 @@ def save_checkpoint(model, ema, optimizer, scheduler, step, path):
     """Save a training checkpoint with robust error handling."""
     try:
         # Create consistent checkpoint format
+        # Handle optional EMA safely
+        ema_shadow = None
+        try:
+            if ema is not None and getattr(ema, 'shadow', None) is not None:
+                ema_shadow = ema.shadow
+        except Exception:
+            ema_shadow = None
         state = {
             'step': step,
             'global_step': step,  # Alternative key for compatibility
             'model': model.state_dict(),
             'model_state_dict': model.state_dict(),  # Alternative key for compatibility
-            'model_ema': ema.shadow if ema.shadow is not None else None,
+            'model_ema': ema_shadow,
             'optimizer': optimizer.state_dict() if optimizer is not None else None,
             'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
             'scheduler': scheduler.state_dict() if scheduler is not None else None,
