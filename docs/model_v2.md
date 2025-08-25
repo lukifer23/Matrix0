@@ -1,12 +1,12 @@
 # Matrix0 Model V2 — Production Architecture & Implementation
 
-Status: ACTIVE TRAINING (step 1000+ completed)
+Status: ACTIVE TRAINING (training pipeline operational)
 Owner: Matrix0 maintainers
 Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improving. The architecture is optimized for Apple Silicon MPS with advanced stability features and multi-task SSL learning.
+Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and SSL foundation. The architecture is optimized for Apple Silicon MPS with advanced stability features and SSL foundation ready for enhancement.
 
 ### Key Specifications
 - **Total Parameters**: 53,217,919 (53M)
@@ -14,14 +14,14 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Input**: 19×8×8 chess board representation
 - **Policy Output**: 4,672 move logits (from-square × to-square)
 - **Value Output**: Scalar win probability
-- **SSL Output**: 13-class per-square predictions
-- **Training Status**: Step 1000+ with stable 2.0s/step performance
+- **SSL Output**: 13-class per-square predictions (basic piece recognition working)
+- **Training Status**: Training pipeline operational with SSL foundation
 
 ### Production Achievements
 - **Training Stability**: No NaN/Inf crashes with branch normalization
 - **Memory Efficiency**: 14GB MPS limit with automatic management
-- **Performance**: ~2.0s per training step on Apple Silicon
-- **SSL Integration**: Multi-task learning with progressive curriculum
+- **Performance**: ~3-4s per training step on Apple Silicon
+- **SSL Foundation**: Basic piece recognition working, advanced algorithms implemented
 - **Data Pipeline**: Complete self-play → training → evaluation cycle
 
 ## 2) Implemented Architecture Features
@@ -42,12 +42,12 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Branch Normalization**: Independent LayerNorm before combination
 - **Stability**: Gradient clipping and NaN/Inf detection
 
-### SSL Implementation (Multi-Task Learning)
-- **SSL Tasks**: Piece recognition, threat detection, pin identification, fork opportunities, square control
+### SSL Implementation (Foundation Established)
+- **SSL Foundation**: Basic piece recognition working and operational
+- **SSL Algorithms**: Advanced algorithms implemented in ssl_algorithms.py
 - **SSL Architecture**: Dedicated 13-class per-square prediction head
-- **Curriculum Learning**: Progressive difficulty from basic to advanced patterns
-- **Loss Integration**: Weighted SSL loss with policy/value learning
-- **Training Stability**: SSL warmup and curriculum progression
+- **Current Status**: Basic piece recognition working, advanced algorithms ready for integration
+- **Training Stability**: SSL foundation established with basic functionality
 
 ### Training Stability Features
 - **Branch Normalization**: Prevents magnitude differences between policy branches
@@ -80,12 +80,11 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Cadence**: Every 4th residual block for computational efficiency
 - **Parameters**: ~2M in attention components
 
-### SSL Architecture (Multi-Task Learning)
+### SSL Architecture (Foundation Ready)
 - **SSL Head**: Dedicated 13-class per-square prediction (13×8×8 output)
-- **SSL Tasks**: Piece recognition, threat detection, pin identification, fork opportunities, square control
-- **SSL Curriculum**: Progressive difficulty (0.0 → 0.9 over training)
-- **Loss Integration**: Weighted SSL loss with policy/value learning
-- **Training Stability**: SSL warmup period and curriculum progression
+- **SSL Foundation**: Basic piece recognition working and operational
+- **SSL Algorithms**: Advanced algorithms implemented (threat, pin, fork, control)
+- **Current Status**: Ready for full SSL integration and multi-task learning
 - **Parameters**: ~500K in SSL head
 
 ### Policy Head (Dual Branch Design)
@@ -102,17 +101,17 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Output**: Scalar win probability (-1 to 1)
 - **Parameters**: ~200K
 
-### SSL Head (Multi-Task Learning)
+### SSL Head (Foundation Established)
 - **Architecture**: 1×1 conv (320→64) → 13×8×8 output
-- **SSL Tasks**: 13-class prediction per-square (empty + 12 piece types)
-- **Loss Function**: Cross-entropy with SSL curriculum
-- **Training**: Progressive difficulty increase during training
+- **SSL Foundation**: Basic piece recognition working (13-class prediction per-square)
+- **Current Status**: Ready for advanced SSL task integration
+- **Training**: Basic piece recognition operational, advanced algorithms ready
 - **Parameters**: ~500K
 
 ### Outputs (Production Interface)
 - **Policy**: (B, 4672) - move logits (from-square × to-square)
 - **Value**: (B,) - win probability (-1 to 1)
-- **SSL**: (B, 13, 8, 8) - piece predictions per-square
+- **SSL**: (B, 13, 8, 8) - piece predictions per-square (basic functionality working)
 - **Memory Usage**: ~14GB MPS during training
 
 ### Training Configuration
@@ -121,7 +120,7 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Precision**: FP16 mixed precision
 - **Gradient Clipping**: 0.5 norm threshold
 - **SSL Weight**: 0.05 in total loss
-- **SSL Warmup**: 200 steps
+- **SSL Status**: Basic piece recognition working, advanced algorithms ready
 
 ## 4) Parameter Budget and Efficiency
 
@@ -130,18 +129,18 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 - **Trunk (ResNet-24)**: ~48M (90.3%) - deep learning capacity
 - **Policy Head**: ~2.5M (4.7%) - dual branch efficiency
 - **Value Head**: ~200K (0.4%) - lightweight evaluation
-- **SSL Head**: ~500K (0.9%) - multi-task learning
+- **SSL Head**: ~500K (0.9%) - foundation established
 - **Chess Attention**: ~2M (3.7%) - spatial relationships
 
 ### Production Efficiency
 - **Policy Head**: Dual branch design with factorization saves parameters
-- **SSL Integration**: Multi-task learning adds minimal overhead
+- **SSL Foundation**: Basic piece recognition working, advanced algorithms ready
 - **Memory Optimized**: 14GB MPS limit enables full training
 - **Training Stable**: No NaN/Inf issues with current safeguards
 
 ### Efficiency Improvements
 - **Parameter Redistribution**: Move compute from policy FC to trunk capacity
-- **Multi-Task Learning**: Shared representations across SSL, policy, and value
+- **Multi-Task Learning**: Shared representations across SSL, policy, and value (ready for integration)
 - **Cross-Modal Efficiency**: Leverage visual and symbolic complementarity
 
 ## 5) Enhanced Configuration (Backward-Compatible)
@@ -149,23 +148,23 @@ Matrix0 V2 is a **53M parameter ResNet-24** model actively training and improvin
 ```yaml
 model:
   # Core shape
-  channels: 192         # default (keep old value to stay on V1)
-  blocks: 16            # default (keep old value to stay on V1)
+  channels: 320         # current (V2 architecture)
+  blocks: 24            # current (V2 architecture)
   
   # Norms/activations/layout
   norm: group           # group|batch
   activation: silu      # silu|relu|gelu
   preact: true
-  droppath: 0.07
+  droppath: 0.1
   
   # Attention
-  attention_heads: 12
+  attention_heads: 20
   attention_every_k: 4
   attention_relbias: true
   attention_unmasked_mix: 0.15
   
   # Policy head
-  policy_factor_rank: 256         # enable factorized dense; if 0 use legacy FC
+  policy_factor_rank: 128         # enable factorized dense; if 0 use legacy FC
   aux_policy_from_square: true
   aux_policy_move_type: true
   
@@ -175,7 +174,7 @@ model:
   cross_modal_attention: true     # enable cross-modal attention
   
   # Enhanced SSL/SSRL
-  ssl_tasks: ["piece"]  # only piece recognition supported currently
+  ssl_tasks: ["piece"]  # basic piece recognition working
   ssl_curriculum: true            # enable progressive difficulty
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
   
@@ -203,7 +202,7 @@ training:
   active_learning: false          # enable LLM-guided data generation
   
   # Standard training
-  autocast_dtype: bf16            # bf16|fp16
+  autocast_dtype: fp16            # fp16|bf16
   aux_policy_weights:
     from_square: 0.05
     move_type: 0.05
@@ -233,15 +232,15 @@ llm_tutor:
 
 ## 6) Implementation Plan (Enhanced Step-by-Step)
 
-### Phase 1: Core V2 Architecture (Weeks 1-2)
-1. **Config Scaffolding**: Add all new configuration options with V1 defaults
-2. **Model V2 Trunk**: Implement pre-activation blocks, GroupNorm, SiLU, DropPath
-3. **Enhanced Attention**: Parameterize cadence, heads, relative bias
-4. **Factorized Policy**: Implement low-rank policy head with fallback to legacy
+### Phase 1: SSL Algorithm Integration (Weeks 1-2)
+1. **SSL Task Integration**: Enable all implemented SSL algorithms in training pipeline
+2. **SSL Validation**: Test all SSL algorithms with training pipeline
+3. **Multi-Task Loss**: Implement weighted combination of SSL objectives
+4. **SSL Monitoring**: Track SSL learning progress across all tasks
 5. **Basic Testing**: Unit tests and mini integration tests
 
 ### Phase 2: Enhanced SSL/SSRL (Weeks 3-4)
-1. **Multi-Task SSL**: Implement expanded SSL task set with curriculum
+1. **Multi-Task SSL**: Enable expanded SSL task set with curriculum
 2. **SSRL Tasks**: Masked prediction, contrastive learning, rotation invariance
 3. **SSL Curriculum**: Progressive difficulty system
 4. **Multi-Task Losses**: Weighted combination of SSL objectives
@@ -279,11 +278,11 @@ llm_tutor:
 
 ### Enhanced SSL/SSRL System
 **Multi-Task SSL Tasks:**
-- **Piece Recognition**: Basic piece identification (current)
-- **Piece Relationships**: Which pieces control which squares
-- **Threat Detection**: Identify pieces under attack/defense
-- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns
-- **King Safety**: Recognize safe vs exposed king positions
+- **Piece Recognition**: Basic piece identification (✅ WORKING)
+- **Piece Relationships**: Which pieces control which squares (✅ IMPLEMENTED)
+- **Threat Detection**: Identify pieces under attack/defense (✅ IMPLEMENTED)
+- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns (✅ IMPLEMENTED)
+- **King Safety**: Recognize safe vs exposed king positions (✅ IMPLEMENTED)
 
 **SSRL Learning Objectives:**
 - **Masked Position Prediction**: Hide random pieces, predict what should be there
@@ -292,11 +291,11 @@ llm_tutor:
 - **Temporal Consistency**: Adjacent moves should have similar representations
 
 **SSL Curriculum Progression:**
-1. **Level 1**: Basic piece recognition and board state
-2. **Level 2**: Piece relationships and basic threats
-3. **Level 3**: Pawn structure and king safety
-4. **Level 4**: Complex tactical patterns
-5. **Level 5**: Strategic concepts and long-term planning
+1. **Level 1**: Basic piece recognition and board state (✅ WORKING)
+2. **Level 2**: Piece relationships and basic threats (✅ READY)
+3. **Level 3**: Pawn structure and king safety (✅ READY)
+4. **Level 4**: Complex tactical patterns (✅ READY)
+5. **Level 5**: Strategic concepts and long-term planning (✅ READY)
 
 ### LLM Chess Tutor Integration
 **Fine-tuning Strategy:**
@@ -384,13 +383,13 @@ model:
   policy_factor_rank: 0
   enable_visual: false
   enable_llm_tutor: false
-  ssl_tasks: ["piece"]  # basic SSL only (currently the only supported task)
+  ssl_tasks: ["piece"]  # basic SSL only (currently working)
 ```
 
 ### Gradual Fallback Options
 1. **Disable Multi-Modal**: Keep V2 trunk but disable visual processing
 2. **Disable LLM Tutor**: Keep enhanced SSL but disable LLM integration
-3. **Disable Enhanced SSL**: Keep V2 trunk but use basic SSL
+3. **Disable Enhanced SSL**: Keep V2 trunk but use basic SSL (current state)
 4. **Disable V2 Trunk**: Fall back to V1 architecture with factorized policy
 
 ### Emergency Reversion
@@ -409,7 +408,7 @@ model:
 ### Chess-Specific Metrics
 - **Policy Quality**: Improved move prediction accuracy
 - **Value Calibration**: Better evaluation of positions
-- **SSL Accuracy**: Enhanced understanding of chess concepts
+- **SSL Accuracy**: Enhanced understanding of chess concepts (basic working)
 - **Strategic Play**: Improved long-term planning and positional understanding
 
 ### Novel Capability Metrics
@@ -421,16 +420,17 @@ model:
 ## 11) Implementation Checklist
 
 ### Core V2 Architecture
-- [ ] Config scaffolding and documentation
-- [ ] Pre-activation residual blocks with GroupNorm + SiLU
-- [ ] Enhanced attention system with configurable cadence
-- [ ] Factorized policy head with fallback
-- [ ] DropPath regularization implementation
-- [ ] Unit tests for all new components
+- [x] Config scaffolding and documentation
+- [x] Pre-activation residual blocks with GroupNorm + SiLU
+- [x] Enhanced attention system with configurable cadence
+- [x] Factorized policy head with fallback
+- [x] DropPath regularization implementation
+- [x] Unit tests for all new components
 
 ### Enhanced SSL/SSRL
-- [ ] Multi-task SSL task implementation
-- [ ] SSRL learning objectives (masked prediction, contrastive)
+- [x] Basic SSL task implementation (piece recognition)
+- [x] Advanced SSL algorithms implemented in ssl_algorithms.py
+- [ ] SSL task integration with training pipeline
 - [ ] SSL curriculum progression system
 - [ ] Multi-task loss weighting and combination
 - [ ] SSL validation and testing framework
@@ -468,16 +468,16 @@ model:
 ### Enable Full V2 Features
 ```yaml
 model:
-  channels: 192
-  blocks: 16
+  channels: 320
+  blocks: 24
   norm: group
   activation: silu
   preact: true
-  droppath: 0.07
-  attention_heads: 12
+  droppath: 0.1
+  attention_heads: 20
   attention_every_k: 4
   attention_relbias: true
-  policy_factor_rank: 256
+  policy_factor_rank: 128
   aux_policy_from_square: true
   aux_policy_move_type: true
   enable_visual: true
@@ -494,7 +494,7 @@ training:
   visual_loss_weight: 0.2
   llm_guidance_weight: 0.1
   active_learning: true
-  autocast_dtype: bf16
+  autocast_dtype: fp16
   aux_policy_weights: { from_square: 0.05, move_type: 0.05 }
 
 mcts:
@@ -520,12 +520,12 @@ llm_tutor:
 5. **Performance Analysis**: Compare with V1 baseline
 
 ### Troubleshooting
-- **SSL Issues**: Disable enhanced SSL tasks, fall back to basic
+- **SSL Issues**: Disable enhanced SSL tasks, fall back to basic (current state)
 - **Multi-Modal Problems**: Disable visual processing, use symbolic only
 - **LLM Integration Failures**: Disable LLM tutor, use traditional training
 - **Performance Degradation**: Reduce model complexity, adjust hyperparameters
 
 ---
 
-This enhanced V2 design represents a significant evolution of Matrix0, combining architectural improvements with novel learning capabilities. The phased implementation approach ensures stability while enabling cutting-edge features like LLM-guided training and multi-modal learning. All features are configurable and can be enabled/disabled independently, providing maximum flexibility and risk mitigation.
+This enhanced V2 design represents a significant evolution of Matrix0, combining architectural improvements with SSL foundation ready for enhancement. The phased implementation approach ensures stability while enabling cutting-edge features like LLM-guided training and multi-modal learning. All features are configurable and can be enabled/disabled independently, providing maximum flexibility and risk mitigation.
 

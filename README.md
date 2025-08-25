@@ -6,7 +6,7 @@
 
 Matrix0 is a production-ready AlphaZero-style chess engine designed for Apple Silicon.
 It provides a complete self-play reinforcement learning pipeline with Monte Carlo
-Tree Search (MCTS) and a modern ResNet backbone with advanced attention and SSL capabilities.
+Tree Search (MCTS) and a modern ResNet backbone with SSL capabilities.
 
 ## 🎯 Project Overview
 
@@ -14,12 +14,12 @@ Matrix0 implements cutting-edge reinforcement learning concepts from AlphaZero a
 
 - **Complete Training Pipeline**: Self-play → Training → Evaluation → Model Promotion
 - **Advanced Architecture**: 53M parameter ResNet-24 with chess-specific attention
-- **Multi-Task Learning**: Enhanced SSL with threat detection, pins, forks, and control
+- **SSL Foundation**: Basic piece recognition with advanced SSL algorithms implemented
 - **Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
 - **Production Features**: Robust data management, monitoring, and evaluation tools
 
 ## 📊 Project Status
-**ACTIVE DEVELOPMENT** - Training pipeline operational, SSL enhanced, actively improving. See the
+**ACTIVE DEVELOPMENT** - Training pipeline operational, SSL foundation established, actively improving. See the
 [status report](docs/status.md), the [development roadmap](docs/roadmap.md), and the
 [Open Issues](docs/index.md#open-issues) section for current problem areas.
 
@@ -27,7 +27,7 @@ Matrix0 implements cutting-edge reinforcement learning concepts from AlphaZero a
 
 - **Complete Training Pipeline**: Self-play → Training → Evaluation → Model Promotion (✅ OPERATIONAL)
 - **Advanced Architecture**: 53M parameter ResNet-24 with 320 channels and chess-specific attention
-- **Multi-Task SSL**: Threat detection, pin detection, fork opportunities, square control
+- **SSL Foundation**: Basic piece recognition working, advanced SSL algorithms implemented
 - **MPS Optimization**: Apple Silicon GPU acceleration with 14GB memory management
 - **Robust Data Management**: SQLite metadata, corruption detection, automatic backup system
 - **External Engine Integration**: Stockfish and LC0 support for competitive training
@@ -41,7 +41,7 @@ Matrix0 implements cutting-edge reinforcement learning concepts from AlphaZero a
 Matrix0/
 ├── azchess/                    # Core package (53M parameter model)
 │   ├── model/                  # Neural network architecture
-│   │   └── resnet.py          # ResNet-24 with attention and SSL
+│   │   └── resnet.py          # ResNet-24 with attention and SSL foundation
 │   ├── selfplay/               # Self-play generation pipeline
 │   ├── mcts/                   # Monte Carlo Tree Search engine
 │   ├── training/               # Training pipeline and optimizers
@@ -57,7 +57,7 @@ Matrix0/
 │   └── data_metadata.db       # SQLite database for data integrity
 ├── checkpoints/                # Model checkpoints (v2_base.pt active)
 │   ├── v2_base.pt             # Current stable checkpoint
-│   └── model_step_5000.pt     # Latest training checkpoint
+│   └── best.pt                 # Best performing checkpoint
 ├── webui/                      # FastAPI web interface
 ├── logs/                       # Comprehensive logging system
 ├── docs/                       # Complete documentation suite
@@ -130,17 +130,17 @@ python -m azchess.tools.process_lichess
 - [Configuration guide](docs/configuration.md)
 - [Web UI guide](docs/webui.md)
 - [Model V2 Design](docs/model_v2.md)
-- [External engine integration](EXTERNAL_ENGINES.md)
+- [External engine integration](docs/EXTERNAL_ENGINES.md)
 - [Full documentation index](docs/index.md)
 
 ## 🔧 Current Training Status
 
 **Latest Update**: August 2025
-- **Training Progress**: Step 5000+ completed ✅
-- **Training Speed**: ~3-4 seconds per step
+- **Training Progress**: Training pipeline operational, SSL foundation established
+- **Training Speed**: ~3-4 seconds per step (optimized)
 - **Model Size**: 53,217,919 parameters (53M)
 - **Architecture**: ResNet-24 with 320 channels, 20 attention heads
-- **SSL Status**: Multi-task learning enabled with curriculum progression
+- **SSL Status**: Basic piece recognition working, advanced SSL algorithms implemented
 - **Training Stability**: Branch normalization, gradient clipping, emergency checkpoints
 - **Memory Usage**: ~10.7-11.0GB MPS usage with automatic management
 
@@ -209,13 +209,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### ✅ Completed Milestones
 - **Training Pipeline**: Self-play → Training → Evaluation → Model Promotion
-- **Model Architecture**: 53M parameter ResNet-24 with attention and SSL
+- **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
 - **Training Stability**: Branch normalization, gradient clipping, emergency checkpoints
 - **Memory Management**: 14GB MPS optimization with automatic cleanup
-- **SSL Implementation**: Multi-task learning with threat/pin/fork/control detection
+- **SSL Foundation**: Basic piece recognition working, advanced algorithms implemented
 
 ### 🔄 Active Development
-- **SSL Curriculum**: Progressive difficulty from basic to advanced concepts
+- **SSL Enhancement**: Complete threat/pin/fork/control detection algorithms
 - **Performance Optimization**: Memory efficiency and training throughput
 - **Model Evaluation**: Enhanced tournament and strength estimation systems
 
@@ -225,4 +225,4 @@ See [docs/roadmap.md](docs/roadmap.md) and [docs/status.md](docs/status.md) for 
 
 **Matrix0 v2.0 - Production Training Pipeline**
 
-*Advanced chess AI research platform with 53M parameter model and multi-task SSL learning. Actively training at step 1000+ with stable performance.*
+*Advanced chess AI research platform with 53M parameter model and SSL foundation. Training pipeline operational with SSL algorithms implemented and ready for enhancement.*

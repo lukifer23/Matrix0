@@ -29,7 +29,7 @@ Matrix0 now supports integration with external chess engines through the UCI pro
 
 ### Matrix0 (Internal)
 - **Type**: Internal neural network model
-- **Checkpoint**: `checkpoints/best.pt`
+- **Checkpoint**: `checkpoints/v2_base.pt`
 - **Evaluation**: MCTS with neural network guidance
 - **Status**: ✅ Enhanced with external engine integration
 
@@ -61,7 +61,7 @@ engines:
   
   matrix0:
     type: internal
-    checkpoint: checkpoints/best.pt
+    checkpoint: checkpoints/v2_base.pt
     enabled: true
 ```
 
@@ -402,6 +402,19 @@ selfplay:
 
 For draw adjudication and resignation settings, see [Configuration Guide](docs/configuration.md)
 
+## Current Project Status
+
+### Training Pipeline
+- **Status**: ✅ Operational and stable
+- **SSL Foundation**: Basic piece recognition working
+- **Advanced SSL**: Algorithms implemented, ready for integration
+- **External Engines**: ✅ Fully integrated and tested
+
+### Development Priorities
+1. **SSL Integration**: Complete integration of advanced SSL algorithms
+2. **Performance Optimization**: Memory usage and training throughput
+3. **Enhanced Evaluation**: Multi-engine tournament and strength estimation
+4. **External Engine Training**: Leverage external engines for competitive training
 
 ## Support
 
@@ -413,3 +426,5 @@ For issues or questions about external engine integration:
 4. Test with minimal configuration first
 
 The external engine integration is designed to be robust and maintainable, providing Matrix0 with access to world-class chess engines for training and evaluation. The system has been thoroughly tested and is production-ready for competitive training and evaluation workflows.
+
+**Current focus**: SSL algorithm integration and training pipeline enhancement with external engine support.

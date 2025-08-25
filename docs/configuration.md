@@ -35,7 +35,7 @@ model:
   policy_factor_rank: 128          # Factorized policy head
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece"]  # SSL tasks (only piece task currently supported)
+  ssl_tasks: ["piece"]            # SSL tasks (basic piece recognition working)
 ```
 
 ## 2. Key Configuration Sections
@@ -53,12 +53,12 @@ model:
 - `policy_factor_rank`: Factorized policy head rank (default: `128`)
 - `ssl_curriculum`: Enable SSL progressive difficulty (default: `true`)
 - `self_supervised`: Enable self-supervised learning (default: `true`)
-- `ssl_tasks`: List of SSL tasks to train (currently only `["piece"]` is supported)
+- `ssl_tasks`: List of SSL tasks to train (currently only `["piece"]` is working, advanced algorithms implemented but not integrated)
 
 ### `selfplay` - Self-Play Data Generation
-- `num_workers`: Number of parallel self-play workers (default: `6`)
+- `num_workers`: Number of parallel self-play workers (default: `2`)
 - `batch_size`: Self-play batch size (default: `128`)
-- `max_games`: Maximum games per self-play cycle (default: `18`)
+- `max_games`: Maximum games per self-play cycle (default: `12`)
 - `max_game_len`: Maximum game length in moves (default: `100`)
 - `min_resign_plies`: Minimum plies before resignation (default: `20`)
 - `resign_threshold`: Win probability threshold for resignation (default: `-0.90`)
@@ -73,6 +73,7 @@ model:
 - `grad_clip_norm`: Gradient clipping threshold (default: `0.5`)
 - `ssl_weight`: Weight of SSL loss in total loss (default: `0.05`)
 - `ssl_warmup_steps`: Steps to gradually increase SSL weight (default: `200`)
+- `ssl_chunk_size`: Process SSL in chunks to prevent OOM (default: `32`)
 - `precision`: Training precision (`"fp16"` or `"fp32"`, default: `"fp16"`)
 - `memory_limit_gb`: MPS memory limit in GB (default: `14`)
 
@@ -153,7 +154,7 @@ The system uses dataclasses for type-safe configuration:
 - **Startup Validation**: Configuration validated before training begins
 - **Memory Safety**: MPS memory limits prevent out-of-memory crashes
 - **Gradient Stability**: Configurable gradient clipping thresholds
-- **SSL Safety**: Curriculum progression prevents learning instability
+- **SSL Safety**: Basic SSL working, advanced algorithms ready for integration
 
 ### Performance Optimization
 - **Hardware Detection**: Automatic optimization for Apple Silicon
@@ -167,13 +168,16 @@ The system uses dataclasses for type-safe configuration:
 ```yaml
 model:
   ssl_curriculum: true             # Progressive difficulty
-  ssl_tasks: ["piece"]
+  ssl_tasks: ["piece"]            # Basic piece recognition working
   ssl_warmup_steps: 200            # Gradual SSL introduction
 
 training:
   ssl_weight: 0.05                 # SSL loss weight
   ssl_warmup_steps: 200            # SSL warmup period
+  ssl_chunk_size: 32               # Chunked SSL processing
 ```
+
+**Note**: Currently only basic piece recognition is working. Advanced SSL algorithms (threat detection, pin detection, fork opportunities, square control) are implemented in `ssl_algorithms.py` but not yet integrated with the training pipeline.
 
 ### Memory Management
 ```yaml
@@ -186,7 +190,7 @@ training:
 ### Hardware Optimization
 ```yaml
 selfplay:
-  num_workers: 6                   # Parallel data generation
+  num_workers: 2                   # Parallel data generation
   num_simulations: 200             # Optimized for speed/quality
 
 training:
@@ -209,3 +213,48 @@ logger = setup_logging(level=logging.DEBUG)
 
 With this configuration, the training scripts will emit detailed performance
 metrics. Running at the default `INFO` level suppresses these messages.
+
+## 6. SSL Status and Future Enhancements
+
+### Current SSL Implementation
+- **Basic Piece Recognition**: ✅ Working and operational
+- **Advanced SSL Algorithms**: ✅ Implemented in `ssl_algorithms.py`
+- **Training Integration**: 🔄 Ready for integration
+- **Multi-Task Learning**: 🔄 Ready for implementation
+
+### Advanced SSL Tasks (Implemented, Ready for Integration)
+- **Threat Detection**: Identify squares under attack/defense
+- **Pin Detection**: Identify pinned pieces
+- **Fork Detection**: Identify fork opportunities
+- **Square Control**: Identify who controls each square
+- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns
+- **King Safety**: Safe vs exposed king positions
+
+### SSL Integration Roadmap
+1. **Phase 1**: Integrate advanced SSL algorithms with training pipeline
+2. **Phase 2**: Enable multi-task SSL learning with curriculum progression
+3. **Phase 3**: Validate SSL effectiveness across all implemented tasks
+4. **Phase 4**: Optimize SSL performance and memory usage
+
+### Configuration for Future SSL Features
+```yaml
+# Future SSL configuration (when fully integrated)
+model:
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
+  ssl_curriculum: true
+  ssl_task_weights:
+    piece: 1.0
+    threat: 0.8
+    pin: 0.6
+    fork: 0.4
+    control: 0.7
+    pawn_structure: 0.5
+    king_safety: 0.9
+
+training:
+  ssl_weight: 0.1                  # Increased SSL weight for multi-task learning
+  ssl_warmup_steps: 500            # Longer warmup for complex SSL tasks
+  ssl_chunk_size: 64               # Larger chunks for advanced SSL processing
+```
+
+This configuration will be enabled once the SSL integration is complete and all advanced SSL tasks are working with the training pipeline.
