@@ -1,0 +1,130 @@
+name: Pretrain External Tool Test
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'azchess/tools/pretrain_external.py'
+      - 'azchess/model/**'
+      - 'config.yaml'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  pretrain-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Test pretrain_external tool structure
+      run: |
+        python -c "
+        print('✅ Testing pretrain_external tool structure...')
+        
+        # Test that the tool can be imported
+        from azchess.tools.pretrain_external import main
+        print('✅ Tool imports successfully')
+        
+        # Test that required functions exist
+        import azchess.tools.pretrain_external as pt
+        assert hasattr(pt, 'main'), 'Missing main function'
+        assert hasattr(pt, 'train_on_external_data'), 'Missing training function'
+        
+        print('✅ Tool structure validation passed')
+        "
+        
+    - name: Test configuration compatibility
+      run: |
+        python -c "
+        from azchess.config import Config
+        from azchess.model.resnet import PolicyValueNet
+        
+        print('✅ Testing configuration compatibility...')
+        
+        # Load config
+        cfg = Config.load('config.yaml')
+        print('✅ Config loaded successfully')
+        
+        # Test model creation with config
+        model = PolicyValueNet.from_config(cfg.model())
+        print('✅ Model created successfully')
+        
+        # Test that SSL piece head exists
+        assert hasattr(model, 'ssl_piece_head'), 'Missing SSL piece head'
+        print('✅ SSL piece head validation passed')
+        
+        print('✅ Configuration compatibility tests passed')
+        "
+        
+    - name: Test data loading simulation
+      run: |
+        python -c "
+        import numpy as np
+        import os
+        
+        print('✅ Testing data loading simulation...')
+        
+        # Create test directories
+        os.makedirs('test_external/tactical', exist_ok=True)
+        os.makedirs('test_external/openings', exist_ok=True)
+        
+        # Create minimal test data
+        test_data = {
+            's': np.random.rand(10, 19, 8, 8).astype(np.float32),
+            'pi': np.random.rand(10, 4672).astype(np.float32),
+            'z': np.random.choice([-1, 0, 1], 10).astype(np.float32)
+        }
+        
+        np.savez('test_external/tactical/test.npz', **test_data)
+        np.savez('test_external/openings/test.npz', **test_data)
+        
+        print('✅ Test data created successfully')
+        
+        # Clean up
+        import shutil
+        shutil.rmtree('test_external')
+        print('✅ Test cleanup completed')
+        "
+        
+    - name: Test model forward pass
+      run: |
+        python -c "
+        import torch
+        from azchess.model.resnet import PolicyValueNet
+        from azchess.config import Config
+        
+        print('✅ Testing model forward pass...')
+        
+        # Create minimal model
+        cfg = Config.load('config.yaml')
+        model = PolicyValueNet.from_config(cfg.model())
+        
+        # Test forward pass
+        model.eval()
+        x = torch.randn(1, 19, 8, 8)
+        
+        with torch.no_grad():
+            policy, value = model(x)
+            print(f'✅ Forward pass successful: policy {policy.shape}, value {value.shape}')
+            
+        print('✅ Model forward pass tests passed')
+        "
