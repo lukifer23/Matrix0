@@ -222,7 +222,8 @@ def run_inference_server(
         heartbeat_interval = 30.0  # Log heartbeat every 30 seconds
 
         device_type = device.split(":")[0]
-        use_amp = device_type in ("cuda", "mps")
+        # On MPS, AMP often slows inference due to cast overhead; keep AMP only on CUDA
+        use_amp = (device_type == "cuda")
 
         worker_events = [res["request_event"] for res in shared_memory_resources]
         event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
@@ -406,15 +407,11 @@ def run_inference_server(
                         logger.error(f"Tensor {i} shape: {tensor.shape}, device: {tensor.device}")
                     continue
 
-                # MPS OPTIMIZATION: Use memory format optimization for better performance
-                if device_type == "mps":
+                # Keep default contiguous memory format on MPS; channels_last can add overhead there
+                if device_type == "cuda":
                     try:
-                        # Use channels_last memory format for better MPS performance
-                        batch_tensor = batch_tensor.contiguous(
-                            memory_format=torch.channels_last
-                        )
+                        batch_tensor = batch_tensor.contiguous(memory_format=torch.channels_last)
                     except Exception:
-                        # Fallback to default if channels_last not supported
                         pass
 
                 # Inference with mixed precision if available

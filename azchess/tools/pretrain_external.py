@@ -206,6 +206,7 @@ def main():
         # Clip gradients at a lower frequency to reduce overhead
         if args.clip_every > 0 and (step + 1) % args.clip_every == 0:
             nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
+        # CRITICAL: Step scheduler AFTER optimizer to avoid LR warning
         optimizer.step()
         scheduler.step()
 

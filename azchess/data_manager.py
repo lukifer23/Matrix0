@@ -227,11 +227,23 @@ class DataManager:
         sample_count = len(data.get('s', []))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source=source)
-        logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
+        # Diagnostics for legal mask persistence
+        if 'legal_mask' in data:
+            try:
+                lm = data['legal_mask']
+                ratio = float(lm.sum() / max(1, lm.size))
+                logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB, legal_ratio={ratio:.3f})")
+            except Exception:
+                logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB, legal_mask=present)")
+        else:
+            logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
         return str(filepath)
     
-    def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Get training batches from replay buffer."""
+    def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+        """Get training batches from replay buffer.
+
+        Returns tuples (s, pi, z, legal_mask) where legal_mask may be None if not present.
+        """
         shard_paths = self._get_valid_shard_paths()
         
         if not shard_paths:
@@ -247,6 +259,7 @@ class DataManager:
                     states = data['s']
                     policies = data['pi']
                     values = data['z']
+                    legal_mask_all = data.get('legal_mask', None)
 
                     # Normalize common shape variants proactively
                     # values can be (N,) or (N,1); normalize to (N,)
@@ -262,12 +275,17 @@ class DataManager:
                     states = states[indices]
                     policies = policies[indices]
                     values = values[indices]
+                    if legal_mask_all is not None:
+                        legal_mask_all = legal_mask_all[indices]
 
                     # Yield batches
                     for i in range(0, len(states), batch_size):
                         batch_states = states[i:i+batch_size]
                         batch_policies = policies[i:i+batch_size]
                         batch_values = values[i:i+batch_size]
+                        batch_legal = None
+                        if legal_mask_all is not None:
+                            batch_legal = legal_mask_all[i:i+batch_size]
 
                         # Ensure batch arrays are standard C-contiguous float32
                         if not batch_states.flags['C_CONTIGUOUS']:
@@ -285,7 +303,7 @@ class DataManager:
                             batch_values = batch_values.astype(np.float32, copy=False)
 
                         if len(batch_states) == batch_size:
-                            yield batch_states, batch_policies, batch_values
+                            yield batch_states, batch_policies, batch_values, batch_legal
                             
             except Exception as e:
                 logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
@@ -499,6 +517,9 @@ class DataManager:
                 'pi': sp_batch[1], 
                 'z': sp_batch[2]
             }
+            # Pass through optional legal_mask if present
+            if isinstance(sp_batch, (list, tuple)) and len(sp_batch) >= 4 and sp_batch[3] is not None:
+                sp_dict['legal_mask'] = sp_batch[3]
         except Exception:
             sp_dict = None
         
@@ -516,11 +537,23 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 external_batch[key], sp_dict[key]
             ], axis=0)
+        # Include legal_mask only if present in both sources for full coverage
+        if ('legal_mask' in external_batch) and ('legal_mask' in sp_dict):
+            try:
+                combined_batch['legal_mask'] = np.concatenate([
+                    external_batch['legal_mask'], sp_dict['legal_mask']
+                ], axis=0)
+            except Exception:
+                # If concatenation fails due to shape mismatch, drop mask to remain robust
+                if 'legal_mask' in combined_batch:
+                    del combined_batch['legal_mask']
         
         # Shuffle the combined batch
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
+        if 'legal_mask' in combined_batch:
+            combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum mixed'):
             return None
         return combined_batch
@@ -674,6 +707,7 @@ class DataManager:
                 next_idx = len(existing)
 
         buf_s, buf_pi, buf_z = [], [], []
+        buf_lm = []
         # Aggregates for dashboard
         games_count = 0
         sum_moves = 0
@@ -686,6 +720,7 @@ class DataManager:
             try:
                 with np.load(f) as data:
                     s, pi, z = data["s"], data["pi"], data["z"]
+                    lm = data.get("legal_mask")
                     # Collect per-game metadata if present (each file represents one game)
                     games_count += 1
                     try:
@@ -711,6 +746,8 @@ class DataManager:
                 buf_s.append(s)
                 buf_pi.append(pi)
                 buf_z.append(z)
+                if lm is not None:
+                    buf_lm.append(lm)
                 count += s.shape[0]
                 # Move source file to backup instead of deleting
                 backup_path = self.backups_dir / f.name
@@ -727,14 +764,28 @@ class DataManager:
                 s_cat = np.concatenate(buf_s, axis=0)
                 pi_cat = np.concatenate(buf_pi, axis=0)
                 z_cat = np.concatenate(buf_z, axis=0)
+                lm_cat = None
+                if buf_lm:
+                    try:
+                        lm_cat = np.concatenate(buf_lm, axis=0)
+                    except Exception:
+                        lm_cat = None
                 shard_s, shard_pi, shard_z = s_cat[:take], pi_cat[:take], z_cat[:take]
+                shard_lm = lm_cat[:take] if lm_cat is not None else None
                 # Keep leftovers
                 buf_s = [s_cat[take:]]
                 buf_pi = [pi_cat[take:]]
                 buf_z = [z_cat[take:]]
+                if lm_cat is not None:
+                    buf_lm = [lm_cat[take:]]
+                else:
+                    buf_lm = []
                 count = s_cat.shape[0] - take
                 
-                self.add_training_data({"s": shard_s, "pi": shard_pi, "z": shard_z}, next_idx)
+                shard_payload = {"s": shard_s, "pi": shard_pi, "z": shard_z}
+                if shard_lm is not None:
+                    shard_payload["legal_mask"] = shard_lm.astype(np.uint8, copy=False)
+                self.add_training_data(shard_payload, next_idx)
                 next_idx += 1
 
         # Flush tail
@@ -742,7 +793,16 @@ class DataManager:
             s_cat = np.concatenate(buf_s, axis=0)
             pi_cat = np.concatenate(buf_pi, axis=0)
             z_cat = np.concatenate(buf_z, axis=0)
-            self.add_training_data({"s": s_cat, "pi": pi_cat, "z": z_cat}, next_idx)
+            lm_cat = None
+            if buf_lm:
+                try:
+                    lm_cat = np.concatenate(buf_lm, axis=0)
+                except Exception:
+                    lm_cat = None
+            payload = {"s": s_cat, "pi": pi_cat, "z": z_cat}
+            if lm_cat is not None:
+                payload["legal_mask"] = lm_cat.astype(np.uint8, copy=False)
+            self.add_training_data(payload, next_idx)
 
         # Enforce max shards (keep most recent)
         self.cleanup_old_shards(keep_recent=self.max_shards)

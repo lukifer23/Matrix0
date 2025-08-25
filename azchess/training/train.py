@@ -8,6 +8,7 @@ Comprehensive Training Script for Matrix0
 """
 
 import argparse
+import math
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from azchess.data_manager import DataManager
 from azchess.encoding import POLICY_SHAPE, encode_board, move_to_index
 from azchess.logging_utils import setup_logging
 from azchess.model import PolicyValueNet
+from azchess.training.npz_dataset import build_training_dataloader
 from azchess.utils import (add_memory_alert_callback, clear_memory_cache,
                            emergency_memory_cleanup, get_memory_usage,
                            log_tensor_stats, safe_config_get,
@@ -116,7 +118,18 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     start_time = time.time()
 
     model.train()
-    s, pi, z = batch
+    # Support batches as tuple/list (s, pi, z[, legal_mask]) or dict with optional 'legal_mask'
+    legal_mask_np = None
+    if isinstance(batch, dict):
+        s = batch['s']
+        pi = batch['pi']
+        z = batch['z']
+        legal_mask_np = batch.get('legal_mask', None)
+    else:
+        if len(batch) == 4:
+            s, pi, z, legal_mask_np = batch
+        else:
+            s, pi, z = batch
 
     # PERFORMANCE PROFILING: Data preparation
     data_prep_start = time.time()
@@ -125,6 +138,21 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     s = torch.from_numpy(s)
     pi = torch.from_numpy(pi)
     z = torch.from_numpy(z)
+    legal_mask_t = None
+    if legal_mask_np is not None:
+        try:
+            if isinstance(legal_mask_np, np.ndarray):
+                legal_mask_t = torch.from_numpy(legal_mask_np)
+            elif torch.is_tensor(legal_mask_np):
+                legal_mask_t = legal_mask_np
+            else:
+                # Unknown type; try numpy conversion
+                legal_mask_t = torch.from_numpy(np.asarray(legal_mask_np))
+            # Normalize to bool mask of shape (N, 4672)
+            if legal_mask_t.dtype != torch.bool:
+                legal_mask_t = legal_mask_t.to(dtype=torch.bool)
+        except Exception:
+            legal_mask_t = None
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0))
@@ -173,6 +201,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     s = s.to(device, non_blocking=True)
     pi = pi.to(device, non_blocking=True)
     z = z.to(device, non_blocking=True)
+    if legal_mask_t is not None:
+        legal_mask_t = legal_mask_t.to(device, non_blocking=True)
 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
@@ -185,6 +215,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
+            if legal_mask_t is not None:
+                lm_sh = torch.flip(legal_mask_t.view(-1, *POLICY_SHAPE), dims=[2]).contiguous()
+                legal_mask_t = lm_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).to(dtype=torch.bool)
         elif r < 0.75 and augment_rotate180:
             # 180-degree rotation (flip ranks and files)
             s = torch.flip(s, dims=[2, 3]).contiguous()
@@ -193,6 +226,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
             pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
+            if legal_mask_t is not None:
+                lm_sh = torch.flip(legal_mask_t.view(-1, *POLICY_SHAPE), dims=[1, 2]).contiguous()
+                legal_mask_t = lm_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).to(dtype=torch.bool)
 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
@@ -200,33 +236,50 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Generate self-supervised learning targets (enhanced multi-task SSL)
     ssl_targets = None
     if enable_ssl and hasattr(model, 'create_ssl_targets'):
-        try:
-            import signal
-            def timeout_handler(_signum, _frame):
-                raise TimeoutError("SSL target creation timed out")
+        # Replace signal.alarm with a monotonic time budget using a worker thread
+        # This avoids signal usage and remains macOS/MPS friendly
+        import threading
+        from queue import Queue
 
-            # Set a 10-second timeout for SSL target creation
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(10)  # 10 second timeout
+        result_q: Queue = Queue(maxsize=1)
 
-            ssl_targets = model.create_ssl_targets(s)
-
-            # Cancel the alarm
-            signal.alarm(0)
-        except TimeoutError:
-            logger.warning("SSL target creation timed out after 10 seconds, disabling SSL for this batch")
-            ssl_targets = None
-            enable_ssl = False
-        except Exception as ssl_error:
-            logger.warning(f"SSL target creation failed: {ssl_error}, disabling SSL for this batch")
-            ssl_targets = None
-            enable_ssl = False
-        finally:
-            # Make sure to cancel any pending alarm
+        def _ssl_worker():
             try:
-                signal.alarm(0)
-            except:
-                pass
+                out = model.create_ssl_targets(s)
+                try:
+                    result_q.put(out, block=False)
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    result_q.put(e, block=False)
+                except Exception:
+                    pass
+
+        worker = threading.Thread(target=_ssl_worker, daemon=True)
+        worker.start()
+        # Configurable budget (seconds); keep conservative default
+        ssl_time_budget_s = 10.0
+        worker.join(timeout=ssl_time_budget_s)
+
+        if worker.is_alive():
+            logger.warning(f"SSL target creation exceeded {ssl_time_budget_s:.1f}s; skipping SSL for this batch")
+            enable_ssl = False
+            ssl_targets = None
+        else:
+            try:
+                res = result_q.get_nowait()
+                if isinstance(res, Exception):
+                    logger.warning(f"SSL target creation failed: {res}; skipping SSL for this batch")
+                    enable_ssl = False
+                    ssl_targets = None
+                else:
+                    ssl_targets = res
+            except Exception:
+                # No result available; skip SSL for this batch
+                logger.warning("SSL target creation returned no result; skipping SSL for this batch")
+                enable_ssl = False
+                ssl_targets = None
 
     # PERFORMANCE PROFILING: SSL target creation complete
     ssl_target_time = time.time() - ssl_target_start
@@ -238,14 +291,21 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
         # DEBUG: Log SSL targets statistics (only when available)
         if ssl_targets is not None and torch.rand(1).item() < 0.1:  # 10% chance to log
-            logger.info(f"SSL TARGETS DEBUG: shape={ssl_targets.shape}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}")
+            try:
+                if isinstance(ssl_targets, torch.Tensor):
+                    logger.info(
+                        f"SSL TARGETS DEBUG: shape={tuple(ssl_targets.shape)}, min={ssl_targets.min().item()}, max={ssl_targets.max().item()}, sum={ssl_targets.sum().item()}, all_zeros={torch.all(ssl_targets == 0).item()}"
+                    )
+                elif isinstance(ssl_targets, dict):
+                    keys = ",".join(sorted(list(ssl_targets.keys())))
+                    logger.info(f"SSL TARGETS DEBUG: dict keys={keys}")
+            except Exception:
+                pass
 
     if ssl_targets is None and enable_ssl:
         logger.warning(f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}")
 
-    # Ensure SSL targets have correct dtype
-    if ssl_targets is not None:
-        ssl_targets = ssl_targets.to(dtype=torch.long)
+    # Do not unconditionally cast SSL targets; handle per-target at loss time
 
     # PERFORMANCE PROFILING: Start forward pass
     forward_start = time.time()
@@ -292,12 +352,50 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Validate model outputs to catch any contiguity issues
         _check_contiguous({"policy": p, "value": v, "ssl_out": ssl_out})
 
-        # Optional legality masking for stability: mask logits where target is zero
-        # Assumes pi provides positive mass only on legal actions
-        if policy_masking:
+        # Optional legality masking: prefer explicit legal_mask; else fall back to pi>0 heuristic
+        if legal_mask_t is not None:
+            # Ensure mask has correct shape
+            if legal_mask_t.dim() == 1:
+                legal_mask_t = legal_mask_t.view(-1, p.shape[1])
+            p_for_loss = torch.where(legal_mask_t, p, torch.full_like(p, -1e9))
+        elif policy_masking:
             p_for_loss = apply_policy_mask(p, pi)
         else:
             p_for_loss = p
+
+        # Diagnostics: log mask coverage and illegal probability mass periodically
+        try:
+            if legal_mask_t is not None and current_step % 200 == 0:
+                with torch.no_grad():
+                    legal_counts = legal_mask_t.sum(dim=1).float()
+                    probs_unmasked = torch.softmax(p, dim=1)
+                    legal_mass = (probs_unmasked * legal_mask_t.float()).sum(dim=1)
+                    illegal_mass = (1.0 - legal_mass).mean().item()
+                    logger.info(
+                        "LEGAL_MASK: count mean=%.1f min=%d max=%d | illegal_prob_mass=%.4f",
+                        float(legal_counts.mean().item()), int(legal_counts.min().item()), int(legal_counts.max().item()), illegal_mass
+                    )
+        except Exception:
+            pass
+
+        # DEBUG: Inspect policy targets to ensure they're non-empty distributions
+        try:
+            if current_step % 100 == 0:
+                with torch.no_grad():
+                    pi_row_sum = pi.sum(dim=1)
+                    pi_pos_counts = (pi > 0).sum(dim=1)
+                    logger.info(
+                        "POLICY_DEBUG: row_sum mean=%.4f min=%.4f max=%.4f | pos_count mean=%.1f min=%d max=%d",
+                        float(pi_row_sum.mean().item()),
+                        float(pi_row_sum.min().item()),
+                        float(pi_row_sum.max().item()),
+                        float(pi_pos_counts.float().mean().item()),
+                        int(pi_pos_counts.min().item()),
+                        int(pi_pos_counts.max().item()),
+                    )
+        except Exception:
+            pass
+
         # Policy loss with optional label smoothing
         if label_smoothing and label_smoothing > 0.0:
             num_actions = p.shape[1]
@@ -308,6 +406,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         else:
             log_probs = nn.functional.log_softmax(p_for_loss, dim=1)
             policy_loss = -(pi * log_probs).sum(dim=1).mean()
+
+        # DEBUG: Log unusually small policy loss values to catch empty targets early
+        try:
+            if current_step % 100 == 0 and float(policy_loss.detach().item()) < 1e-3:
+                logger.warning("POLICY_DEBUG: very small policy_loss=%.6f; check policy targets above", float(policy_loss.detach().item()))
+        except Exception:
+            pass
         
         # Add policy regularization to prevent uniform outputs
         # This encourages the model to produce diverse, meaningful policies
@@ -568,15 +673,32 @@ def train_comprehensive(
             state = torch.load(best_ckpt, map_location=device, weights_only=False)
             
             # Handle different checkpoint formats robustly
-            if "model_ema" in state:
-                logger.info("Loading EMA model state")
-                model.load_state_dict(state["model_ema"])
-            elif "model" in state:
-                logger.info("Loading model state")
-                model.load_state_dict(state["model"])
-            elif "model_state_dict" in state:
-                logger.info("Loading model_state_dict")
-                model.load_state_dict(state["model_state_dict"])
+            missing = []
+            unexpected = []
+            if "model_ema" in state and state["model_ema"] is not None:
+                logger.info("Loading EMA model state (non-strict)")
+                r = model.load_state_dict(state["model_ema"], strict=False)
+                missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
+            elif "model" in state and state["model"] is not None:
+                logger.info("Loading model state (non-strict)")
+                r = model.load_state_dict(state["model"], strict=False)
+                missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
+            elif "model_state_dict" in state and state["model_state_dict"] is not None:
+                logger.info("Loading model_state_dict (non-strict)")
+                r = model.load_state_dict(state["model_state_dict"], strict=False)
+                missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
+            else:
+                missing, unexpected = [], []
+
+            if missing or unexpected:
+                try:
+                    logger.warning(f"Checkpoint key diff: missing={len(missing)} unexpected={len(unexpected)}")
+                    if missing:
+                        logger.warning(f"Missing (first 10): {missing[:10]}")
+                    if unexpected:
+                        logger.warning(f"Unexpected (first 10): {unexpected[:10]}")
+                except Exception:
+                    pass
             else:
                 # Try to find any key that looks like model weights
                 model_keys = [k for k in state.keys() if 'model' in k.lower() and 'state' in k.lower()]
@@ -600,7 +722,10 @@ def train_comprehensive(
     
     # Initialize optimizer, scheduler, and EMA
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = get_lr_scheduler(optimizer, total_steps, warmup_steps)
+    # Scheduler defined on UPDATE steps when using gradient accumulation
+    num_updates = int(math.ceil(float(total_steps) / float(max(1, accum_steps))))
+    warmup_updates = int(math.ceil(float(warmup_steps) / float(max(1, accum_steps))))
+    scheduler = get_lr_scheduler(optimizer, num_updates, warmup_updates)
     ema = EMA(model, ema_decay)
     
     # Initialize GradScaler for mixed precision in a device-agnostic way
@@ -695,17 +820,40 @@ def train_comprehensive(
         current_phase = "mixed"
     
     # Use appropriate batch method based on configuration
+    dataloader = None
+    loader_iter = None
     if use_curriculum and curriculum_phases:
-        # Curriculum learning - will be handled in training loop
+        # Curriculum learning - will be handled in training loop (phase-aware)
         batch_generator = None
+        logger.info("DataLoader disabled for curriculum mode (phase-dependent).")
     else:
-        # Standard training - use external data if available, fallback to replay buffer
+        # Standard training - prefer DataLoader-backed batches for throughput
+        dl_workers = int(safe_config_get(cfg, 'dataloader_workers', 2, section='training'))
+        dl_prefetch = int(safe_config_get(cfg, 'prefetch_factor', 2, section='training'))
         if external_stats['external_total'] > 0:
-            logger.info("Using external training data with self-play mixing")
-            batch_generator = None  # Will use get_curriculum_batch in training loop
+            logger.info("Using DataLoader over external+mixed batches")
+            dataloader = build_training_dataloader(
+                data_manager,
+                batch_size=batch_size,
+                device=device,
+                mode='mixed',
+                num_workers=dl_workers,
+                prefetch_factor=dl_prefetch,
+                persistent_workers=True,
+            )
         else:
-            logger.info("Using replay buffer only")
-            batch_generator = data_manager.get_training_batch(batch_size, device)
+            logger.info("Using DataLoader over replay buffer shards")
+            dataloader = build_training_dataloader(
+                data_manager,
+                batch_size=batch_size,
+                device=device,
+                mode='replay',
+                num_workers=dl_workers,
+                prefetch_factor=dl_prefetch,
+                persistent_workers=True,
+            )
+        loader_iter = iter(dataloader) if dataloader is not None else None
+        batch_generator = None
     
     logger.info(f"Training for {total_steps - start_step} steps.")
     logger.info(f"Batch size: {batch_size}, Gradient Accumulation: {accum_steps}")
@@ -799,6 +947,9 @@ def train_comprehensive(
     last_heartbeat = time.time()
     heartbeat_interval = 60  # Log every 60 seconds
 
+    accum_counter = 0  # micro-steps within an accumulation window
+    updates_done = 0   # total optimizer updates completed
+
     try:
         while current_step < total_steps:
             # Handle curriculum learning phase transitions
@@ -829,31 +980,35 @@ def train_comprehensive(
                         logger.error("No training data available, stopping training")
                         break
                     
-                    # Convert dict format to tuple format for existing train_step
-                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
+                    # Convert dict format to tuple format for existing train_step, include legal_mask if present
+                    if 'legal_mask' in batch_dict:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
+                    else:
+                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
                     
-                elif batch_generator is None:
-                    # External data training - use curriculum mixing
-                    batch_dict = data_manager.get_curriculum_batch(batch_size, "mixed")
-                    if batch_dict is None:
-                        logger.error("No external training data available, stopping training")
-                        break
-                    
-                    # Convert dict format to tuple format for existing train_step
-                    batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
-                    
+                elif dataloader is not None:
+                    # DataLoader-backed training path
+                    try:
+                        batch = next(loader_iter)
+                    except StopIteration:
+                        # Recreate iterator (IterableDataset can be re-used)
+                        loader_iter = iter(dataloader)
+                        batch = next(loader_iter)
                 else:
-                    # Standard replay buffer training
+                    # Fallback: Standard replay buffer training via generator
                     batch = next(batch_generator)
                     
             except StopIteration:
+                if dataloader is not None:
+                    logger.info("DataLoader exhausted, recreating iterator")
+                    loader_iter = iter(dataloader)
+                    continue
                 if batch_generator:
                     logger.info("Data stream exhausted, restarting batch generator.")
                     batch_generator = data_manager.get_training_batch(batch_size, device)
                     continue
-                else:
-                    logger.error("External data stream exhausted, stopping training")
-                    break
+                logger.error("Data stream exhausted, stopping training")
+                break
             except Exception as e:
                 logger.warning(f"Error getting batch: {e}, skipping...")
                 continue
@@ -977,32 +1132,39 @@ def train_comprehensive(
                                    scaler._scale is not None and
                                    scaler._scale > 0)
 
-                    if scaler_valid:
-                        scaler.unscale_(optimizer)
-                    if grad_clip_norm > 0:
-                        # CRITICAL: Ultra-aggressive gradient clipping to prevent NaN/Inf
-                        total_norm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm, error_if_nonfinite=False)
-                        if torch.isnan(total_norm) or torch.isinf(total_norm):
-                            logger.warning(f"Gradient norm is NaN/Inf: {total_norm}, applying emergency clipping")
-                            # Emergency gradient clipping with very small norm
-                            nn.utils.clip_grad_norm_(model.parameters(), 0.01, error_if_nonfinite=False)
-                            total_norm = 0.01
+                    # Gradient accumulation: only update optimizer every accum_steps
+                    accum_counter += 1
+                    do_update = (accum_counter % max(1, accum_steps) == 0)
 
-                    if scaler_valid:
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
-                        # Recreate scaler if it was corrupted
-                        if device.startswith('mps'):
-                            scaler = torch.amp.GradScaler(device="mps")
+                    if do_update:
+                        if scaler_valid:
+                            scaler.unscale_(optimizer)
+                        if grad_clip_norm > 0:
+                            # CRITICAL: Ultra-aggressive gradient clipping to prevent NaN/Inf
+                            total_norm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm, error_if_nonfinite=False)
+                            if torch.isnan(total_norm) or torch.isinf(total_norm):
+                                logger.warning(f"Gradient norm is NaN/Inf: {total_norm}, applying emergency clipping")
+                                # Emergency gradient clipping with very small norm
+                                nn.utils.clip_grad_norm_(model.parameters(), 0.01, error_if_nonfinite=False)
+                                total_norm = 0.01
+
+                        # CRITICAL: Do optimizer step and scheduler step
+                        if scaler_valid:
+                            scaler.step(optimizer)
+                            scaler.update()
                         else:
-                            scaler = torch.cuda.amp.GradScaler()
+                            optimizer.step()
+                            # Recreate scaler if it was corrupted
+                            if device.startswith('mps'):
+                                scaler = torch.amp.GradScaler(device="mps")
+                            else:
+                                scaler = torch.cuda.amp.GradScaler()
 
-                    # CRITICAL: Step scheduler AFTER optimizer to avoid LR warning
-                    scheduler.step()
-                    optimizer.zero_grad()
-                    ema.update(model)
+                        # CRITICAL: Step scheduler AFTER optimizer to avoid LR warning
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        ema.update(model)
+                        updates_done += 1
 
                     # PERFORMANCE PROFILING: Optimizer step complete
                     optimizer_time = time.time() - optimizer_start
@@ -1056,7 +1218,7 @@ def train_comprehensive(
                                 clear_memory_cache(device)
                                 last_memory_warning = current_time
 
-                        logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} | "
+                        logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} (updates={updates_done}) | "
                                   f"Loss: {running_loss:.4f} | "
                                   f"Policy: {running_policy_loss:.4f} | "
                                   f"Value: {running_value_loss:.4f} | "

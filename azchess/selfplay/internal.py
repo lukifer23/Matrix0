@@ -20,7 +20,7 @@ from azchess.logging_utils import setup_logging
 from ..config import select_device
 from ..data_manager import DataManager
 from ..draw import should_adjudicate_draw
-from ..encoding import encode_board, move_to_index
+from ..encoding import encode_board, move_to_index, move_encoder
 from ..mcts import MCTS, MCTSConfig
 from ..model import PolicyValueNet
 from .inference import InferenceClient
@@ -290,6 +290,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         sims_used: List[int] = []
         entropy_sum: float = 0.0
         entropy_count: int = 0
+        legal_masks: List[np.ndarray] = []
         
         t0 = perf_counter()
         last_hb = t0
@@ -417,6 +418,12 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             search_values.append(v)
             # Record perspective of this position (side to move at this state)
             turns.append(turn_sign)
+            # Save legal mask for this position
+            try:
+                lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
+            except Exception:
+                lm = np.zeros(4672, dtype=np.uint8)
+            legal_masks.append(lm)
             # Track sims used
             try:
                 sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
@@ -528,6 +535,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 "s": np.array(states, dtype=np.float32),
                 "pi": np.array(pis, dtype=np.float32),
                 "z": np.array(value_target, dtype=np.float32),
+                "legal_mask": np.stack(legal_masks, axis=0).astype(np.uint8, copy=False),
                 # Per-game metadata arrays
                 "meta_moves": np.array([len(states)], dtype=np.int32),
                 "meta_result": np.array([z], dtype=np.float32),

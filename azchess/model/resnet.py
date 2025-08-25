@@ -483,10 +483,10 @@ class PolicyValueNet(nn.Module):
         # CRITICAL: Scale policy output weights to prevent NaN explosion
         with torch.no_grad():
             if self.policy_fc is not None:
-                self.policy_fc.weight.data *= 0.3  # Further reduced from 0.5 to 0.3
+                self.policy_fc.weight.data *= 0.8  # Increased from 0.3 to allow more learning capacity
             elif self.policy_fc2 is not None:
-                self.policy_fc2.weight.data *= 0.3  # Apply same scaling in factorized case
-            logger.info("Policy head weights scaled down for numerical stability")
+                self.policy_fc2.weight.data *= 0.8  # Apply same scaling in factorized case
+            logger.info("Policy head weights scaled for balanced learning capacity")
 
         # CRITICAL: Initialize normalization layer for stability
         # LayerNorm has no learnable parameters, but we ensure it's properly set up
