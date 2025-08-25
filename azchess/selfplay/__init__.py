@@ -7,11 +7,8 @@ when external engine integration is disabled.
 __all__ = []
 
 try:
-    from .external_engine_worker import (
-        ExternalEngineSelfPlay,
-        GameResult,
-        external_engine_worker,
-    )
+    from .external_engine_worker import (ExternalEngineSelfPlay, GameResult,
+                                         external_engine_worker)
     __all__ += ["ExternalEngineSelfPlay", "external_engine_worker", "GameResult"]
 except Exception:
     # External engines not required for core self-play

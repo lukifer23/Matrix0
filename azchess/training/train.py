@@ -29,15 +29,10 @@ from azchess.data_manager import DataManager
 from azchess.encoding import POLICY_SHAPE, encode_board, move_to_index
 from azchess.logging_utils import setup_logging
 from azchess.model import PolicyValueNet
-from azchess.utils import (
-    add_memory_alert_callback,
-    clear_memory_cache,
-    emergency_memory_cleanup,
-    get_memory_usage,
-    log_tensor_stats,
-    safe_config_get,
-    start_memory_monitoring,
-)
+from azchess.utils import (add_memory_alert_callback, clear_memory_cache,
+                           emergency_memory_cleanup, get_memory_usage,
+                           log_tensor_stats, safe_config_get,
+                           start_memory_monitoring)
 
 # Setup logging
 logger = setup_logging(level=logging.INFO)

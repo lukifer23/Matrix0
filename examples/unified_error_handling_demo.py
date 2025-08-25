@@ -9,23 +9,12 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from azchess.utils import (
-    ConfigurationError,
-    ErrorCategory,
-    ErrorSeverity,
-    InferenceError,
-    Matrix0Error,
-    MemoryError,
-    TensorError,
-    TrainingError,
-    ValidationError,
-    create_error_context,
-    error_handler,
-    get_error_statistics,
-    handle_matrix0_error,
-    safe_operation,
-    with_error_handling,
-)
+from azchess.utils import (ConfigurationError, ErrorCategory, ErrorSeverity,
+                           InferenceError, Matrix0Error, MemoryError,
+                           TensorError, TrainingError, ValidationError,
+                           create_error_context, error_handler,
+                           get_error_statistics, handle_matrix0_error,
+                           safe_operation, with_error_handling)
 
 
 def demo_error_classification():

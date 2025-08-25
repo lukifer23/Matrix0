@@ -18,11 +18,8 @@ from .config import Config, select_device
 from .draw import should_adjudicate_draw
 from .elo import EloBook, update_elo
 from .mcts import MCTS, MCTSConfig
-from .selfplay.inference import (
-    InferenceClient,
-    run_inference_server,
-    setup_shared_memory_for_worker,
-)
+from .selfplay.inference import (InferenceClient, run_inference_server,
+                                 setup_shared_memory_for_worker)
 from .utils.model_loader import load_model_and_mcts
 
 # Globals for worker processes (initialized by _arena_worker_init)

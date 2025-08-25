@@ -11,15 +11,10 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from azchess.utils import (
-    MemoryAlert,
-    add_memory_alert_callback,
-    clear_memory_cache,
-    get_memory_stats,
-    get_memory_usage,
-    start_memory_monitoring,
-    stop_memory_monitoring,
-)
+from azchess.utils import (MemoryAlert, add_memory_alert_callback,
+                           clear_memory_cache, get_memory_stats,
+                           get_memory_usage, start_memory_monitoring,
+                           stop_memory_monitoring)
 
 
 def demo_basic_monitoring():

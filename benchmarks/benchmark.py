@@ -28,18 +28,10 @@ except ImportError:
     TORCH_AVAILABLE = False
     logger.warning("PyTorch not available - Matrix0 model loading disabled")
 
-from benchmarks.config import (
-    BenchmarkConfig,
-    ConfigManager,
-    TestScenario,
-    UCIEngineConfig,
-)
-from benchmarks.metrics import (
-    BenchmarkMetrics,
-    GameMetrics,
-    MetricsAnalyzer,
-    MetricsCollector,
-)
+from benchmarks.config import (BenchmarkConfig, ConfigManager, TestScenario,
+                               UCIEngineConfig)
+from benchmarks.metrics import (BenchmarkMetrics, GameMetrics, MetricsAnalyzer,
+                                MetricsCollector)
 from benchmarks.uci_bridge import EngineManager
 
 if TORCH_AVAILABLE:

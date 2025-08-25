@@ -12,7 +12,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from .memory import clear_memory_cache, emergency_memory_cleanup, get_memory_usage
+from .memory import (clear_memory_cache, emergency_memory_cleanup,
+                     get_memory_usage)
 
 logger = logging.getLogger(__name__)
 

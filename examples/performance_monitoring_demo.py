@@ -11,20 +11,12 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from azchess.utils import (
-    TimingContext,
-    add_performance_alert_callback,
-    end_timing,
-    get_performance_report,
-    get_performance_stats,
-    increment_counter,
-    performance_monitor,
-    record_metric,
-    set_gauge,
-    set_performance_threshold,
-    start_timing,
-    time_operation,
-)
+from azchess.utils import (TimingContext, add_performance_alert_callback,
+                           end_timing, get_performance_report,
+                           get_performance_stats, increment_counter,
+                           performance_monitor, record_metric, set_gauge,
+                           set_performance_threshold, start_timing,
+                           time_operation)
 
 
 def demo_basic_timing():

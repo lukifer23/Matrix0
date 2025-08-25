@@ -10,19 +10,10 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from azchess.utils import (
-    LogOperation,
-    create_log_context,
-    get_logger,
-    log_error_details,
-    log_function,
-    log_metrics,
-    log_print,
-    log_progress,
-    log_system_info,
-    set_logging_level,
-    setup_logging,
-)
+from azchess.utils import (LogOperation, create_log_context, get_logger,
+                           log_error_details, log_function, log_metrics,
+                           log_print, log_progress, log_system_info,
+                           set_logging_level, setup_logging)
 
 
 def demo_basic_logging():

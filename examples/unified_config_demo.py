@@ -10,15 +10,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from azchess.config import Config
-from azchess.utils import (
-    ConfigPath,
-    config_get,
-    config_get_section,
-    config_get_typed,
-    config_manager,
-    set_global_config,
-    validate_config_requirements,
-)
+from azchess.utils import (ConfigPath, config_get, config_get_section,
+                           config_get_typed, config_manager, set_global_config,
+                           validate_config_requirements)
 
 
 def demo_basic_config_access():

@@ -15,7 +15,8 @@ from typing import Dict, List
 
 import numpy as np
 import torch
-from rich.progress import BarColumn, Progress, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (BarColumn, Progress, TimeElapsedColumn,
+                           TimeRemainingColumn)
 from torch.multiprocessing import Event as MPEvent
 from torch.multiprocessing import Process, Queue
 
@@ -27,14 +28,11 @@ from .data_manager import DataManager
 from .elo import EloBook, update_elo
 from .logging_utils import setup_logging
 from .monitor import dir_stats, disk_free, memory_usage_bytes
-from .selfplay.inference import run_inference_server, setup_shared_memory_for_worker
+from .selfplay.inference import (run_inference_server,
+                                 setup_shared_memory_for_worker)
 from .selfplay.internal import math_div_ceil, selfplay_worker
-from .utils import (
-    clear_memory_cache,
-    get_memory_usage,
-    log_config_summary,
-    safe_config_get,
-)
+from .utils import (clear_memory_cache, get_memory_usage, log_config_summary,
+                    safe_config_get)
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
@@ -60,7 +58,8 @@ def _run_external_proc(proc_id: int, cfg_path: str, out_dir: str, n_games: int):
     import asyncio as _asyncio
 
     from .config import Config as _Cfg
-    from .selfplay.external_engine_worker import external_engine_worker as _worker
+    from .selfplay.external_engine_worker import \
+        external_engine_worker as _worker
     _cfg = _Cfg.load(cfg_path)
     _asyncio.run(_worker(proc_id=proc_id, config=_cfg, output_dir=out_dir, num_games=n_games))
 
@@ -466,7 +465,8 @@ def orchestrate(
 
                     # CRITICAL: Recreate shared memory resources with fresh Event objects
                     # This ensures workers and the new server use the same Event objects
-                    from .selfplay.inference import setup_shared_memory_for_worker
+                    from .selfplay.inference import \
+                        setup_shared_memory_for_worker
                     new_shared_memory_resources = []
                     for i in range(len(shared_memory_resources)):
                         try:
