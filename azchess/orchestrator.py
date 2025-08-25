@@ -395,6 +395,11 @@ def orchestrate(
                     )
                     shared_memory_resources.append(res)
 
+                # In compact mode, ask child to minimize stdout noise
+                compact = bool(cfg.get("orchestrator", {}).get("ui", {}).get("compact", False))
+                if compact:
+                    os.environ["MATRIX0_COMPACT_LOG"] = "1"
+
                 infer_proc = Process(target=run_inference_server, args=(dev, sp_cfg["model"], model_state_dict, stop_event, server_ready_event, shared_memory_resources))
                 infer_proc.start()
                 

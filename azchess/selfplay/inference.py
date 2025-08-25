@@ -48,6 +48,18 @@ def _validate_events(events: List[Event]) -> bool:
 def _recreate_worker_events(shared_memory_resources: List[Dict[str, Any]], attempt: int) -> None:
     """Recreate all worker events to fix corruption."""
     logger = logging.getLogger(__name__)
+    # Compact logging: reduce console noise, keep files detailed
+    if os.environ.get("MATRIX0_COMPACT_LOG") == "1":
+        try:
+            logger.setLevel(logging.WARNING)
+            import logging.handlers as _lh
+            os.makedirs("logs", exist_ok=True)
+            fh = _lh.RotatingFileHandler("logs/inference.log", maxBytes=5_000_000, backupCount=2)
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+            logger.addHandler(fh)
+        except Exception:
+            pass
     logger.warning(f"Recreating worker events (attempt {attempt})")
     
     for i, res in enumerate(shared_memory_resources):
@@ -71,7 +83,26 @@ def run_inference_server(
     import logging
 
     logger = logging.getLogger(__name__)
-
+    
+    # Compact logging: silence console noise from this process
+    import os as _os
+    if _os.environ.get("MATRIX0_COMPACT_LOG") == "1":
+        try:
+            logger.setLevel(logging.WARNING)
+            root = logging.getLogger()
+            root.setLevel(logging.WARNING)
+            # prevent duplicate emission to parent Rich handler
+            logger.propagate = False
+            import logging.handlers as _lh
+            _os.makedirs("logs", exist_ok=True)
+            fh = _lh.RotatingFileHandler("logs/inference.log", maxBytes=5_000_000, backupCount=2)
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+            # avoid adding multiple handlers on respawn
+            if not any(isinstance(h, _lh.RotatingFileHandler) for h in logger.handlers):
+                logger.addHandler(fh)
+        except Exception:
+            pass
     try:
         logger.info(f"Inference server starting on device: {device}")
         logger.info(f"Available workers: {len(shared_memory_resources)}")

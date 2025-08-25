@@ -567,7 +567,8 @@ class DataManager:
                 self._remove_shard_record(shard.path)
                 logger.info(f"Removed old shard: {shard.path}")
             except Exception as e:
-                logger.error(f"Error removing shard {shard.path}: {e}")
+                # Many shards may already be removed by compaction; avoid noisy errors
+                logger.debug(f"Shard already removed or missing: {shard.path} ({e})")
     
     def validate_data_integrity(self) -> Tuple[int, int]:
         """Validate all shards and return (valid, corrupted) counts."""

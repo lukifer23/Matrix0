@@ -122,6 +122,26 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     except Exception:
         pass
 
+    # Compact logging for worker process: silence console, log to file
+    import os as _os
+    if _os.environ.get("MATRIX0_COMPACT_LOG") == "1":
+        try:
+            import logging as _logging
+            root = _logging.getLogger()
+            root.setLevel(_logging.WARNING)
+            wl = _logging.getLogger(__name__)
+            wl.setLevel(_logging.WARNING)
+            wl.propagate = False
+            import logging.handlers as _lh
+            _os.makedirs("logs", exist_ok=True)
+            fh = _lh.RotatingFileHandler(f"logs/worker_{proc_id}.log", maxBytes=3_000_000, backupCount=2)
+            fh.setLevel(_logging.INFO)
+            fh.setFormatter(_logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+            if not any(isinstance(h, _lh.RotatingFileHandler) for h in wl.handlers):
+                wl.addHandler(fh)
+        except Exception:
+            pass
+
     use_shared_infer = (shared_memory_resource is not None) and (device != "cpu")
     if use_shared_infer:
         model = None  # model hosted in server
@@ -437,10 +457,10 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             move_history.append(move)
             board.push(move)
 
-            # Heartbeat to orchestrator every 5 seconds
+            # Heartbeat to orchestrator every ~2 seconds (more responsive TUI)
             if q is not None:
                 now = perf_counter()
-                if now - last_hb >= 5.0:
+                if now - last_hb >= 2.0:
                     try:
                         q.put({
                             "type": "heartbeat",

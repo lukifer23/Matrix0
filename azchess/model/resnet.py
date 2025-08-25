@@ -61,6 +61,9 @@ class ResidualBlock(nn.Module):
             w = pool.reshape(pool.size(0), -1).contiguous()
             w = self.activation(self.se_fc1(w))
             w = torch.sigmoid(self.se_fc2(w)).unsqueeze(-1).unsqueeze(-1)
+            # Ensure SE weights match feature dtype under autocast (fix MPS type ops)
+            if w.dtype != out.dtype:
+                w = w.to(dtype=out.dtype)
             out = out * w
         out = out + x
         if not self.use_preact:
@@ -68,10 +71,12 @@ class ResidualBlock(nn.Module):
         
         # Apply DropPath regularization
         if self.droppath > 0.0 and self.training:
-            if torch.rand(1) < self.droppath:
+            # Use tensor random with matching dtype/device to avoid type promotion on MPS
+            if torch.rand((), device=out.device, dtype=out.dtype) < out.new_tensor(self.droppath):
                 return x  # Drop the entire residual path
             else:
-                out = out / (1.0 - self.droppath)  # Scale up to maintain expectation
+                scale = out.new_tensor(1.0 - self.droppath)
+                out = out / scale  # Scale up to maintain expectation
         
         return out
 
@@ -135,8 +140,9 @@ class ChessAttention(nn.Module):
         qkv = qkv.permute(1, 0, 2, 4, 3).contiguous()  # (3, B, H, N, D)
         q, k, v = qkv[0], qkv[1], qkv[2]  # Each: (B, H, N, D)
 
-        # Compute attention scores
-        scores_base = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, N, N)
+        # Compute attention scores (use dtype-safe scaling constant for MPS)
+        inv_sqrt = (x.new_tensor(1.0) / x.new_tensor(math.sqrt(self.head_dim)))
+        scores_base = torch.matmul(q, k.transpose(-2, -1)) * inv_sqrt  # (B, H, N, N)
         if self.use_relbias:
             scores_base = scores_base + self.rel_bias
         # CRITICAL: Clamp attention scores to prevent softmax NaN/Inf
@@ -152,9 +158,10 @@ class ChessAttention(nn.Module):
             attn_unmasked = F.softmax(scores_base, dim=-1)
             attn_unmasked = self.dropout(attn_unmasked)
             out_unmasked = torch.matmul(attn_unmasked, v)
-            # Blend outputs: majority masked by default (1 - unmasked_mix is masked weight)
-            blend = float(1.0 - self.unmasked_mix)
-            out = blend * out_masked + (1.0 - blend) * out_unmasked
+            # Blend outputs: ensure scalars match tensor dtype/device (MPS-safe)
+            one = out_masked.new_tensor(1.0)
+            blend = one - out_masked.new_tensor(self.unmasked_mix)
+            out = blend * out_masked + (one - blend) * out_unmasked
         elif self.unmasked_mix >= 1.0:
             out = out_masked
         else:

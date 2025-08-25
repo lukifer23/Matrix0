@@ -152,7 +152,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Data prep complete
     data_prep_time = time.time() - data_prep_start
     if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):  # Log every 10 steps
-        logger.info(f"PERF: Data preparation: {data_prep_time:.3f}s")
+        logger.debug(f"PERF: Data preparation: {data_prep_time:.3f}s")
 
     # Setup precision and device type BEFORE moving tensors
     device_type = device.split(':')[0]
@@ -232,7 +232,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     ssl_target_time = time.time() - ssl_target_start
     if current_step % 10 == 0:
         if logger.isEnabledFor(logging.DEBUG):
-            logger.info(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
+            logger.debug(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
         if ssl_target_time > 5.0:  # Log if it's taking too long
             logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - this indicates a performance issue")
 
@@ -251,29 +251,33 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
     # CRITICAL: Ensure model parameters have consistent dtype before autocast
     if use_autocast and device_type == "mps":
-        # For MPS, ensure all model parameters and buffers match the autocast dtype
-        logger.info(f"MPS: Ensuring dtype consistency for autocast ({_amp_dtype})")
-        model.ensure_dtype_consistency(_amp_dtype)
+        # For MPS, ensure all model parameters and buffers match the autocast dtype once
+        if getattr(model, "_dtype_enforced", None) != _amp_dtype:
+            logger.info(f"MPS: Ensuring dtype consistency for autocast ({_amp_dtype})")
+            model.ensure_dtype_consistency(_amp_dtype)
+            model._dtype_enforced = _amp_dtype
+
+    # Prepare input dtype for forward to match parameter dtype on MPS
+    s_forward = s
+    if use_autocast and device_type == "mps" and s.dtype != _amp_dtype:
+        s_forward = s.to(dtype=_amp_dtype)
 
     # CRITICAL: Enhanced autocast handling with proper type consistency
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=use_autocast):
         if use_wdl and hasattr(model, 'forward_with_features'):
-            p, v, ssl_out, feats = model.forward_with_features(s, return_ssl=True)
+            p, v, ssl_out, feats = model.forward_with_features(s_forward, return_ssl=True)
         else:
             feats = None
-            p, v, ssl_out = model(s, return_ssl=True)
+            p, v, ssl_out = model(s_forward, return_ssl=True)
 
-    # CRITICAL: Restore original dtypes after autocast for MPS
-    if use_autocast and device_type == "mps":
-        logger.info(f"MPS: Restoring original parameter dtypes")
-        model.restore_original_dtypes()
+    # Do not restore dtypes on MPS; keeping consistent param dtype avoids mixed-type ops
 
     # PERFORMANCE PROFILING: Forward pass complete
     forward_time = time.time() - forward_start
     if current_step % 10 == 0:
         if logger.isEnabledFor(logging.DEBUG):
-            logger.info(f"PERF: Forward pass: {forward_time:.3f}s")
-        logger.info(f"DEBUG: Output dtypes - p: {p.dtype}, v: {v.dtype}, ssl_out: {ssl_out.dtype if ssl_out is not None else 'None'}")
+            logger.debug(f"PERF: Forward pass: {forward_time:.3f}s")
+            logger.debug(f"DEBUG: Output dtypes - p: {p.dtype}, v: {v.dtype}, ssl_out: {ssl_out.dtype if ssl_out is not None else 'None'}")
 
         # CRITICAL: Validate policy outputs before computing loss
         if torch.isnan(p).any() or torch.isinf(p).any():
@@ -325,7 +329,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # PERFORMANCE PROFILING: Start loss computation
         loss_comp_start = time.time()
 
-        # Value loss: MSE or Huber
+        # Value loss: ensure dtype alignment on MPS/AMP to avoid graph type errors
+        if z.dtype != v.dtype:
+            z = z.to(dtype=v.dtype)
         if value_loss_type == 'huber':
             value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
         else:
@@ -377,7 +383,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
         if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-            logger.info(f"PERF: Loss computation: {loss_comp_time:.3f}s")
+            logger.debug(f"PERF: Loss computation: {loss_comp_time:.3f}s")
 
         # CRITICAL FIX: Ensure all loss components have consistent dtypes BEFORE arithmetic
         # This prevents MPS type mismatch errors during loss combination
@@ -433,13 +439,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             # PERFORMANCE PROFILING: Backward pass complete
             backward_time = time.time() - backward_start
             if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-                logger.info(f"PERF: Backward pass: {backward_time:.3f}s")
+                logger.debug(f"PERF: Backward pass: {backward_time:.3f}s")
 
             # PERFORMANCE PROFILING: Total step time
             total_step_time = time.time() - start_time
             if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-                logger.info(f"PERF: Total step time: {total_step_time:.3f}s")
-                logger.info(f"PERF: Breakdown - Data: {data_prep_time:.3f}s, SSL: {ssl_target_time:.3f}s, Forward: {forward_time:.3f}s, Loss: {loss_comp_time:.3f}s, Backward: {backward_time:.3f}s")
+                logger.debug(f"PERF: Total step time: {total_step_time:.3f}s")
+                logger.debug(f"PERF: Breakdown - Data: {data_prep_time:.3f}s, SSL: {ssl_target_time:.3f}s, Forward: {forward_time:.3f}s, Loss: {loss_comp_time:.3f}s, Backward: {backward_time:.3f}s")
         except RuntimeError as e:
             msg = str(e)
             if 'view size is not compatible' in msg or 'contiguous subspaces' in msg:
@@ -1010,7 +1016,7 @@ def train_comprehensive(
                     # PERFORMANCE PROFILING: Optimizer step complete
                     optimizer_time = time.time() - optimizer_start
                     if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-                        logger.info(f"PERF: Optimizer step: {optimizer_time:.3f}s")
+                        logger.debug(f"PERF: Optimizer step: {optimizer_time:.3f}s")
 
                     # Update watchdog timer
                     last_progress_time = time.time()
@@ -1018,13 +1024,13 @@ def train_comprehensive(
                     # PERFORMANCE PROFILING: Post-processing complete
                     post_proc_time = time.time() - post_proc_start
                     if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-                        logger.info(f"PERF: Post-processing: {post_proc_time:.3f}s")
+                        logger.debug(f"PERF: Post-processing: {post_proc_time:.3f}s")
 
                     # PERFORMANCE PROFILING: Total iteration time
                     total_iter_time = time.time() - batch_prep_start
                     if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
-                        logger.info(f"PERF: Total iteration: {total_iter_time:.3f}s")
-                        logger.info(f"PERF: Full breakdown - Batch: {batch_prep_time:.3f}s, TrainStep: {train_step_time:.3f}s, Post: {post_proc_time:.3f}s, Optimizer: {optimizer_time:.3f}s")
+                        logger.debug(f"PERF: Total iteration: {total_iter_time:.3f}s")
+                        logger.debug(f"PERF: Full breakdown - Batch: {batch_prep_time:.3f}s, TrainStep: {train_step_time:.3f}s, Post: {post_proc_time:.3f}s, Optimizer: {optimizer_time:.3f}s")
 
                     # Training heartbeat monitoring (similar to self-play workers)
                     current_time = time.time()

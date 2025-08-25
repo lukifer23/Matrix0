@@ -50,7 +50,8 @@ def create_v2_checkpoint():
             se_ratio=model_cfg.get('se_ratio', 0.25),
             attention=model_cfg.get('attention', True),
             attention_heads=model_cfg.get('attention_heads', 20),
-            attention_unmasked_mix=model_cfg.get('attention_unmasked_mix', True),
+            # Use a sane float default and coerce to float to avoid boolean spillover
+            attention_unmasked_mix=float(model_cfg.get('attention_unmasked_mix', 0.2)),
             attention_relbias=model_cfg.get('attention_relbias', True),
             attention_every_k=model_cfg.get('attention_every_k', 3),
             chess_features=model_cfg.get('chess_features', True),

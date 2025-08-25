@@ -21,6 +21,12 @@ except ImportError:  # pragma: no cover - exercised in tests via patching
     psutil_available = False
 
 logger = logging.getLogger(__name__)
+try:
+    import os as _os
+    if _os.environ.get("MATRIX0_COMPACT_LOG") == "1":
+        logger.setLevel(logging.WARNING)
+except Exception:
+    pass
 
 from .encoding import encode_board, move_to_index, MoveEncoder
 # Import unified utilities individually to avoid circular imports
@@ -344,15 +350,15 @@ class MCTS:
                 sims_per_sec = sims_to_run / runtime if runtime > 0 else 0
                 tt_hit_rate = self.tt_hits / (self.tt_hits + self.tt_misses) if (self.tt_hits + self.tt_misses) > 0 else 0
 
-                logger.info(f"MCTS completed: {sims_to_run} sims in {runtime:.2f}s ({sims_per_sec:.1f} sim/s)")
-                logger.info(f"MCTS stats: TT_hits={self.tt_hits}, TT_misses={self.tt_misses}, hit_rate={tt_hit_rate:.2%}")
+                logger.debug(f"MCTS completed: {sims_to_run} sims in {runtime:.2f}s ({sims_per_sec:.1f} sim/s)")
+                logger.debug(f"MCTS stats: TT_hits={self.tt_hits}, TT_misses={self.tt_misses}, hit_rate={tt_hit_rate:.2%}")
                 logger.info(f"MCTS results: root_visits={root.n}, root_value={v:.3f}, children={len(root.children)}")
 
                 # Log top moves
                 if root.children:
                     sorted_children = sorted(root.children.items(), key=lambda x: x[1].n, reverse=True)[:5]
                     top_moves = [f"{move}({node.n}v, {node.q:.3f}q)" for move, node in sorted_children]
-                    logger.info(f"Top moves: {' '.join(top_moves)}")
+                    logger.debug(f"Top moves: {' '.join(top_moves)}")
 
             if runtime > max_runtime * 0.8:
                 logger.warning(f"MCTS run took {runtime:.2f}s (close to {max_runtime}s limit)")

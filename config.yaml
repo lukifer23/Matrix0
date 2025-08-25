@@ -61,6 +61,8 @@ orchestrator:
   continuous_mode: false           # Single run mode
   checkpoint_override: "v2_base.pt"  # Override default best.pt with fresh V2 base checkpoint
   tui: "table"                     # Use table display mode
+  ui:
+    compact: true                  # Child processes log to files; console stays clean
 
 eval:
   games: 4                         # More evaluation games
