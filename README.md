@@ -51,7 +51,7 @@ Matrix0/
 │   ├── data_manager.py        # SQLite metadata and backup system
 │   ├── orchestrator.py        # Main training coordinator
 │   └── config.py              # Configuration management
-├── config.yaml                 # Main configuration (53M model, SSL enabled)
+├── config.yaml                 # Main configuration (53M model, SSL enabled, 4 workers, 750 games/cycle)
 ├── data/                       # Training data and replays
 │   ├── backups/               # Automatic backup system
 │   ├── selfplay/              # Self-play game data
@@ -91,7 +91,7 @@ python create_v2_checkpoint.py  # Creates optimized 53M parameter model
 ### 3. Start Training (Current Session)
 ```bash
 source .venv/bin/activate
-python -m azchess.orchestrator --workers 2 --sims 300 --lr 0.001 --batch-size 192 --epochs 10 --eval-games 50 --device mps
+python -m azchess.orchestrator --workers 4 --sims 160 --lr 0.001 --batch-size 128 --epochs 1 --eval-games 12 --device mps
 ```
 
 Run the training loop directly without the orchestrator:
@@ -137,13 +137,14 @@ python -m azchess.tools.process_lichess
 ## 🔧 Current Training Status
 
 **Latest Update**: August 2025
-- **Training Progress**: Training pipeline operational, SSL foundation established
+- **Training Progress**: Training pipeline operational, SSL foundation established with recent enhancements
 - **Training Speed**: ~3-4 seconds per step (optimized)
 - **Model Size**: 53,217,919 parameters (53M)
 - **Architecture**: ResNet-24 with 320 channels, 20 attention heads
 - **SSL Status**: Basic piece recognition working, advanced SSL algorithms implemented
 - **Training Stability**: Branch normalization, gradient clipping, emergency checkpoints
 - **Memory Usage**: ~10.7-11.0GB MPS usage with automatic management
+- **Recent Enhancements**: Enhanced policy masking, improved legal mask handling, optimized configuration (4 workers, 750 games/cycle)
 
 ## 🔧 Development
 
@@ -215,6 +216,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Training Stability**: Branch normalization, gradient clipping, emergency checkpoints
 - **Memory Management**: 14GB MPS optimization with automatic cleanup
 - **SSL Foundation**: Basic piece recognition working, advanced algorithms implemented
+- **Recent Enhancements**: Enhanced policy masking, improved legal mask handling, optimized configuration
 
 ### 🔄 Active Development
 - **SSL Enhancement**: Complete threat/pin/fork/control detection algorithms

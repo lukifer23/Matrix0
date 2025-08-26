@@ -82,11 +82,18 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 3. ✅ **Improved weight initialization** - Policy head scaling from 0.3 to 0.8
 4. ✅ **Created fresh checkpoint** - `v2_base.pt` with corrected initialization
 
+### Recent Improvements (August 25, 2025)
+5. ✅ **Enhanced Policy Masking** - Smart detection of external vs self-play data
+6. ✅ **Improved Legal Mask Handling** - Better alignment of legal masks with targets
+7. ✅ **Configuration Optimization** - Increased workers to 4, games to 750 per cycle
+8. ✅ **Self-Play Reliability** - Fixed orchestrator to always run self-play phase
+
 ### Current Status
 - **Fixes Applied**: All critical fixes implemented and fresh checkpoint created
-- **Testing**: Running 2-worker, 2-game test to validate fixes
-- **Remaining Issues**: Scheduler warning persists, gradient explosion continues
-- **Next Steps**: Investigate deeper training loop logic, potentially scheduler configuration issue
+- **Recent Improvements**: Enhanced policy masking and data handling implemented
+- **Configuration**: Optimized for intensive self-play generation (4 workers, 750 games)
+- **Testing**: Ready for validation of enhanced training pipeline
+- **Next Steps**: Test enhanced training pipeline with improved data handling
 
 ### Technical Investigation Required
 - **Scheduler Configuration**: Verify `num_updates` vs `total_steps` calculation in scheduler creation

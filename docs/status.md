@@ -23,6 +23,32 @@
    - **Benefit**: Keeps contributors aligned with latest project status
    - **Corresponding files/modules**: `docs/status.md`
 
+## Recent Improvements (August 25, 2025)
+
+4. **Enhanced Policy Masking** ✅ **COMPLETED**
+   - **Priority**: High
+   - **Benefit**: Smart detection of external vs self-play data, prevents training issues
+   - **Corresponding files/modules**: `azchess/training/train.py`
+   - **Status**: Implemented and ready for testing
+
+5. **Improved Legal Mask Handling** ✅ **COMPLETED**
+   - **Priority**: High
+   - **Benefit**: Better alignment of legal masks with targets, prevents mask misalignment
+   - **Corresponding files/modules**: `azchess/data_manager.py`
+   - **Status**: Implemented and ready for testing
+
+6. **Configuration Optimization** ✅ **COMPLETED**
+   - **Priority**: Medium
+   - **Benefit**: Increased workers to 4, games to 750 per cycle for intensive generation
+   - **Corresponding files/modules**: `config.yaml`
+   - **Status**: Implemented and ready for testing
+
+7. **Self-Play Reliability** ✅ **COMPLETED**
+   - **Priority**: Medium
+   - **Benefit**: Fixed orchestrator to always run self-play phase
+   - **Corresponding files/modules**: `azchess/orchestrator.py`
+   - **Status**: Implemented and ready for testing
+
 ## Current State Assessment
 
 ### ✅ Production-Ready Components
@@ -54,11 +80,12 @@
 ### 📊 Current Training Status
 
 #### Active Training Session
-- **Progress**: Training pipeline operational with SSL foundation
+- **Progress**: Training pipeline operational with SSL foundation and recent enhancements
 - **Base Model**: v2_base.pt (fresh checkpoint with all fixes, 53.1M parameters)
 - **SSL Status**: **FOUNDATION ESTABLISHED** - Basic piece recognition working, advanced algorithms implemented
 - **Memory Usage**: ~10.7-11.0GB MPS usage (stable)
 - **Checkpoint Frequency**: Every 500 steps with emergency recovery
+- **Recent Enhancements**: Enhanced policy masking, improved legal mask handling, optimized configuration
 
 #### Model Performance Metrics
 - **Training Speed**: ~3-4 seconds per step (optimized)

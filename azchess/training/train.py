@@ -352,14 +352,39 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Validate model outputs to catch any contiguity issues
         _check_contiguous({"policy": p, "value": v, "ssl_out": ssl_out})
 
-        # Optional legality masking: prefer explicit legal_mask; else fall back to pi>0 heuristic
+        # Smart policy masking: detect data source and apply appropriate masking
         if legal_mask_t is not None:
-            # Ensure mask has correct shape
+            # Use explicit legal mask if provided
             if legal_mask_t.dim() == 1:
                 legal_mask_t = legal_mask_t.view(-1, p.shape[1])
+            # Do not mask out target indices even if mask reconstruction missed them
+            # This prevents exploding loss when a one-hot target is outside the legal mask
+            try:
+                with torch.no_grad():
+                    target_mask = (pi > 0)
+                    if target_mask.shape == legal_mask_t.shape:
+                        legal_mask_t = legal_mask_t | target_mask
+            except Exception:
+                pass
             p_for_loss = torch.where(legal_mask_t, p, torch.full_like(p, -1e9))
         elif policy_masking:
-            p_for_loss = apply_policy_mask(p, pi)
+            # Detect if this is external data (one-hot) or self-play data (soft MCTS)
+            # External data: pi has exactly 1 non-zero value per position (one-hot)
+            # Self-play data: pi has multiple non-zero values per position (soft distribution)
+            with torch.no_grad():
+                non_zero_counts = (pi > 0).sum(dim=1)
+                is_external_data = (non_zero_counts == 1).all()
+                
+            if is_external_data:
+                # External data: one-hot distributions are already correct, no masking needed
+                p_for_loss = p
+                if current_step % 100 == 0:
+                    logger.info("EXTERNAL_DATA: Using one-hot policy targets without masking (already correct)")
+            else:
+                # Self-play data: apply policy masking for soft MCTS distributions
+                p_for_loss = apply_policy_mask(p, pi)
+                if current_step % 100 == 0:
+                    logger.info("SELFPLAY_DATA: Applying policy masking for soft MCTS distributions")
         else:
             p_for_loss = p
 

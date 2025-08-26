@@ -369,18 +369,34 @@ class DataManager:
             return None
         
         try:
-            with np.load(tactical_path) as data:
+            with np.load(tactical_path, allow_pickle=True) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
                 batch_states = data['positions'][indices]
                 batch_policies = data['policy_targets'][indices]
                 batch_values = data['value_targets'][indices]
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, tactical_path):
                     return None
-                return {
+                out: Dict[str, np.ndarray] = {
                     's': batch_states,
                     'pi': batch_policies,
                     'z': batch_values
                 }
+                # Include legal_mask if present
+                if 'legal_mask' in data:
+                    lm = data['legal_mask']
+                    # Normalize to (N, 4672)
+                    if lm.ndim > 2:
+                        lm = lm.reshape(lm.shape[0], -1)
+                    lm_sel = lm[indices]
+                    # Ensure the one-hot target index is never masked out (handles misaligned masks)
+                    try:
+                        target_mask = (batch_policies > 0)
+                        if target_mask.shape == lm_sel.shape:
+                            lm_sel = np.logical_or(lm_sel.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
+                    except Exception:
+                        pass
+                    out['legal_mask'] = lm_sel
+                return out
         except Exception as e:
             logger.error(f"Error loading tactical data: {e}")
             return None
@@ -393,18 +409,33 @@ class DataManager:
             return None
         
         try:
-            with np.load(openings_path) as data:
+            with np.load(openings_path, allow_pickle=True) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
                 batch_states = data['positions'][indices]
                 batch_policies = data['policy_targets'][indices]
                 batch_values = data['value_targets'][indices]
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, openings_path):
                     return None
-                return {
+                out: Dict[str, np.ndarray] = {
                     's': batch_states,
                     'pi': batch_policies,
                     'z': batch_values
                 }
+                # Include legal_mask if present
+                if 'legal_mask' in data:
+                    lm = data['legal_mask']
+                    if lm.ndim > 2:
+                        lm = lm.reshape(lm.shape[0], -1)
+                    lm_sel = lm[indices]
+                    # Ensure the one-hot target index is never masked out (handles misaligned masks)
+                    try:
+                        target_mask = (batch_policies > 0)
+                        if target_mask.shape == lm_sel.shape:
+                            lm_sel = np.logical_or(lm_sel.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
+                    except Exception:
+                        pass
+                    out['legal_mask'] = lm_sel
+                return out
         except Exception as e:
             logger.error(f"Error loading openings data: {e}")
             return None
@@ -423,7 +454,7 @@ class DataManager:
             return tactical_batch
 
         # Combine batches
-        combined_batch = {}
+        combined_batch: Dict[str, np.ndarray] = {}
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
@@ -433,6 +464,15 @@ class DataManager:
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = combined_batch[key][indices]
+
+        # Include legal_mask only if present in both sources
+        if ('legal_mask' in tactical_batch) and ('legal_mask' in openings_batch):
+            try:
+                lm_comb = np.concatenate([tactical_batch['legal_mask'], openings_batch['legal_mask']], axis=0)
+                combined_batch['legal_mask'] = lm_comb[indices]
+            except Exception:
+                if 'legal_mask' in combined_batch:
+                    del combined_batch['legal_mask']
 
         # CRITICAL: Explicit cleanup to prevent memory accumulation
         # The original batches contain potentially 10K+ samples each
@@ -469,11 +509,18 @@ class DataManager:
             return openings_batch
         
         # Combine with openings focus
-        combined_batch = {}
+        combined_batch: Dict[str, np.ndarray] = {}
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = np.concatenate([
                 openings_batch[key], tactical_batch[key]
             ], axis=0)
+        if ('legal_mask' in openings_batch) and ('legal_mask' in tactical_batch):
+            try:
+                lm = np.concatenate([openings_batch['legal_mask'], tactical_batch['legal_mask']], axis=0)
+                combined_batch['legal_mask'] = lm
+            except Exception:
+                if 'legal_mask' in combined_batch:
+                    del combined_batch['legal_mask']
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum openings'):
             return None
         return combined_batch
@@ -493,11 +540,18 @@ class DataManager:
             return tactical_batch
         
         # Combine with tactics focus
-        combined_batch = {}
+        combined_batch: Dict[str, np.ndarray] = {}
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
+        if ('legal_mask' in tactical_batch) and ('legal_mask' in openings_batch):
+            try:
+                lm = np.concatenate([tactical_batch['legal_mask'], openings_batch['legal_mask']], axis=0)
+                combined_batch['legal_mask'] = lm
+            except Exception:
+                if 'legal_mask' in combined_batch:
+                    del combined_batch['legal_mask']
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum tactics'):
             return None
         return combined_batch

@@ -136,6 +136,13 @@ def run_inference_server(
             f"Model created with {sum(p.numel() for p in model.parameters())} parameters"
         )
 
+        # Ensure inference mode (disables DropPath/Dropout/BatchNorm updates)
+        try:
+            model.eval()
+            logger.info("Model set to eval() mode for inference")
+        except Exception:
+            pass
+
         if model_state_dict:
             logger.info(
                 f"Loading model from state_dict with {len(model_state_dict)} layers"
@@ -225,6 +232,9 @@ def run_inference_server(
         # On MPS, AMP often slows inference due to cast overhead; keep AMP only on CUDA
         use_amp = (device_type == "cuda")
 
+        # Target batch size tuned per device to avoid long waits/timeouts
+        target_batch_for_device = 4 if device_type == "mps" else 16
+
         worker_events = [res["request_event"] for res in shared_memory_resources]
         event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
         timeout = None
@@ -235,19 +245,9 @@ def run_inference_server(
 
         while not stop_event.is_set():
             try:
-                # CRITICAL FIX: Validate events before use to prevent corruption
+                # Validate events; do NOT recreate Events at runtime to avoid client/server desync
                 if not _validate_events(worker_events):
-                    logger.warning("Detected corrupted events, recreating them")
-                    if event_recreation_count < max_event_recreations:
-                        event_recreation_count += 1
-                        _recreate_worker_events(shared_memory_resources, event_recreation_count)
-                        worker_events = [res["request_event"] for res in shared_memory_resources]
-                        event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
-                        time.sleep(0.1)
-                        continue
-                    else:
-                        logger.error("Max event recreations reached, stopping inference server")
-                        break
+                    logger.warning("Detected problematic events; continuing without recreation to avoid desync")
 
                 # Add heartbeat logging
                 if time.time() - last_heartbeat > heartbeat_interval:
@@ -272,17 +272,10 @@ def run_inference_server(
                                 # Clear the event for next use
                                 ev.clear()
                         except (OSError, ValueError) as e:
-                            # Event is corrupted
-                            logger.warning(f"Event {i} is corrupted: {e}")
-                            if event_recreation_count < max_event_recreations:
-                                event_recreation_count += 1
-                                _recreate_worker_events(shared_memory_resources, event_recreation_count)
-                                worker_events = [res["request_event"] for res in shared_memory_resources]
-                                event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
-                                break
-                            else:
-                                logger.error("Max event recreations reached, stopping inference server")
-                                return
+                            # Avoid recreating Events at runtime; skip this cycle
+                            logger.warning(f"Event {i} check failed: {e}; skipping this cycle")
+                            ready_events = []
+                            break
 
                     if stop_event.is_set():
                         break
@@ -303,29 +296,9 @@ def run_inference_server(
                 )
             except Exception as e:
                 logger.error(f"Error in inference server main loop: {e}")
-                if event_recreation_count < max_event_recreations:
-                    event_recreation_count += 1
-                    logger.warning(f"Event objects may be invalid, recreating them (attempt {event_recreation_count}/{max_event_recreations})")
-
-                    # Recreate events for all workers
-                    for i, res in enumerate(shared_memory_resources):
-                        try:
-                            res["request_event"] = Event()
-                            res["response_event"] = Event()
-                            logger.debug(f"Recreated events for worker {i}")
-                        except Exception as recreate_error:
-                            logger.error(f"Failed to recreate events for worker {i}: {recreate_error}")
-
-                    # Update worker_events and event_to_worker mapping
-                    worker_events = [res["request_event"] for res in shared_memory_resources]
-                    event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
-
-                    # Brief pause before continuing
-                    time.sleep(0.1)
-                    continue
-                else:
-                    logger.error(f"Max event recreations reached, stopping inference server")
-                    break
+                # Avoid recreating Events at runtime to prevent client/server desynchronization
+                time.sleep(0.1)
+                continue
             except Exception as e:
                 logger.error(f"Unexpected error in inference server main loop: {e}")
                 continue
@@ -357,9 +330,7 @@ def run_inference_server(
 
                     # Only add to batch if we have reasonable size (avoid tiny batches)
                     # OPTIMIZATION: Accumulate larger batches for better GPU utilization
-                    if (
-                        total_batch_size == 0 or total_batch_size < 16
-                    ):  # Target 16+ samples per batch
+                    if total_batch_size < target_batch_for_device:
                         try:
                             tensor_slice = res["request_tensor"][:batch_size]
                             logger.debug(f"Worker {worker_id}: extracting tensor slice of shape {tensor_slice.shape}")

@@ -8,13 +8,23 @@ import numpy as np
 def audit_file(path: Path) -> dict:
     try:
         with np.load(path, mmap_mode='r') as data:
-            n = int(len(data['s']))
+            # Determine sample count from common keys
+            if 's' in data:
+                n = int(len(data['s']))
+            elif 'positions' in data:
+                n = int(len(data['positions']))
+            else:
+                # Fallback: try any first array-like
+                keys = [k for k in data.files if isinstance(data[k], np.ndarray)]
+                n = int(len(data[keys[0]])) if keys else 0
             has_mask = 'legal_mask' in data
             if not has_mask:
                 return {'file': str(path), 'samples': n, 'has_mask': False}
             lm = data['legal_mask']
             # Normalize shapes: (N,4672)
             if lm.ndim == 3 and lm.shape[1:] == (8, 8, 73):
+                lm = lm.reshape(lm.shape[0], -1)
+            elif lm.ndim == 4 and lm.shape[1:] == (8, 8, 73):
                 lm = lm.reshape(lm.shape[0], -1)
             legal_counts = lm.sum(axis=1)
             return {
@@ -33,13 +43,13 @@ def audit_file(path: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser(description="Audit legal_mask presence and stats in NPZ shards")
     ap.add_argument('--dir', type=str, default='data', help='Base data directory')
-    ap.add_argument('--subset', type=str, choices=['selfplay', 'replays'], default='selfplay', help='Subset to audit')
+    ap.add_argument('--subset', type=str, default='training', help='Subdirectory to audit (e.g., training, selfplay, replays)')
     ap.add_argument('--limit', type=int, default=10, help='Max files to audit')
     args = ap.parse_args()
 
     base = Path(args.dir)
     target = base / args.subset
-    files = sorted([p for p in target.glob('*.npz')])[:args.limit]
+    files = sorted([p for p in target.glob('*.npz') if not p.name.endswith('.tmp.npz')])[:args.limit]
     if not files:
         print(f"No files found in {target}")
         return

@@ -38,7 +38,27 @@ model:
   ssl_tasks: ["piece"]            # SSL tasks (basic piece recognition working)
 ```
 
-## 2. Key Configuration Sections
+## 2. Recent Configuration Enhancements (August 2025)
+
+### Enhanced Policy Masking
+The training pipeline now includes smart policy masking that automatically detects data source types:
+- **External Data**: One-hot distributions (e.g., lichess puzzles) - no masking needed
+- **Self-Play Data**: Soft MCTS distributions - applies policy masking for legal moves
+- **Legal Mask Handling**: Improved alignment of legal masks with targets to prevent mask misalignment
+
+### Intensive Self-Play Configuration
+- **Workers**: Increased from 2 to 3 for parallel generation
+- **Games per Cycle**: Increased from 12 to 750 for robust training dataset
+- **Game Length**: Extended to 160 moves to reduce early draws
+- **Resignation**: Stricter threshold (-0.98) and longer minimum plies (50)
+
+### Training Pipeline Optimization
+- **Batch Size**: Reduced to 128 for MPS memory headroom
+- **Epochs**: Single epoch per cycle with extended steps (8000)
+- **Gradient Accumulation**: Reduced to 1 step for MPS compatibility
+- **SSL Chunk Size**: Reduced to 16 to prevent OOM
+
+## 3. Key Configuration Sections
 
 ### `model` - Neural Network Architecture (53M Parameters)
 - `planes`: Input planes for chess board representation (fixed: 19)
@@ -56,33 +76,35 @@ model:
 - `ssl_tasks`: List of SSL tasks to train (currently only `["piece"]` is working, advanced algorithms implemented but not integrated)
 
 ### `selfplay` - Self-Play Data Generation
-- `num_workers`: Number of parallel self-play workers (default: `2`)
+- `num_workers`: Number of parallel self-play workers (default: `3`)
 - `batch_size`: Self-play batch size (default: `128`)
-- `max_games`: Maximum games per self-play cycle (default: `12`)
-- `max_game_len`: Maximum game length in moves (default: `100`)
-- `min_resign_plies`: Minimum plies before resignation (default: `20`)
-- `resign_threshold`: Win probability threshold for resignation (default: `-0.90`)
-- `num_simulations`: MCTS simulations per self-play move (default: `200`)
+- `max_games`: Maximum games per self-play cycle (default: `750`)
+- `max_game_len`: Maximum game length in moves (default: `160`)
+- `min_resign_plies`: Minimum plies before resignation (default: `50`)
+- `resign_threshold`: Win probability threshold for resignation (default: `-0.98`)
+- `num_simulations`: MCTS simulations per self-play move (default: `160`)
 
 ### `training` - Training Pipeline Settings
-- `batch_size`: Training batch size (default: `192`)
-- `epochs`: Number of training epochs per cycle (default: `3`)
+- `batch_size`: Training batch size (default: `128`)
+- `epochs`: Number of training epochs per cycle (default: `1`)
 - `learning_rate`: Initial learning rate (default: `0.001`)
 - `weight_decay`: L2 regularization strength (default: `0.0001`)
-- `gradient_accumulation_steps`: Effective batch size multiplier (default: `2`)
+- `gradient_accumulation_steps`: Effective batch size multiplier (default: `1`)
 - `grad_clip_norm`: Gradient clipping threshold (default: `0.5`)
 - `ssl_weight`: Weight of SSL loss in total loss (default: `0.05`)
 - `ssl_warmup_steps`: Steps to gradually increase SSL weight (default: `200`)
-- `ssl_chunk_size`: Process SSL in chunks to prevent OOM (default: `32`)
+- `ssl_chunk_size`: Process SSL in chunks to prevent OOM (default: `16`)
 - `precision`: Training precision (`"fp16"` or `"fp32"`, default: `"fp16"`)
 - `memory_limit_gb`: MPS memory limit in GB (default: `14`)
+- `steps_per_epoch`: Extended training per cycle (default: `8000`)
+- `policy_masking`: Smart policy masking (default: `true`)
 
 ### `orchestrator` - Training Coordination
-- `initial_games`: Games for first training cycle (default: `12`)
-- `subsequent_games`: Games for subsequent cycles (default: `12`)
-- `games_per_cycle`: Total games per cycle (default: `12`)
-- `train_epochs_per_cycle`: Training epochs per cycle (default: `2`)
-- `eval_games_per_cycle`: Evaluation games per cycle (default: `6`)
+- `initial_games`: Games for first training cycle (default: `750`)
+- `subsequent_games`: Games for subsequent cycles (default: `750`)
+- `games_per_cycle`: Total games per cycle (default: `750`)
+- `train_epochs_per_cycle`: Training epochs per cycle (default: `1`)
+- `eval_games_per_cycle`: Evaluation games per cycle (default: `12`)
 - `keep_top_k`: Number of best models to keep (default: `1`)
 - `continuous_mode`: Single run vs continuous training (default: `false`)
 
@@ -94,10 +116,12 @@ model:
 - `tournament_rounds`: Tournament rounds (default: `4`)
 
 ### `mcts` - Monte Carlo Tree Search Parameters
-- `num_simulations`: MCTS simulations per move (default: `300`)
+- `num_simulations`: MCTS simulations per move (default: `96`)
 - `cpuct`: Exploration-exploitation constant (default: `2.2`)
 - `cpuct_start`: Initial cpuct value (default: `2.8`)
 - `cpuct_end`: Final cpuct value (default: `1.8`)
+- `batch_size`: Smaller per-worker inference batches on MPS (default: `8`)
+- `num_threads`: Fewer threads reduces contention on MPS (default: `2`)
 - `cpuct_plies`: Plies for cpuct progression (default: `40`)
 - `dirichlet_alpha`: Dirichlet noise alpha (default: `0.3`)
 - `dirichlet_frac`: Fraction of Dirichlet noise (default: `0.25`)

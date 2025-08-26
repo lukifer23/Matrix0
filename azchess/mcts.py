@@ -171,8 +171,8 @@ class Node:
 
             # Check if policy is too uniform (degenerate case)
             policy_entropy = -np.sum(probs * np.log(probs + 1e-8))
-            max_entropy = np.log(len(legal_moves))
-            entropy_ratio = policy_entropy / max_entropy
+            max_entropy = np.log(max(1, len(legal_moves)))
+            entropy_ratio = policy_entropy / max(1e-9, max_entropy)
             
             # If policy is too uniform, add noise to encourage exploration (quiet log)
             if entropy_ratio > 0.9:
