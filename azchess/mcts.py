@@ -353,7 +353,8 @@ class MCTS:
 
                 logger.debug(f"MCTS completed: {sims_to_run} sims in {runtime:.2f}s ({sims_per_sec:.1f} sim/s)")
                 logger.debug(f"MCTS stats: TT_hits={self.tt_hits}, TT_misses={self.tt_misses}, hit_rate={tt_hit_rate:.2%}")
-                logger.info(f"MCTS results: root_visits={root.n}, root_value={v:.3f}, children={len(root.children)}")
+                root_q = float(root.q) if root.n > 0 else float(v)
+                logger.info(f"MCTS results: root_visits={root.n}, root_value_net={v:.3f}, root_q={root_q:.3f}, children={len(root.children)}")
 
                 # Log top moves
                 if root.children:
@@ -364,7 +365,9 @@ class MCTS:
             if runtime > max_runtime * 0.8:
                 logger.warning(f"MCTS run took {runtime:.2f}s (close to {max_runtime}s limit)")
 
-            return visit_counts, policy, float(v)
+            # Prefer searched estimate (root.q) for downstream logic; fall back to raw net value
+            root_q = float(root.q) if root.n > 0 else float(v)
+            return visit_counts, policy, root_q
             
         except Exception as e:
             logger.error(f"MCTS run error: {e}")
@@ -758,6 +761,14 @@ class MCTS:
 
                     # Clamp value to reasonable range
                     value = np.clip(value, -1.0, 1.0)
+
+                    # If network value is from white's perspective, flip to side-to-move
+                    try:
+                        if bool(getattr(self.cfg, 'value_from_white', False)):
+                            if board.turn == chess.BLACK:
+                                value = -value
+                    except Exception:
+                        pass
                     
                     return policy[0], float(value[0])
                     

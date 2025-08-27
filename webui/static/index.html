@@ -11,8 +11,16 @@
       @media(prefers-color-scheme: light) { :root { --bg:#f7f8fa; --fg:#0b0d10; --muted:#5b6470; --card:#ffffff; --border:#e5e8ee; --accent:#007aff; } }
       * { box-sizing: border-box; }
       body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-      header { padding: 12px 16px; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center; position: sticky; top:0; backdrop-filter: blur(6px);}
-      .title { font-weight:600; letter-spacing:.2px; }
+      header { padding: 12px 16px; border-bottom: 1px solid var(--border); position: sticky; top:0; backdrop-filter: blur(6px);}
+      .title { font-weight:600; letter-spacing:.2px; margin-bottom: 8px; }
+      .title-main { font-size: 18px; }
+      .title-subtitle { font-size: 12px; color: var(--muted); }
+      .header-controls { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px; }
+      .game-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .view-controls { display: flex; gap: 4px; }
+      .view-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); font-size: 12px; }
+      .view-btn:hover { border-color: var(--accent); }
+      .view-btn.active { border-color: var(--accent); background: var(--accent); color: white; }
       .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
       label { font-size: 13px; color: var(--muted); display:flex; gap:6px; align-items:center; }
       input, select { padding: 6px 8px; border-radius: 6px; border:1px solid var(--border); background: var(--card); color: var(--fg); }
@@ -30,66 +38,268 @@
       canvas { width: 100% !important; height: 240px !important; }
       .kvs { display:flex; gap:12px; align-items:center; }
       .badge { font-size: 12px; padding: 4px 8px; border-radius: 999px; border:1px solid var(--border); background: var(--bg); }
+
+      /* View Content Switching */
+      .view-content { display: none; }
+      .view-content.active { display: grid; grid-template-columns: 520px 1fr; gap: 16px; }
+      .view-content.active.full-width { grid-template-columns: 1fr; }
+
+      /* Panel Headers */
+      .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+      .panel-header h3 { margin: 0; font-size: 16px; font-weight: 600; color: var(--accent); }
+
+      /* Status Indicators */
+      .status-indicator { font-size: 12px; padding: 4px 8px; border-radius: 12px; }
+      .status-indicator.training { background: #10b981; color: white; }
+      .status-indicator.not-training { background: #6b7280; color: white; }
+      .status-indicator.ssl-enabled { background: #3b82f6; color: white; }
+      .status-indicator.ssl-disabled { background: #ef4444; color: white; }
+
+      /* Metrics Grid */
+      .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px; }
+      .metric { text-align: center; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+      .metric-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+      .metric-value { font-size: 18px; font-weight: 600; color: var(--fg); }
+
+      /* Config Display */
+      .config-display { display: flex; flex-direction: column; gap: 8px; }
+      .config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+      .config-label { font-size: 14px; color: var(--muted); }
+      .config-value { font-size: 14px; color: var(--fg); font-weight: 500; }
+
+      /* SSL Heads Display */
+      .ssl-heads-display { display: flex; flex-direction: column; gap: 8px; }
+      .ssl-head { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+      .ssl-head-name { font-weight: 600; color: var(--accent); }
+      .ssl-head-params { font-size: 12px; color: var(--muted); }
+
+      /* Model Analysis */
+      .model-analysis { display: flex; flex-direction: column; gap: 8px; }
+      .analysis-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+      .analysis-label { font-size: 14px; color: var(--muted); }
+      .analysis-value { font-size: 14px; color: var(--fg); font-weight: 500; }
+
+      /* Parameter Breakdown */
+      .param-breakdown { display: flex; flex-direction: column; gap: 6px; }
+      .param-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+      .param-type { font-size: 13px; color: var(--muted); }
+      .param-count { font-size: 13px; color: var(--fg); font-weight: 500; }
+
+      /* Progress Bars */
+      .progress-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 4px 0; }
+      .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+
+      /* Responsive */
+      @media (max-width: 1200px) {
+        .view-content.active { grid-template-columns: 1fr; }
+        #boardWrap { order: -1; }
+      }
     </style>
   </head>
   <body>
     <header>
-      <div class="title">Matrix0 WebUI — Eval only</div>
-      <div class="controls">
-        <label>White
-          <select id="white">
-            <option value="human" selected>Human</option>
-            <option value="matrix0">Matrix0</option>
-            <option value="stockfish">Stockfish</option>
-          </select>
-        </label>
-        <label>Black
-          <select id="black">
-            <option value="matrix0" selected>Matrix0</option>
-            <option value="human">Human</option>
-            <option value="stockfish">Stockfish</option>
-          </select>
-        </label>
-        <label>TC (ms) <input type="number" id="tc" min="10" step="10" value="100" /></label>
-        <button id="new">New</button>
-        <button id="engineMove">Engine Move</button>
-        <button id="evalBtn">Eval</button>
+      <div class="title">
+        <div class="title-main">Matrix0 WebUI</div>
+        <div class="title-subtitle">Advanced Chess Engine with SSL Integration</div>
+      </div>
+      <div class="header-controls">
+        <div class="game-controls">
+          <label>White
+            <select id="white">
+              <option value="human" selected>Human</option>
+              <option value="matrix0">Matrix0</option>
+              <option value="stockfish">Stockfish</option>
+            </select>
+          </label>
+          <label>Black
+            <select id="black">
+              <option value="matrix0" selected>Matrix0</option>
+              <option value="human">Human</option>
+              <option value="stockfish">Stockfish</option>
+            </select>
+          </label>
+          <label>TC (ms) <input type="number" id="tc" min="10" step="10" value="100" /></label>
+          <button id="new">New Game</button>
+          <button id="engineMove">Engine Move</button>
+          <button id="evalBtn">Evaluate</button>
+        </div>
+        <div class="view-controls">
+          <button id="showGame" class="view-btn active">Game</button>
+          <button id="showTraining" class="view-btn">Training</button>
+          <button id="showSSL" class="view-btn">SSL</button>
+          <button id="showAnalysis" class="view-btn">Analysis</button>
+        </div>
       </div>
     </header>
     <main>
-      <div id="boardWrap">
-        <div id="board"></div>
+      <!-- Game View -->
+      <div id="gameView" class="view-content active">
+        <div id="boardWrap">
+          <div id="board"></div>
+        </div>
+        <div class="grid">
+          <div class="panel">
+            <div class="kvs">
+              <div>Game ID: <span id="gid" class="mono">—</span></div>
+              <div class="badge">Turn: <span id="turn">—</span></div>
+              <div class="badge">TC: <span id="tclabel">—</span> ms</div>
+            </div>
+            <div class="row">FEN</div>
+            <div id="fen" class="mono"></div>
+          </div>
+          <div class="panel">
+            <div class="kvs">
+              <div>Matrix0 value: <span id="mval" class="val">—</span></div>
+              <div>Stockfish cp: <span id="scpf" class="val">—</span></div>
+            </div>
+            <canvas id="evalChart"></canvas>
+          </div>
+          <div class="panel columns">
+            <div>
+              <div class="row">Moves</div>
+              <div id="movelist" class="mono"></div>
+            </div>
+            <div>
+              <div class="row">Analytics</div>
+              <div id="analytics" class="mono">Loading…</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="row">Messages</div>
+            <div id="log" class="mono"></div>
+          </div>
+        </div>
       </div>
-      <div class="grid">
-        <div class="panel">
-          <div class="kvs">
-            <div>Game ID: <span id="gid" class="mono">—</span></div>
-            <div class="badge">Turn: <span id="turn">—</span></div>
-            <div class="badge">TC: <span id="tclabel">—</span> ms</div>
+
+      <!-- Training View -->
+      <div id="trainingView" class="view-content">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Training Status</h3>
+              <div id="trainingStatus" class="status-indicator">Checking...</div>
+            </div>
+            <div id="trainingMetrics" class="metrics-grid">
+              <div class="metric">
+                <div class="metric-label">Step</div>
+                <div id="trainStep" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Progress</div>
+                <div id="trainProgress" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Loss</div>
+                <div id="trainLoss" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Policy Loss</div>
+                <div id="trainPolicyLoss" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Value Loss</div>
+                <div id="trainValueLoss" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">SSL Loss</div>
+                <div id="trainSSLLoss" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Learning Rate</div>
+                <div id="trainLR" class="metric-value">—</div>
+              </div>
+            </div>
+            <canvas id="trainingChart"></canvas>
           </div>
-          <div class="row">FEN</div>
-          <div id="fen" class="mono"></div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Recent Training History</h3>
+            </div>
+            <div id="trainingHistory" class="mono"></div>
+          </div>
         </div>
-        <div class="panel">
-          <div class="kvs">
-            <div>Matrix0 value: <span id="mval" class="val">—</span></div>
-            <div>Stockfish cp: <span id="scpf" class="val">—</span></div>
+      </div>
+
+      <!-- SSL View -->
+      <div id="sslView" class="view-content">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>SSL Configuration</h3>
+              <div id="sslStatus" class="status-indicator">Checking...</div>
+            </div>
+            <div id="sslConfig" class="config-display">
+              <div class="config-item">
+                <span class="config-label">Enabled:</span>
+                <span id="sslEnabled" class="config-value">—</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Tasks:</span>
+                <span id="sslTasks" class="config-value">—</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Head Count:</span>
+                <span id="sslHeadCount" class="config-value">—</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">SSL Weight:</span>
+                <span id="sslWeight" class="config-value">—</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Total SSL Params:</span>
+                <span id="sslParams" class="config-value">—</span>
+              </div>
+            </div>
           </div>
-          <canvas id="evalChart"></canvas>
+          <div class="panel">
+            <div class="panel-header">
+              <h3>SSL Heads</h3>
+            </div>
+            <div id="sslHeads" class="ssl-heads-display">
+              Loading SSL head information...
+            </div>
+          </div>
         </div>
-        <div class="panel columns">
-          <div>
-            <div class="row">Moves</div>
-            <div id="movelist" class="mono"></div>
+      </div>
+
+      <!-- Analysis View -->
+      <div id="analysisView" class="view-content">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Model Architecture</h3>
+            </div>
+            <div id="modelAnalysis" class="model-analysis">
+              <div class="analysis-item">
+                <span class="analysis-label">Total Parameters:</span>
+                <span id="totalParams" class="analysis-value">—</span>
+              </div>
+              <div class="analysis-item">
+                <span class="analysis-label">Channels:</span>
+                <span id="modelChannels" class="analysis-value">—</span>
+              </div>
+              <div class="analysis-item">
+                <span class="analysis-label">Blocks:</span>
+                <span id="modelBlocks" class="analysis-value">—</span>
+              </div>
+              <div class="analysis-item">
+                <span class="analysis-label">Attention Heads:</span>
+                <span id="modelAttnHeads" class="analysis-value">—</span>
+              </div>
+              <div class="analysis-item">
+                <span class="analysis-label">SSL Enabled:</span>
+                <span id="modelSSLEnabled" class="analysis-value">—</span>
+              </div>
+            </div>
           </div>
-          <div>
-            <div class="row">Analytics</div>
-            <div id="analytics" class="mono">Loading…</div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Parameter Breakdown</h3>
+            </div>
+            <div id="paramBreakdown" class="param-breakdown">
+              Loading parameter analysis...
+            </div>
           </div>
-        </div>
-        <div class="panel">
-          <div class="row">Messages</div>
-          <div id="log" class="mono"></div>
         </div>
       </div>
     </main>

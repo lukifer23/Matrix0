@@ -463,29 +463,7 @@ def orchestrate(
                     stop_event = MPEvent()
                     server_ready_event = MPEvent()
 
-                    # CRITICAL: Recreate shared memory resources with fresh Event objects
-                    # This ensures workers and the new server use the same Event objects
-                    from .selfplay.inference import \
-                        setup_shared_memory_for_worker
-                    new_shared_memory_resources = []
-                    for i in range(len(shared_memory_resources)):
-                        try:
-                            new_res = setup_shared_memory_for_worker(
-                                worker_id=i,
-                                planes=model_params['planes'],
-                                policy_size=model_params['policy_size'],
-                                max_batch_size=optimized_batch_size
-                            )
-                            new_shared_memory_resources.append(new_res)
-                            logger.debug(f"Recreated shared memory resource {i} for inference server restart")
-                        except Exception as e:
-                            logger.error(f"Failed to recreate shared memory resource {i}: {e}")
-                            # Try to reuse old resource if recreation fails
-                            new_shared_memory_resources.append(shared_memory_resources[i])
-
-                    # Replace the old resources with new ones
-                    shared_memory_resources = new_shared_memory_resources
-                    logger.info("Updated shared memory resources with fresh Event objects for server restart")
+                    # Reuse existing shared-memory resources to keep Events consistent with workers
 
                     infer_proc = Process(
                         target=run_inference_server,
@@ -636,16 +614,13 @@ def orchestrate(
                                 live.update(new_table)
                 else:
                     last_msg_time = time.time()
+                    per_worker_done: Dict[int, int] = {i: 0 for i in range(workers)}
                     total_target = workers * games_per_worker
                     while done < total_target:
                         try:
                             msg = q.get(timeout=2.0)
                         except pyqueue.Empty:
-                            # Periodically check for dead workers and respawn if needed
-                            # Build minimal per-worker-done map from progress tasks when in bars mode
-                            # We don't track per-worker here tightly; maintain a simple done counter only.
-                            # Use zeros so we only respawn if a worker died very early.
-                            per_worker_done = {i: 0 for i in range(workers)}
+                            # Periodically check for dead workers and respawn if needed (using tracked per-worker done)
                             _check_and_respawn_workers(last_msg_time, per_worker_done)
                             if time.time() - last_msg_time > 300:
                                 raise RuntimeError("Self-play appears stalled (no progress for 300s)")
@@ -658,6 +633,8 @@ def orchestrate(
                             wid = int(msg.get("proc", -1))
                             if wid in worker_tasks:
                                 progress.update(worker_tasks[wid], advance=1)
+                            if wid in per_worker_done:
+                                per_worker_done[wid] += 1
                             stats["moves"] += int(msg.get("moves", 0))
                             stats["time"] += float(msg.get("secs", 0.0))
                             if "avg_ms_per_move" in msg and "avg_sims" in msg:

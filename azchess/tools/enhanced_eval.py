@@ -150,6 +150,11 @@ class EnhancedEvaluator:
             "parent_q_init": bool(self.cfg.mcts().get("parent_q_init", True)),
             "tt_cleanup_frequency": int(self.cfg.mcts().get("tt_cleanup_frequency", 500)),
             "draw_penalty": float(self.cfg.mcts().get("draw_penalty", -0.1)),
+            # Ensure MCTS uses side-to-move value (flip from white when needed)
+            "value_from_white": True,
+            # Disable Dirichlet noise during evaluation for decisiveness
+            "dirichlet_frac": 0.0,
+            "dirichlet_plies": 0,
         })
         
         # Add aggressive settings to force decisive games
@@ -210,7 +215,9 @@ class EnhancedEvaluator:
         - opening_temp used for first `opening_plies` plies per side (2*opening_plies half-moves), then switch to mid_temp.
         - start_fen: optional FEN to initialize the board.
         """
-        self.logger.info(f"Starting new game with opening_temp {opening_temp}, mid_temp {mid_temp}, max moves 150")
+        # Respect eval.max_moves from config (default 160); allow CLI override via attribute
+        max_moves = int(getattr(self, 'max_moves', self.cfg.eval().get("max_moves", 160)))
+        self.logger.info(f"Starting new game with opening_temp {opening_temp}, mid_temp {mid_temp}, max moves {max_moves}")
         
         # Test model forward passes before game start
         self.logger.info("Testing model forward passes before game start")
@@ -245,7 +252,7 @@ class EnhancedEvaluator:
                 "Calculating..."
             )
         
-        while move_count < 150 and not board.is_game_over():
+        while move_count < max_moves and not board.is_game_over():
             move_start = time.time()
             
             # Determine which model's turn
@@ -267,7 +274,8 @@ class EnhancedEvaluator:
             
             # Run MCTS
             self.logger.info(f"Move {move_count + 1}: Starting MCTS run")
-            visits, policy, vroot = mcts.run(board)
+            # Pass ply to gate early-game exploration correctly
+            visits, policy, vroot = mcts.run(board, ply=move_count)
             self.logger.info(f"Move {move_count + 1}: MCTS completed in {time.time() - move_start:.3f}s")
             self.logger.info(f"Move {move_count + 1}: MCTS returned {len(visits)} visit counts")
             
@@ -307,8 +315,9 @@ class EnhancedEvaluator:
             self.logger.debug(f"Move {move_count + 1}: Recorded choice for {model_key} - move: {move}, visits: {visits.get(move, 0)}, value: {vroot:.3f}")
             
             # Check for resignation based on position evaluation - much stricter now
-            if move_count >= 35:  # Require 35+ moves before resignation
-                resign_threshold = -0.95 if temp_now > 1.0 else -0.98  # Much stricter threshold
+            if move_count >= 60:  # Require 60+ plies before resignation
+                # Slightly more permissive resign threshold for decisive eval
+                resign_threshold = -0.80 if temp_now > 0.9 else -0.85
                 if vroot < resign_threshold:
                     self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to truly hopeless position (value: {vroot:.3f} < {resign_threshold})")
                     # Determine winner based on whose turn it is
@@ -873,6 +882,7 @@ def main():
     parser.add_argument("--opening-plies", type=int, default=10, help="Number of plies to apply opening temperature")
     parser.add_argument("--opening-temp", type=float, default=1.0, help="Temperature during opening plies")
     parser.add_argument("--mid-temp", type=float, default=0.1, help="Temperature after opening plies")
+    parser.add_argument("--max-moves", type=int, default=None, help="Override maximum moves before forced draw (defaults to config eval.max_moves)")
     
     args = parser.parse_args()
     
@@ -884,6 +894,8 @@ def main():
     setattr(evaluator, 'opening_plies', int(args.opening_plies))
     setattr(evaluator, 'opening_temp', float(args.opening_temp))
     setattr(evaluator, 'mid_temp', float(args.mid_temp))
+    if args.max_moves:
+        setattr(evaluator, 'max_moves', int(args.max_moves))
     evaluator.run_evaluation()
 
 

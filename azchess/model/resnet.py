@@ -314,21 +314,85 @@ class PolicyValueNet(nn.Module):
         # Self-supervised learning head (if enabled)
         if cfg.self_supervised:
             # Enhanced SSL with multiple tasks support
-            ssl_tasks = getattr(cfg, 'ssl_tasks', ['piece'])  # Only 'piece' task currently implemented
+            ssl_tasks = getattr(cfg, 'ssl_tasks', ['piece'])
+            self.ssl_heads = {}  # Dictionary to store multiple SSL heads
+
+            # Piece recognition SSL (basic task)
             if 'piece' in ssl_tasks:
-                self.ssl_piece_head = nn.Sequential(
+                self.ssl_heads['piece'] = nn.Sequential(
                     nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
                     _norm(C // 2, cfg.norm),
                     activation,
                     nn.Conv2d(C // 2, 13, kernel_size=1, bias=False),  # 12 pieces + 1 empty
                 )
-                logger.info(f"SSL piece head created with {sum(p.numel() for p in self.ssl_piece_head.parameters())} parameters")
-            else:
-                self.ssl_piece_head = None
-                logger.warning("SSL piece head not created - no piece task in ssl_tasks")
-            
-            # Additional SSL tasks can be added here
-            self.ssl_head = self.ssl_piece_head  # For backward compatibility
+                logger.info(f"SSL piece head created with {sum(p.numel() for p in self.ssl_heads['piece'].parameters())} parameters")
+
+            # Threat detection SSL
+            if 'threat' in ssl_tasks:
+                self.ssl_heads['threat'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 1, kernel_size=1, bias=False),  # Binary: under threat or not
+                )
+                logger.info(f"SSL threat head created with {sum(p.numel() for p in self.ssl_heads['threat'].parameters())} parameters")
+
+            # Pin detection SSL
+            if 'pin' in ssl_tasks:
+                self.ssl_heads['pin'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 1, kernel_size=1, bias=False),  # Binary: pinned or not
+                )
+                logger.info(f"SSL pin head created with {sum(p.numel() for p in self.ssl_heads['pin'].parameters())} parameters")
+
+            # Fork detection SSL
+            if 'fork' in ssl_tasks:
+                self.ssl_heads['fork'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 1, kernel_size=1, bias=False),  # Binary: forking or not
+                )
+                logger.info(f"SSL fork head created with {sum(p.numel() for p in self.ssl_heads['fork'].parameters())} parameters")
+
+            # Square control SSL
+            if 'control' in ssl_tasks:
+                self.ssl_heads['control'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 1, kernel_size=1, bias=False),  # Binary: white/black control
+                )
+                logger.info(f"SSL control head created with {sum(p.numel() for p in self.ssl_heads['control'].parameters())} parameters")
+
+            # Pawn structure SSL
+            if 'pawn_structure' in ssl_tasks:
+                self.ssl_heads['pawn_structure'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 8, kernel_size=1, bias=False),  # 8 pawn structure features
+                )
+                logger.info(f"SSL pawn_structure head created with {sum(p.numel() for p in self.ssl_heads['pawn_structure'].parameters())} parameters")
+
+            # King safety SSL
+            if 'king_safety' in ssl_tasks:
+                self.ssl_heads['king_safety'] = nn.Sequential(
+                    nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
+                    _norm(C // 2, cfg.norm),
+                    activation,
+                    nn.Conv2d(C // 2, 3, kernel_size=1, bias=False),  # 3 safety levels
+                )
+                logger.info(f"SSL king_safety head created with {sum(p.numel() for p in self.ssl_heads['king_safety'].parameters())} parameters")
+
+            # For backward compatibility, keep ssl_head pointing to piece head if it exists
+            self.ssl_head = self.ssl_heads.get('piece', None)
+            self.ssl_piece_head = self.ssl_head  # Maintain compatibility
+
+            total_ssl_params = sum(sum(p.numel() for p in head.parameters()) for head in self.ssl_heads.values())
+            logger.info(f"Total SSL parameters: {total_ssl_params}")
         else:
             self.ssl_head = None
             self.ssl_piece_head = None
@@ -363,8 +427,8 @@ class PolicyValueNet(nn.Module):
         else:
             self.aux_move_type = None
 
-        # Normalization for the dense policy branch
-        self.policy_fc_norm = nn.LayerNorm(cfg.policy_size)
+        # Learnable logit scale for the dense policy branch (replaces LN on logits)
+        self.policy_logit_scale = nn.Parameter(torch.tensor(0.2))
         
         # Dense branch: preserves original capacity (4096 → 4672) or factorized when enabled
         _rank = int(getattr(cfg, 'policy_factor_rank', 0))
@@ -488,9 +552,8 @@ class PolicyValueNet(nn.Module):
                 self.policy_fc2.weight.data *= 0.8  # Apply same scaling in factorized case
             logger.info("Policy head weights scaled for balanced learning capacity")
 
-        # CRITICAL: Initialize normalization layer for stability
-        # LayerNorm has no learnable parameters, but we ensure it's properly set up
-        logger.info("Policy head normalization layer initialized for stability")
+        # Logit scale initialized conservatively to avoid large logits after LN removal
+        logger.info("Policy head logit scale initialized to 0.2")
 
         # SSL head initialization - CRITICAL: Was missing!
         if self.ssl_piece_head is not None:
@@ -517,52 +580,76 @@ class PolicyValueNet(nn.Module):
         x_fp32 = x.float()
         with torch.autocast(device_type=device_type, enabled=False):
             x = self.stem(x_fp32)
-        if self.chess_features is not None:
-            x = self.chess_features(x)
+        # Run potentially fragile blocks in fp32 as well for stability on MPS/AMP
+        with torch.autocast(device_type=device_type, enabled=False):
+            if self.chess_features is not None:
+                x = self.chess_features(x)
         
         # Integrate visual features if available
         if self.visual_encoder is not None and visual_input is not None:
             visual_features = self.visual_encoder(visual_input)
             x = x + visual_features  # Add visual features to chess features
         
-        x = self.tower(x)
+        # Run the tower in fp32 to avoid half-precision normalization/softmax instabilities
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = self.tower(x)
+
+        # Sanitize features if any non-finite values slipped through
+        if not torch.isfinite(x).all():
+            logger.warning("Feature tensor contains NaN/Inf; sanitizing to zeros")
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         return x
 
     def _compute_policy_value(self, feats: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         # Policy - ensure contiguity throughout
         pfeat = self.policy_head(feats)
-        pfeat = torch.clamp(pfeat, -5.0, 5.0)
         p = pfeat.contiguous().reshape(pfeat.size(0), -1)
 
         if self.policy_fc is not None:
             p = self.policy_fc(p)
-            p = torch.clamp(p, -10.0, 10.0)
         else:
             p = F.relu(self.policy_fc1(p), inplace=True)
-            p = torch.clamp(p, -10.0, 10.0)
             p = self.policy_fc2(p)
-            p = torch.clamp(p, -10.0, 10.0)
 
-        p = self.policy_fc_norm(p)
+        # Apply learnable logit scale; keep dtype consistent
+        p = p * self.policy_logit_scale.to(dtype=p.dtype, device=p.device)
 
         if torch.isnan(p).any() or torch.isinf(p).any():
             logger.warning(f"Policy output contains NaN/Inf: total={torch.isnan(p).sum() + torch.isinf(p).sum()}")
             logger.warning("Replacing NaN/Inf with safe values to continue training")
-            p = torch.where(torch.isfinite(p), p, torch.zeros_like(p))
+            p = torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
 
-        p = torch.clamp(p, -5.0, 5.0)
+        # Avoid over-constraining logits; let CE handle stability
 
         # Value - ensure contiguity throughout
         v = self.value_head(feats)
         v = v.contiguous().reshape(v.size(0), -1)
         v = F.relu(self.value_fc1(v), inplace=True)
+        if torch.isnan(v).any() or torch.isinf(v).any():
+            logger.warning("Value head intermediate contains NaN/Inf after fc1; sanitizing")
+            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
         v = F.relu(self.value_fc2(v), inplace=True)
+        if torch.isnan(v).any() or torch.isinf(v).any():
+            logger.warning("Value head intermediate contains NaN/Inf after fc2; sanitizing")
+            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
         v = torch.tanh(self.value_fc3(v))
 
-        # SSL - ensure contiguity
+        # SSL - compute outputs for all enabled SSL heads
         ssl_output = None
-        if self.ssl_piece_head is not None and return_ssl:
+        if return_ssl and self.ssl_heads:
+            ssl_output = {}
+            for task_name, head in self.ssl_heads.items():
+                task_output = head(feats).contiguous()
+                if torch.isnan(task_output).any() or torch.isinf(task_output).any():
+                    logger.warning(f"SSL {task_name} head output contains NaN/Inf; sanitizing")
+                    task_output = torch.nan_to_num(task_output, nan=0.0, posinf=0.0, neginf=0.0)
+                ssl_output[task_name] = task_output
+        elif self.ssl_piece_head is not None and return_ssl:
+            # Backward compatibility: return piece head output directly
             ssl_output = self.ssl_piece_head(feats).contiguous()
+            if torch.isnan(ssl_output).any() or torch.isinf(ssl_output).any():
+                logger.warning("SSL head output contains NaN/Inf; sanitizing")
+                ssl_output = torch.nan_to_num(ssl_output, nan=0.0, posinf=0.0, neginf=0.0)
 
         return p, v.squeeze(-1).contiguous(), ssl_output
 
@@ -725,32 +812,74 @@ class PolicyValueNet(nn.Module):
             except Exception as e:
                 logger.warning(f"Piece SSL loss computation failed: {e}")
 
-        # Advanced SSL tasks - currently target computation ready, awaiting model heads
-        # These would require separate model heads for each task in a full implementation
-
-        advanced_tasks = ['threat', 'pin', 'fork', 'control']
+        # Advanced SSL tasks using dedicated model heads
+        advanced_tasks = ['threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
         for task in advanced_tasks:
-            if task in targets and task in ssl_tasks:
-                # Log task activity and prepare for future model head integration
-                task_targets = targets[task]
-                if task_targets.numel() > 0:  # Only log if there are actual targets
-                    if task == 'threat':
-                        threatened_squares = task_targets.sum().item()
-                        logger.debug(f"Threat detection active: {threatened_squares} threatened squares")
-                    elif task == 'pin':
-                        pinned_pieces = task_targets.sum().item()
-                        logger.debug(f"Pin detection active: {pinned_pieces} pinned pieces")
-                    elif task == 'fork':
-                        fork_opportunities = task_targets.sum().item()
-                        logger.debug(f"Fork detection active: {fork_opportunities} fork opportunities")
-                    elif task == 'control':
-                        white_control = (task_targets > 0).sum().item()
-                        black_control = (task_targets < 0).sum().item()
-                        logger.debug(f"Square control active - White: {white_control}, Black: {black_control}")
+            if task in targets and task in ssl_tasks and task in self.ssl_heads:
+                try:
+                    task_head = self.ssl_heads[task]
+                    task_targets = targets[task]
 
-                # TODO: Add actual loss computation when model heads are implemented
-                # For now, these targets are computed but not used in loss computation
-                # This allows the SSL algorithms to be tested and refined
+                    # Get features for SSL head
+                    feats = self._forward_features(x, None)  # No visual input for SSL
+
+                    # Compute task output
+                    task_output = task_head(feats)
+
+                    # Log task activity
+                    if task_targets.numel() > 0:
+                        if task == 'threat':
+                            threatened_squares = task_targets.sum().item()
+                            logger.debug(f"Threat detection: {threatened_squares} threatened squares")
+                        elif task == 'pin':
+                            pinned_pieces = task_targets.sum().item()
+                            logger.debug(f"Pin detection: {pinned_pieces} pinned pieces")
+                        elif task == 'fork':
+                            fork_opportunities = task_targets.sum().item()
+                            logger.debug(f"Fork detection: {fork_opportunities} fork opportunities")
+                        elif task == 'control':
+                            white_control = (task_targets > 0).sum().item()
+                            black_control = (task_targets < 0).sum().item()
+                            logger.debug(f"Square control - White: {white_control}, Black: {black_control}")
+                        elif task == 'pawn_structure':
+                            logger.debug(f"Pawn structure: {task_targets.shape}")
+                        elif task == 'king_safety':
+                            logger.debug(f"King safety: {task_targets.shape}")
+
+                    # Compute loss based on task type
+                    if task in ['threat', 'pin', 'fork']:
+                        # Binary classification tasks
+                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 1)
+                        task_targets_flat = task_targets.reshape(-1, 1).float()
+                        task_loss = F.binary_cross_entropy_with_logits(task_output_flat, task_targets_flat)
+                    elif task == 'control':
+                        # Ternary classification: -1 (black control), 0 (neutral), 1 (white control)
+                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 1)
+                        task_targets_flat = task_targets.reshape(-1, 1).float()
+                        # Convert to 3-class problem: 0=black, 1=neutral, 2=white
+                        task_targets_3class = torch.where(task_targets_flat < 0, torch.tensor(0.0, device=device),
+                                                         torch.where(task_targets_flat > 0, torch.tensor(2.0, device=device),
+                                                                    torch.tensor(1.0, device=device)))
+                        task_loss = F.cross_entropy(task_output_flat.squeeze(-1), task_targets_3class.long())
+                    elif task == 'pawn_structure':
+                        # 8-class classification for pawn structure features
+                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 8)
+                        task_targets_flat = task_targets.reshape(-1).long()
+                        task_loss = F.cross_entropy(task_output_flat, task_targets_flat)
+                    elif task == 'king_safety':
+                        # 3-class classification for king safety levels
+                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 3)
+                        task_targets_flat = task_targets.reshape(-1).long()
+                        task_loss = F.cross_entropy(task_output_flat, task_targets_flat)
+
+                    # Weight the task loss (default 1.0, can be configured per task)
+                    task_weight = getattr(self.cfg, f'ssl_{task}_weight', 1.0)
+                    total_loss += task_weight * task_loss
+                    logger.debug(f"{task} SSL loss: {task_loss.item():.6f} (weight: {task_weight})")
+
+                except Exception as e:
+                    logger.warning(f"{task} SSL loss computation failed: {e}")
+                    continue
 
         # Return total loss (currently only piece recognition contributes)
         return total_loss if total_loss > 0 else torch.tensor(0.0, device=device, dtype=torch.float32)

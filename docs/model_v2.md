@@ -6,7 +6,7 @@ Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and SSL foundation. The architecture is optimized for Apple Silicon MPS with advanced stability features and SSL foundation ready for enhancement.
+Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and SSL foundation. The architecture is optimized for Apple Silicon MPS with advanced stability features and SSL foundation with integrated advanced algorithms.
 
 ### Key Specifications
 - **Total Parameters**: 53,217,919 (53M)
@@ -21,7 +21,7 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Training Stability**: No NaN/Inf crashes with branch normalization
 - **Memory Efficiency**: 14GB MPS limit with automatic management
 - **Performance**: ~3-4s per training step on Apple Silicon
-- **SSL Foundation**: Basic piece recognition working, advanced algorithms implemented
+- **SSL Foundation**: Basic piece recognition working, advanced algorithms integrated
 - **Data Pipeline**: Complete self-play → training → evaluation cycle
 
 ## 2) Implemented Architecture Features
@@ -44,10 +44,10 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 
 ### SSL Implementation (Foundation Established)
 - **SSL Foundation**: Basic piece recognition working and operational
-- **SSL Algorithms**: Advanced algorithms implemented in ssl_algorithms.py
-- **SSL Architecture**: Dedicated 13-class per-square prediction head
-- **Current Status**: Basic piece recognition working, advanced algorithms ready for integration
-- **Training Stability**: SSL foundation established with basic functionality
+- **SSL Algorithms**: Advanced algorithms implemented and integrated
+- **SSL Architecture**: Dedicated multi-head SSL architecture with 6+ task heads
+- **Current Status**: Basic piece recognition working, advanced algorithms integrated
+- **Training Stability**: SSL foundation established with multi-task functionality
 
 ### Training Stability Features
 - **Branch Normalization**: Prevents magnitude differences between policy branches
@@ -81,11 +81,11 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Parameters**: ~2M in attention components
 
 ### SSL Architecture (Foundation Ready)
-- **SSL Head**: Dedicated 13-class per-square prediction (13×8×8 output)
+- **SSL Heads**: Dedicated multi-head SSL architecture (piece, threat, pin, fork, control, pawn_structure, king_safety)
 - **SSL Foundation**: Basic piece recognition working and operational
-- **SSL Algorithms**: Advanced algorithms implemented (threat, pin, fork, control)
-- **Current Status**: Ready for full SSL integration and multi-task learning
-- **Parameters**: ~500K in SSL head
+- **SSL Algorithms**: Advanced algorithms implemented and integrated
+- **Current Status**: Full SSL integration and multi-task learning operational
+- **Parameters**: ~2M+ in SSL heads (distributed across tasks)
 
 ### Policy Head (Dual Branch Design)
 - **Input Features**: 320 channels from trunk

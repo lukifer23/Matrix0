@@ -16,13 +16,13 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 ### ✅ What's Working
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle
 - **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
-- **SSL Foundation**: Basic piece recognition working, advanced algorithms implemented
+- **SSL Foundation**: Basic piece recognition working, advanced algorithms integrated
 - **External Engines**: Stockfish and LC0 integration fully functional
 - **Apple Silicon**: MPS optimization with 14GB memory management
 - **Web Interface**: FastAPI-based evaluation and analysis interface
 
 ### 🔄 Active Development
-- **SSL Integration**: Complete integration of advanced SSL algorithms with training pipeline
+- **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
 - **Performance Optimization**: Memory usage and training throughput improvements
 - **Enhanced Evaluation**: Multi-engine tournament and strength estimation systems
 
@@ -38,7 +38,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 For a quick look at current problem areas, check the [status report](status.md).
 
 ### Current Priorities
-1. **SSL Algorithm Integration**: Enable all implemented SSL algorithms with training pipeline
+1. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
 2. **Training Enhancement**: Achieve stable training with full SSL capabilities
 3. **Performance Optimization**: Memory usage and training throughput improvements
 4. **Documentation**: Keep all technical docs current and comprehensive
@@ -79,4 +79,4 @@ python -m azchess.eval --external-engines --games 50
 ---
 
 **Last Updated**: August 2025  
-**Status**: Production training pipeline operational, SSL foundation ready for enhancement
+**Status**: Production training pipeline operational, SSL foundation established with advanced algorithms integrated

@@ -35,12 +35,30 @@ model:
   policy_factor_rank: 128          # Factorized policy head
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece"]            # SSL tasks (basic piece recognition working)
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (advanced algorithms integrated)
 ```
 
 ## 2. Recent Configuration Enhancements (August 2025)
 
-### Enhanced Policy Masking
+### Scheduler Robustness
+- Fixed learning rate scheduler stepping issues with gradient accumulation
+- Added scheduler error handling and logging
+- Ensured scheduler steps only once per accumulation window
+
+### Enhanced Memory Management
+- Improved memory monitoring with configurable thresholds
+- Added periodic proactive memory cleanup
+- Enhanced MPS memory tracking and reporting
+
+### SSL Algorithm Integration
+Advanced SSL algorithms are now integrated into the training pipeline:
+- **Piece Recognition**: Basic piece identification (working)
+- **Threat Detection**: Identifies squares under attack
+- **Pin Detection**: Identifies pinned pieces
+- **Fork Detection**: Identifies fork opportunities
+- **Square Control**: Determines who controls each square
+- **Multi-task Training**: All SSL tasks trained simultaneously with configurable weights
+
 The training pipeline now includes smart policy masking that automatically detects data source types:
 - **External Data**: One-hot distributions (e.g., lichess puzzles) - no masking needed
 - **Self-Play Data**: Soft MCTS distributions - applies policy masking for legal moves
@@ -73,7 +91,7 @@ The training pipeline now includes smart policy masking that automatically detec
 - `policy_factor_rank`: Factorized policy head rank (default: `128`)
 - `ssl_curriculum`: Enable SSL progressive difficulty (default: `true`)
 - `self_supervised`: Enable self-supervised learning (default: `true`)
-- `ssl_tasks`: List of SSL tasks to train (currently only `["piece"]` is working, advanced algorithms implemented but not integrated)
+- `ssl_tasks`: List of SSL tasks to train (basic piece recognition + advanced algorithms: threat, pin, fork, control detection)
 
 ### `selfplay` - Self-Play Data Generation
 - `num_workers`: Number of parallel self-play workers (default: `3`)

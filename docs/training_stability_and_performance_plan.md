@@ -49,10 +49,10 @@
   - [ ] Prefer fused AdamW on CUDA if available.
 
 ## SSL unification and cost control
-- [x] Default to piece-only SSL (`ssl_tasks: ["piece"]`) unless heads exist for new tasks.
+- [x] Enable multi-task SSL with advanced algorithms (`ssl_tasks: ["piece", "threat", "pin", "fork", "control"]`).
 - [x] Adaptive SSL chunk size based on memory monitor signal (not fixed).
 - [x] SSL gating schedule: warmup to target `ssl_weight`; auto-freeze for K steps after instability.
-- [x] If enabling enhanced SSL tasks later, add dedicated heads and compute losses conditionally.
+- [x] Enhanced SSL tasks enabled with dedicated heads and conditional loss computation.
 
 ## Model architecture and size (non-destructive options)
 - [x] Policy head factorization

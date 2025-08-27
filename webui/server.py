@@ -514,6 +514,155 @@ def health():
     return {"stockfish": sf_available, "model_params": params, "device": _device}
 
 
+@app.get("/ssl/status")
+def ssl_status():
+    """Get SSL configuration and current status."""
+    try:
+        cfg = Config.load("config.yaml")
+        model_config = cfg.model()
+
+        ssl_info = {
+            "enabled": model_config.get("self_supervised", False),
+            "tasks": model_config.get("ssl_tasks", []),
+            "curriculum": model_config.get("ssl_curriculum", True),
+            "ssl_head_count": len(model_config.get("ssl_tasks", [])),
+            "config": {
+                "ssl_weight": cfg.training().get("ssl_weight", 0.04),
+                "ssl_warmup_steps": cfg.training().get("ssl_warmup_steps", 1500),
+                "ssl_target_weight": cfg.training().get("ssl_target_weight", 1.0),
+            }
+        }
+
+        # Try to get model parameter counts for SSL heads
+        if _matrix0_model is not None and hasattr(_matrix0_model, 'ssl_heads'):
+            ssl_head_params = {}
+            for task_name, head in _matrix0_model.ssl_heads.items():
+                ssl_head_params[task_name] = sum(p.numel() for p in head.parameters())
+            ssl_info["head_parameters"] = ssl_head_params
+            ssl_info["total_ssl_params"] = sum(ssl_head_params.values())
+
+        return ssl_info
+    except Exception as e:
+        return {"error": str(e), "enabled": False}
+
+
+@app.get("/training/status")
+def training_status():
+    """Get current training status and metrics."""
+    try:
+        # Read recent training logs
+        training_data = []
+
+        # Check if training log exists
+        train_log = BASE_DIR / "logs" / "matrix0.log"
+        if train_log.exists():
+            with open(train_log, 'r') as f:
+                lines = f.readlines()[-20:]  # Last 20 lines
+
+            for line in lines:
+                if "TRAINING_HB" in line:
+                    # Parse training heartbeat lines
+                    import re
+                    match = re.search(r'Step (\d+)/(\d+) .* Loss: ([0-9.]+) .* Policy: ([0-9.]+) .* Value: ([0-9.]+) .* SSL: ([0-9.]+) .* LR: ([0-9.]+)', line)
+                    if match:
+                        step, total_steps, loss, policy, value, ssl, lr = match.groups()
+                        training_data.append({
+                            "step": int(step),
+                            "total_steps": int(total_steps),
+                            "loss": float(loss),
+                            "policy_loss": float(policy),
+                            "value_loss": float(value),
+                            "ssl_loss": float(ssl),
+                            "learning_rate": float(lr)
+                        })
+
+        if training_data:
+            latest = training_data[-1]
+            return {
+                "is_training": True,
+                "current_step": latest["step"],
+                "total_steps": latest["total_steps"],
+                "progress": (latest["step"] / latest["total_steps"]) * 100,
+                "latest_metrics": {
+                    "loss": latest["loss"],
+                    "policy_loss": latest["policy_loss"],
+                    "value_loss": latest["value_loss"],
+                    "ssl_loss": latest["ssl_loss"],
+                    "learning_rate": latest["learning_rate"]
+                },
+                "recent_history": training_data[-5:]  # Last 5 entries
+            }
+        else:
+            return {
+                "is_training": False,
+                "message": "No recent training data found"
+            }
+
+    except Exception as e:
+        return {"error": str(e), "is_training": False}
+
+
+@app.get("/model/analysis")
+def model_analysis():
+    """Get detailed model analysis."""
+    try:
+        cfg = Config.load("config.yaml")
+        model = PolicyValueNet.from_config(cfg.model())
+
+        total_params = sum(p.numel() for p in model.parameters())
+
+        # Parameter count by layer type
+        param_breakdown = {}
+        for name, module in model.named_modules():
+            if hasattr(module, 'parameters') and list(module.parameters()):
+                param_count = sum(p.numel() for p in module.parameters())
+                if param_count > 0:
+                    layer_type = type(module).__name__
+                    param_breakdown[layer_type] = param_breakdown.get(layer_type, 0) + param_count
+
+        # SSL head analysis
+        ssl_heads = {}
+        if hasattr(model, 'ssl_heads'):
+            for task_name, head in model.ssl_heads.items():
+                ssl_heads[task_name] = {
+                    "parameters": sum(p.numel() for p in head.parameters()),
+                    "structure": str(head)
+                }
+
+        return {
+            "total_parameters": total_params,
+            "parameter_breakdown": param_breakdown,
+            "ssl_heads": ssl_heads,
+            "architecture": {
+                "channels": cfg.model().get("channels", 320),
+                "blocks": cfg.model().get("blocks", 24),
+                "attention_heads": cfg.model().get("attention_heads", 20),
+                "policy_size": cfg.model().get("policy_size", 4672),
+                "ssl_enabled": cfg.model().get("self_supervised", False),
+                "ssl_tasks": cfg.model().get("ssl_tasks", [])
+            }
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/config/view")
+def config_view():
+    """Get current configuration."""
+    try:
+        cfg = Config.load("config.yaml")
+        return {
+            "model": cfg.model().__dict__ if hasattr(cfg.model(), '__dict__') else cfg.model(),
+            "training": cfg.training().__dict__ if hasattr(cfg.training(), '__dict__') else cfg.training(),
+            "selfplay": cfg.selfplay().__dict__ if hasattr(cfg.selfplay(), '__dict__') else cfg.selfplay(),
+            "eval": cfg.eval().__dict__ if hasattr(cfg.eval(), '__dict__') else cfg.eval(),
+            "mcts": cfg.mcts().__dict__ if hasattr(cfg.mcts(), '__dict__') else cfg.mcts()
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/admin/purge")
 def admin_purge():
     """Endpoint to purge finished or stale games."""

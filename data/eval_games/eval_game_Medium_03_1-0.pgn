@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 3"]
+[Site "Matrix0 Arena"]
+[Date "2025.08.27"]
+[Round "Medium - Game 3"]
+[White "Step18000"]
+[Black "Baseline"]
+[Result "1-0"]
+[TimeControl "unlimited"]
+[Termination "checkmate"]
+
+1. a3 g6 2. a4 g5 3. Ra2 f5 4. c4 b5 5. e4 b4 6. Qh5# 1-0

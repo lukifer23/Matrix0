@@ -628,7 +628,8 @@ def play_match(
             if should_adjudicate_draw(board, move_history, cfg.draw()):
                 break
 
-            visits, pi, vroot = mcts.run(board)
+            # Pass ply to properly gate early-game exploration and noise
+            visits, pi, vroot = mcts.run(board, ply=moves_count)
 
             if debug_moves:
                 try:

@@ -69,7 +69,7 @@ def create_v2_checkpoint():
             aux_policy_move_type=model_cfg.get('aux_policy_move_type', True),
             enable_visual=model_cfg.get('enable_visual', False),
             visual_encoder_channels=model_cfg.get('visual_encoder_channels', 64),
-            ssl_tasks=model_cfg.get('ssl_tasks', []),  # Match current config (disabled)
+            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),  # Match current config with advanced SSL
             ssl_curriculum=model_cfg.get('ssl_curriculum', True),
             ssrl_tasks=model_cfg.get('ssrl_tasks', [])  # Match current config (disabled)
         )
@@ -100,7 +100,10 @@ def create_v2_checkpoint():
                 'attention_heads': net_config.attention_heads,
                 'policy_factor_rank': net_config.policy_factor_rank,
                 'ssl_tasks': net_config.ssl_tasks,
-                'ssrl_tasks': net_config.ssrl_tasks
+                'ssrl_tasks': net_config.ssrl_tasks,
+                'ssl_enabled': net_config.self_supervised,
+                'ssl_head_count': len(net_config.ssl_tasks) if net_config.ssl_tasks else 0,
+                'ssl_curriculum': net_config.ssl_curriculum
             }
         }
 
@@ -114,13 +117,23 @@ def create_v2_checkpoint():
 
         # Log model parameters
         total_params = sum(p.numel() for p in model.parameters())
+        ssl_head_count = len(net_config.ssl_tasks) if net_config.ssl_tasks else 0
+
         logger.info(f"✅ Successfully created FRESH V2 CHECKPOINT:")
         logger.info(f"   - Fresh checkpoint: {checkpoint_path}")
         logger.info(f"   - Main checkpoint: {main_checkpoint_path}")
         logger.info(f"   - Total parameters: {total_params:,}")
         logger.info(f"   - SSL enabled: {net_config.self_supervised}")
-        logger.info(f"   - SSL tasks: {net_config.ssl_tasks}")
+        logger.info(f"   - SSL tasks: {net_config.ssl_tasks} ({ssl_head_count} heads)")
+        logger.info(f"   - SSL curriculum: {net_config.ssl_curriculum}")
         logger.info(f"   - SSRL tasks: {net_config.ssrl_tasks}")
+
+        # Log SSL head information if SSL is enabled
+        if net_config.self_supervised and hasattr(model, 'ssl_heads'):
+            ssl_head_params = {}
+            for task_name, head in model.ssl_heads.items():
+                ssl_head_params[task_name] = sum(p.numel() for p in head.parameters())
+            logger.info(f"   - SSL head parameters: {ssl_head_params}")
 
         # Test loading the checkpoint
         logger.info("Testing checkpoint loading...")

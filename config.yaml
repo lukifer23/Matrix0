@@ -11,13 +11,13 @@ model:
   norm: "group"                    # GroupNorm instead of BatchNorm
   activation: "silu"               # SiLU activation instead of ReLU
   preact: true                     # Pre-activation residual blocks
-  droppath: 0.1                    # DropPath regularization
+  droppath: 0.05                   # DropPath regularization (reduced for stability)
   policy_factor_rank: 128          # Factorized policy head (32M model)
   aux_policy_from_square: true     # Auxiliary from-square prediction
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece"]            # Enable piece SSL head (stable)
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # Enable advanced SSL tasks
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
@@ -43,8 +43,9 @@ training:
   checkpoint: "enhanced_best.pt"   # Promote trained checkpoint as base
   gradient_accumulation_steps: 1   # Reduce graph lifetime on MPS
   grad_clip_norm: 0.5              # Stable
-  ssl_weight: 0.05                 # Stability
-  ssl_warmup_steps: 200            # Keep for SSL stability
+  ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
+  ssl_warmup_steps: 1500           # Longer warmup for smoother coupling
+  ssl_target_weight: 1.0           # Normalize SSL magnitude
   ssl_chunk_size: 16               # Prevent OOM
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
@@ -57,6 +58,9 @@ training:
     - { name: openings, steps: 1500, description: "Bootstrap with openings-heavy data" }
     - { name: mixed,    steps: 6500, description: "Blend external + self-play" }
   policy_masking: true             # Smart masking
+  policy_label_smoothing: 0.05     # Mild label smoothing for policy CE
+  value_loss: "huber"              # Robust value regression
+  huber_delta: 1.0                 # Huber threshold
 
 orchestrator:
   initial_games: 750               # 750 games per cycle
@@ -96,13 +100,13 @@ mcts:
   tt_memory_limit_mb: 1024
   batch_size: 8                     # Smaller per-worker inference batches on MPS
   encoder_cache: true
-  legal_softmax: false
+  legal_softmax: true               # Softmax over legal moves only for priors
   max_children: 0
   min_child_prior: 0.0
   no_instant_backtrack: true
   parent_q_init: true
   tt_cleanup_interval_s: 5
-  value_from_white: false
+  value_from_white: true            # Use side-to-move value consistently
   virtual_loss: 2.0
   enable_memory_cleanup: true
   memory_cleanup_threshold_mb: 512
