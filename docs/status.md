@@ -32,6 +32,12 @@
    - **Corresponding files/modules**: `webui/static/app.js`, `webui/server.py`
    - **Status**: Ready for implementation
 
+### 5. External Engine Data Integration ♟️
+   - **Priority**: Medium
+   - **Benefit**: Inject high-quality Stockfish-labelled data into training
+   - **Corresponding files/modules**: `tools/generate_stockfish_data.py`, `docs/configuration.md`
+   - **Status**: ✅ Integrated — `training.extra_replay_dirs: [data/stockfish_games]`
+
 ## 🎉 Major Milestones Completed (August 27, 2025)
 
 ### 🔥 Complete SSL Integration ✅ **ACHIEVED**

@@ -18,7 +18,7 @@ model:
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # Enable advanced SSL tasks
+  ssl_tasks: ["piece"]  # Sanity test: piece-only SSL for speed
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
@@ -36,18 +36,18 @@ selfplay:
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
-  batch_size: 256                  # Increased from 128 for better MPS utilization
+  batch_size: 128                  # Lowered for MPS headroom
   epochs: 1                        # Single epoch per cycle; repeat cycles
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
   checkpoint: "enhanced_best.pt"   # Promote trained checkpoint as base
-  gradient_accumulation_steps: 1   # Keep simple for MPS compatibility
+  gradient_accumulation_steps: 2   # Keep effective batch ~256
   grad_clip_norm: 0.5              # Stable
   ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
   ssl_warmup_steps: 1500           # Longer warmup for smoother coupling
   ssl_target_weight: 1.0           # Normalize SSL magnitude
-  ssl_chunk_size: 32               # Increased from 16 with larger batches
+  ssl_chunk_size: 16               # Reduce per-step memory
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps
@@ -62,6 +62,8 @@ training:
   policy_label_smoothing: 0.05     # Mild label smoothing for policy CE
   value_loss: "huber"              # Robust value regression
   huber_delta: 1.0                 # Huber threshold
+  extra_replay_dirs:
+    - data/stockfish_games
 
 orchestrator:
   initial_games: 20                # TEST RUN: 20 games total
@@ -83,6 +85,20 @@ eval:
   external_engines: ["stockfish"]  # Compare against Stockfish
   tournament_rounds: 4             # More tournament rounds
   strength_estimation_games: 4     # More strength estimation games
+
+engines:
+  stockfish:
+    path: /usr/local/bin/stockfish
+    parameters:
+      Threads: 2
+      Hash: 256
+      MultiPV: 1
+    time_control: 100ms
+    enabled: true
+  matrix0:
+    type: internal
+    checkpoint: checkpoints/best.pt
+    enabled: true
 
 mcts:
   num_simulations: 200              # Increased from 96 for better accuracy

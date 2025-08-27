@@ -38,6 +38,32 @@ model:
   ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (advanced algorithms integrated)
 ```
 
+### External Engine & Stockfish Data Defaults
+
+Add engines configuration and register Stockfish-generated datasets for training:
+
+```yaml
+engines:
+  stockfish:
+    path: /usr/local/bin/stockfish
+    parameters:
+      Threads: 2
+      Hash: 256
+      MultiPV: 1
+    time_control: 100ms
+    enabled: true
+  matrix0:
+    type: internal
+    checkpoint: checkpoints/best.pt
+    enabled: true
+
+training:
+  extra_replay_dirs:
+    - data/stockfish_games
+```
+
+With `extra_replay_dirs` set as above, NPZ shards produced by `tools/generate_stockfish_data.py` under `data/stockfish_games/**` are automatically registered and sampled during training alongside self-play data.
+
 ## 2. Recent Configuration Enhancements (August 2025)
 
 ### Scheduler Robustness

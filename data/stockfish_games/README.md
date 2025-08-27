@@ -154,9 +154,9 @@ python tools/generate_stockfish_data.py \
 ## Implementation Priority
 
 ### Phase 1: Core Infrastructure
-- [ ] Basic Stockfish integration
-- [ ] Position generation framework
-- [ ] SSL annotation system
+- [x] Basic Stockfish integration
+- [x] Position generation framework
+- [x] SSL annotation system
 
 ### Phase 2: Domain Generators
 - [ ] Opening repertoire generator
@@ -169,9 +169,29 @@ python tools/generate_stockfish_data.py \
 - [ ] Performance tracking integration
 
 ### Phase 4: Training Integration
+- [x] Core ingestion via training.extra_replay_dirs (see below)
 - [ ] Curriculum system extension
 - [ ] Metadata tracking
 - [ ] Performance analytics
+
+## Training Ingestion (Matrix0)
+
+Stockfish datasets are automatically imported by the training pipeline when placed under `data/stockfish_games/`.
+
+The default `config.yaml` includes:
+
+```yaml
+training:
+  extra_replay_dirs:
+    - data/stockfish_games
+```
+
+This registers all NPZ shards found in `data/stockfish_games/**` with the replay buffer so training can sample them alongside self-play data.
+
+Notes:
+- The generator uses Matrix0's canonical encoders: `encode_board` (19 planes) and `move_to_index` (4672 actions).
+- `pi` is one-hot on the best move from Stockfish; `legal_mask` covers legal moves for the position.
+- SSL targets (`ssl_*`) are included for future use and can be ignored safely by the training loop.
 
 ## Success Metrics
 

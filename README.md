@@ -122,6 +122,19 @@ source .venv/bin/activate
 python -m azchess.orchestrator --workers 4 --sims 160 --lr 0.001 --batch-size 128 --epochs 1 --eval-games 12 --device mps
 ```
 
+### 3b. Generate Stockfish Data (Optional)
+```bash
+# Example: generate 2k tactical positions with SSL targets
+python tools/generate_stockfish_data.py \
+  --domain tactical \
+  --subcategory pins \
+  --positions 2000 \
+  --stockfish-depth 12
+
+# Datasets are saved under data/stockfish_games/** and automatically ingested
+# by training via training.extra_replay_dirs in config.yaml
+```
+
 Run the training loop directly without the orchestrator:
 
 ```bash
