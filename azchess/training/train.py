@@ -867,6 +867,9 @@ def train_comprehensive(
         use_amp = False
     elif precision in ["fp16", "bf16"]:
         use_amp = True
+    # Disable AMP on MPS to avoid dtype mismatch/scaler instability
+    if select_device(device).startswith('mps'):
+        use_amp = False
     # Otherwise use the passed use_amp parameter
     
     if use_amp:
@@ -875,7 +878,8 @@ def train_comprehensive(
             if device_type == "cuda":
                 scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_factor=2.0)
             else:
-                scaler = torch.amp.GradScaler(device="mps", init_scale=65536.0, growth_factor=2.0)
+                # Should not reach here due to use_amp=False on MPS; keep safe fallback
+                scaler = torch.amp.GradScaler(device=device_type, init_scale=65536.0, growth_factor=2.0)
         except Exception as scaler_init_error:
             logger.warning(f"Failed to create scaler: {scaler_init_error}, will use regular precision")
             scaler = None

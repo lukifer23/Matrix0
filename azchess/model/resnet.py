@@ -315,7 +315,8 @@ class PolicyValueNet(nn.Module):
         if cfg.self_supervised:
             # Enhanced SSL with multiple tasks support
             ssl_tasks = getattr(cfg, 'ssl_tasks', ['piece'])
-            self.ssl_heads = {}  # Dictionary to store multiple SSL heads
+            # Register SSL heads as ModuleDict so .to(device) moves them correctly
+            self.ssl_heads = nn.ModuleDict()
 
             # Piece recognition SSL (basic task)
             if 'piece' in ssl_tasks:
