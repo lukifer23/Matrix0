@@ -389,7 +389,7 @@ class PolicyValueNet(nn.Module):
                 logger.info(f"SSL king_safety head created with {sum(p.numel() for p in self.ssl_heads['king_safety'].parameters())} parameters")
 
             # For backward compatibility, keep ssl_head pointing to piece head if it exists
-            self.ssl_head = self.ssl_heads.get('piece', None)
+            self.ssl_head = self.ssl_heads['piece'] if 'piece' in self.ssl_heads else None
             self.ssl_piece_head = self.ssl_head  # Maintain compatibility
 
             total_ssl_params = sum(sum(p.numel() for p in head.parameters()) for head in self.ssl_heads.values())
