@@ -1,0 +1,32 @@
+description: Benchmark Matrix0 (400 sims/move) vs Stockfish Skill Level 0
+name: Matrix0 vs Weakest Stockfish
+output_dir: benchmarks/results
+performance_config:
+  log_system_load: true
+  sample_interval: 0.1
+  track_cpu: true
+  track_gpu: true
+  track_memory: true
+scenarios:
+- concurrency: 1
+  engine_config:
+    command: stockfish
+    name: stockfish_weakest
+    options:
+      Hash: '512'
+      Skill Level: '0'
+      Threads: '4'
+    working_dir: null
+  max_moves: 150
+  model_checkpoint: checkpoints/model_step_5000.pt
+  name: Stockfish_Weakest_Level0
+  num_games: 3
+  opening_book: null
+  opening_plies: 8
+  random_openings: true
+  time_control: 60+0.6
+statistical_config:
+  calculate_elo: true
+  confidence_level: 0.95
+  elo_k_factor: 32
+  min_games_for_stats: 3

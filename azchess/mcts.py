@@ -161,38 +161,39 @@ class Node:
                 else:
                     idxs = [move_to_index(board, m) for m in legal_moves]
 
-                # Original tensor operations (circular import workaround)
                 sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
                 sel = torch.softmax(sel, dim=-1).numpy()
-                probs = None
+                dist = sel  # probability distribution over legal moves
             else:
                 probs = _ensure_contiguous_tensor(torch.from_numpy(logits), "policy_logits")
                 probs = torch.softmax(probs, dim=-1).numpy()
+                dist = probs  # full-policy distribution
 
-            # Check if policy is too uniform (degenerate case)
-            policy_entropy = -np.sum(probs * np.log(probs + 1e-8))
-            max_entropy = np.log(max(1, len(legal_moves)))
-            entropy_ratio = policy_entropy / max(1e-9, max_entropy)
+            # Check if policy is too uniform (degenerate case) using the active distribution
+            try:
+                policy_entropy = -np.sum(dist * np.log(dist + 1e-8))
+                max_entropy = np.log(max(1, len(legal_moves)))
+                entropy_ratio = policy_entropy / max(1e-9, max_entropy)
+            except Exception:
+                entropy_ratio = 0.0
             
-            # If policy is too uniform, add noise to encourage exploration (quiet log)
+            # If too uniform, add small noise and renormalize on the active distribution
             if entropy_ratio > 0.9:
                 logger.debug(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
-                # Add small random noise to break uniformity
-                noise = np.random.normal(0, 0.1, probs.shape)
-                probs = probs + noise
-                probs = np.maximum(probs, 1e-8)  # Ensure positive
-                probs = probs / probs.sum()  # Renormalize
-                # Ensure probs is contiguous after operations
-                probs = _ensure_contiguous_array(probs, "noisy_probs")
+                noise = np.random.normal(0, 0.1, dist.shape)
+                dist = dist + noise
+                dist = np.maximum(dist, 1e-8)
+                dist = dist / dist.sum()
+                dist = _ensure_contiguous_array(dist, "noisy_dist")
 
             legal_priors: List[float] = []
             for i, move in enumerate(legal_moves):
                 try:
                     if legal_only:
-                        prior = float(sel[i])
+                        prior = float(dist[i])
                     else:
                         idx = encoder.encode_move(board, move) if encoder is not None else move_to_index(board, move)
-                        prior = float(probs[idx])
+                        prior = float(dist[idx])
                     # Ensure prior is valid
                     if np.isnan(prior) or np.isinf(prior) or prior < 0:
                         prior = 0.0
@@ -728,9 +729,25 @@ class MCTS:
                     else:
                         # Direct inference for single-threaded (original implementation)
                         with torch.no_grad():
-                            policy_logits, value_tensor = self.model(torch.from_numpy(encoded).to(self.device))
-                            policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                            value = value_tensor.cpu().numpy().flatten()
+                            # Ensure tensor is properly moved to model device
+                            input_tensor = torch.from_numpy(encoded)
+                            if input_tensor.device != self.device:
+                                input_tensor = input_tensor.to(self.device)
+
+                            try:
+                                policy_logits, value_tensor = self.model(input_tensor)
+                                policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+                                value = value_tensor.cpu().numpy().flatten()
+                            except RuntimeError as e:
+                                if "device" in str(e) and self.device.type == "mps":
+                                    logger.warning(f"MPS device error, falling back to CPU: {e}")
+                                    # Fallback to CPU if MPS fails
+                                    cpu_tensor = input_tensor.to("cpu")
+                                    policy_logits, value_tensor = self.model(cpu_tensor)
+                                    policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+                                    value = value_tensor.cpu().numpy().flatten()
+                                else:
+                                    raise
                     
                     # Comprehensive output validation
                     expected_policy_shape = (encoded.shape[0], 4672)  # Standard policy size

@@ -59,6 +59,7 @@ class UCIEngine:
             if exe_path is None:
                 raise FileNotFoundError(f"Executable not found: {cmd_parts[0]}")
 
+            logger.info(f"Starting Stockfish process: {' '.join(cmd_parts)}")
             self.process = subprocess.Popen(
                 cmd_parts,
                 stdin=subprocess.PIPE,
@@ -69,6 +70,7 @@ class UCIEngine:
                 bufsize=1,
                 universal_newlines=True
             )
+            logger.info(f"Stockfish process started with PID: {self.process.pid}")
 
             self.stdin = self.process.stdin
             self.stdout = self.process.stdout
@@ -120,36 +122,51 @@ class UCIEngine:
     def _send_command(self, command: str):
         """Send a command to the engine."""
         if self.stdin:
-            logger.debug(f"UCI -> {self.name}: {command}")
+            logger.info(f"UCI -> {self.name}: {command}")
             try:
                 self.stdin.write(command + "\n")
                 self.stdin.flush()
+                # Force immediate flush
+                if hasattr(self.stdin, 'flush'):
+                    self.stdin.flush()
+                logger.info(f"Command '{command}' flushed to {self.name}")
             except Exception as e:
                 logger.error(f"Failed to send command '{command}' to {self.name}: {e}")
 
     def _read_response(self, timeout: float = 1.0) -> List[str]:
         """Read response from the engine."""
         if not self.stdout:
+            logger.error("No stdout pipe available")
             return []
 
         lines = []
         start_time = time.time()
+        logger.info(f"Reading response from {self.name} with timeout {timeout}s")
 
         try:
             while time.time() - start_time < timeout:
+                logger.debug(f"Attempting to read line from {self.name}...")
                 line = self.stdout.readline().strip()
                 if line:
-                    logger.debug(f"UCI <- {self.name}: {line}")
+                    logger.info(f"UCI <- {self.name}: {line}")
                     lines.append(line)
 
-                    # Check for specific responses
+                    # Check for specific responses that should end response reading
                     if line == "readyok":
+                        logger.info(f"Received 'readyok' from {self.name}")
+                        break
+                    if line == "uciok":
+                        logger.info(f"Received 'uciok' from {self.name} - UCI initialization complete, ending response reading")
+                        # Add small delay to ensure no more data is coming
+                        time.sleep(0.1)
                         break
                     if "bestmove" in line:
+                        logger.info(f"Received 'bestmove' from {self.name}")
                         break
                     if line.startswith("info") and "score" in line:
                         continue  # Continue reading info lines
                 else:
+                    logger.debug(f"No line received, sleeping...")
                     time.sleep(0.01)  # Small delay to prevent busy waiting
         except Exception as e:
             logger.error(f"Error reading from {self.name}: {e}")
@@ -158,42 +175,61 @@ class UCIEngine:
 
     def _initialize_uci(self) -> bool:
         """Initialize UCI protocol."""
+        logger.info(f"Initializing UCI protocol for {self.name}")
         self._send_command("uci")
 
-        lines = self._read_response(timeout=2.0)
+        logger.info("Waiting for UCI response...")
+        lines = self._read_response(timeout=5.0)  # Increased timeout
+        logger.info(f"Received {len(lines)} lines from UCI command")
+
         uciok = False
 
         for line in lines:
+            logger.info(f"Processing UCI response line: {line}")
             if line.startswith("id name"):
                 self.engine_info["name"] = line[7:].strip()
+                logger.info(f"Engine name: {self.engine_info['name']}")
             elif line.startswith("id author"):
                 self.engine_info["author"] = line[9:].strip()
+                logger.info(f"Engine author: {self.engine_info['author']}")
             elif line.startswith("uciok"):
                 uciok = True
+                logger.info("Received 'uciok' - UCI initialization successful")
 
         if not uciok:
-            logger.error(f"No 'uciok' received from {self.name}")
+            logger.error(f"No 'uciok' received from {self.name} after {len(lines)} lines")
+            logger.error(f"Lines received: {lines}")
             return False
 
+        logger.info(f"UCI initialization completed successfully for {self.name} - returning to start() method")
         return True
 
     def _set_options(self):
         """Set UCI options."""
+        logger.info(f"Setting UCI options for {self.name}: {self.options}")
         for option_name, option_value in self.options.items():
             command = f"setoption name {option_name} value {option_value}"
+            logger.info(f"Setting option: {command}")
             self._send_command(command)
             time.sleep(0.05)  # Small delay between option sets
+        logger.info(f"Finished setting all UCI options for {self.name}")
 
     def _wait_ready(self) -> bool:
         """Wait for engine to be ready."""
+        logger.info(f"Sending 'isready' command to {self.name}")
         self._send_command("isready")
 
-        lines = self._read_response(timeout=5.0)
+        logger.info(f"Waiting for 'readyok' response from {self.name}")
+        lines = self._read_response(timeout=10.0)  # Increased timeout
+        logger.info(f"Received {len(lines)} lines in response to 'isready'")
 
         for line in lines:
+            logger.info(f"Processing ready response: {line}")
             if line == "readyok":
+                logger.info(f"Received 'readyok' from {self.name}")
                 return True
 
+        logger.error(f"No 'readyok' received from {self.name} after {len(lines)} lines")
         return False
 
     def new_game(self):

@@ -1,0 +1,44 @@
+# Matrix0 vs Weakest Stockfish Benchmark
+# Testing Matrix0 with 400 simulations against Stockfish Skill Level 0 (~1200 ELO)
+
+name: "Matrix0 vs Weakest Stockfish"
+description: "Benchmark Matrix0 (400 sims/move) vs Stockfish Skill Level 0"
+
+# Output directory for results
+output_dir: "benchmarks/results"
+
+# UCI Engine configurations
+engines:
+  stockfish_weakest:
+    command: "stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "0"    # Weakest level (~1200 ELO)
+
+# Test scenarios
+scenarios:
+  - name: "Stockfish_Weakest_Level0"
+    engine: "stockfish_weakest"
+    model_checkpoint: "checkpoints/model_step_5000.pt"
+    num_games: 3
+    time_control: "60+0.6"
+    max_moves: 150
+    concurrency: 1
+    random_openings: true
+    opening_plies: 8
+
+# Performance monitoring configuration
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  sample_interval: 0.1
+  log_system_load: true
+
+# Statistical analysis configuration
+statistics:
+  confidence_level: 0.95
+  min_games_for_stats: 3
+  calculate_elo: true
+  elo_k_factor: 32

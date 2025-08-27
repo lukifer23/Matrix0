@@ -1,0 +1,29 @@
+description: Benchmark against stockfish
+name: Command Line Benchmark
+output_dir: benchmarks/results
+performance_config:
+  log_system_load: true
+  sample_interval: 0.1
+  track_cpu: true
+  track_gpu: true
+  track_memory: true
+scenarios:
+- concurrency: 1
+  engine_config:
+    command: stockfish
+    name: stockfish
+    options: {}
+    working_dir: null
+  max_moves: 200
+  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/enhanced_best.pt
+  name: stockfish_benchmark
+  num_games: 3
+  opening_book: null
+  opening_plies: 8
+  random_openings: true
+  time_control: 30+0.3
+statistical_config:
+  calculate_elo: true
+  confidence_level: 0.95
+  elo_k_factor: 32
+  min_games_for_stats: 30

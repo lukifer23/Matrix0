@@ -11,11 +11,18 @@ Usage:
 import argparse
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import chess
+
+import psutil
 import yaml
+
+# Add the project root to Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from azchess.logging_utils import setup_logging
 
@@ -37,6 +44,7 @@ from benchmarks.uci_bridge import EngineManager
 if TORCH_AVAILABLE:
     from azchess.config import Config
     from azchess.model.resnet import PolicyValueNet
+    from azchess.mcts import MCTS, MCTSConfig
 
 
 
@@ -52,12 +60,20 @@ class BenchmarkRunner:
 
         # Load Matrix0 model
         self.model = None
+        self.mcts = None
         if TORCH_AVAILABLE:
-            self.device = "mps" if torch.mps.is_available() else "cpu"
+            if torch.mps.is_available():
+                self.device = torch.device("mps")
+                logger.info("Using MPS (Apple Silicon) device")
+            else:
+                self.device = torch.device("cpu")
+                logger.info("Using CPU device (MPS not available)")
         else:
-            self.device = "cpu"
+            self.device = torch.device("cpu")
+            logger.warning("PyTorch not available, using CPU")
 
         logger.info(f"Initialized benchmark runner with {len(config.scenarios)} scenarios")
+        logger.info(f"System resources - CPU cores: {len(psutil.cpu_percent(percpu=True))} | Memory: {psutil.virtual_memory().total // (1024**3)}GB | Device: {self.device}")
 
     def load_model(self, checkpoint_path: str) -> bool:
         """Load Matrix0 model from checkpoint."""
@@ -77,13 +93,26 @@ class BenchmarkRunner:
             self.model.eval()
 
             # Load checkpoint
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             if 'model_state_dict' in checkpoint:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 self.model.load_state_dict(checkpoint)
 
             logger.info(f"Successfully loaded Matrix0 model ({sum(p.numel() for p in self.model.parameters()):,} parameters)")
+
+            # Initialize MCTS with benchmark-appropriate settings
+            mcts_config = MCTSConfig(
+                num_simulations=200,  # Match config.yaml setting
+                cpuct=2.2,
+                dirichlet_alpha=0.3,
+                dirichlet_frac=0.0,
+                tt_capacity=100000,
+                selection_jitter=0.0
+            )
+
+            self.mcts = MCTS(mcts_config, self.model, self.device)
+            logger.info(f"MCTS initialized with 200 simulations per move on device: {self.device}")
             return True
 
         except Exception as e:
@@ -97,7 +126,8 @@ class BenchmarkRunner:
 
         benchmark_metrics = BenchmarkMetrics(
             benchmark_name=self.config.name,
-            start_time=time.time()
+            start_time=time.time(),
+            end_time=0.0  # Will be updated when benchmark completes
         )
 
         # Run each scenario
@@ -111,9 +141,11 @@ class BenchmarkRunner:
                     continue
 
             # Add and start engine
+            logger.info(f"Adding engine {scenario.engine_config.name}...")
             if not self.engine_manager.add_engine(scenario.engine_config):
                 logger.error(f"Skipping scenario {scenario.name} - engine start failed")
                 continue
+            logger.info(f"Engine {scenario.engine_config.name} started successfully")
 
             # Run scenario
             scenario_metrics = self._run_scenario(scenario)
@@ -131,7 +163,9 @@ class BenchmarkRunner:
         # Export results
         self._export_results(benchmark_metrics)
 
-        logger.info(f"Benchmark completed in {benchmark_metrics.duration:.1f} seconds")
+        logger.info("✅ Benchmark completed!")
+        logger.info(f"⏱️  Total duration: {benchmark_metrics.duration:.1f} seconds")
+        logger.info(f"📊 Total games played: {benchmark_metrics.total_games}")
         return benchmark_metrics
 
     def _run_scenario(self, scenario: TestScenario) -> List[GameMetrics]:
@@ -151,17 +185,20 @@ class BenchmarkRunner:
 
         try:
             for game_id in range(scenario.num_games):
-                logger.info(f"Game {game_id + 1}/{scenario.num_games}")
+                logger.info(f"🎯 Game {game_id + 1}/{scenario.num_games} - Starting...")
+                start_game_time = time.time()
 
                 # Play game
                 game_metrics = self._play_game(scenario, game_id)
                 if game_metrics:
                     games.append(game_metrics)
+                    game_duration = time.time() - start_game_time
+                    logger.info(f"   📈 Score: {game_metrics.result} | Moves: {game_metrics.total_moves}")
 
                 # Progress logging
-                if (game_id + 1) % 10 == 0:
+                if (game_id + 1) % 1 == 0:  # Show progress after every game for debugging
                     completed = len([g for g in games if g.total_moves > 0])
-                    logger.info(f"Progress: {completed}/{game_id + 1} games completed")
+                    logger.info(f"📊 Progress: {completed}/{game_id + 1} games completed")
 
         finally:
             # Stop metrics collection
@@ -181,81 +218,184 @@ class BenchmarkRunner:
     def _play_game(self, scenario: TestScenario, game_id: int) -> Optional[GameMetrics]:
         """Play a single game between Matrix0 and UCI engine."""
         try:
+            logger.info(f"🎮 Initializing game {game_id + 1}")
             engine = self.engine_manager.get_engine(scenario.engine_config.name)
             if not engine:
+                logger.error(f"Engine {scenario.engine_config.name} not available")
                 return None
 
             game_metrics = GameMetrics(
                 game_id=f"{scenario.name}_game_{game_id}",
                 start_time=time.time(),
+                end_time=0.0,  # Will be updated when game ends
+                total_moves=0,  # Will be updated as game progresses
+                result="*",  # Will be updated when game ends
+                winner="unknown",  # Will be updated when game ends
                 white_engine="Matrix0",
                 black_engine=scenario.engine_config.name
             )
 
             # Initialize engines
+            logger.info("Setting up engines...")
             self.model.eval()  # Matrix0 doesn't need new_game
             engine.new_game()
+            logger.info("Engines initialized successfully")
 
             # Set up initial position
+            logger.info("Setting up starting position...")
             current_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             moves = []
-
             game_metrics.move_times = []
+            logger.info("Game setup complete - starting moves")
 
             # Play game
+            termination_reason = ""
             for move_num in range(scenario.max_moves):
+                logger.info(f"Move {move_num + 1}: {'White (Matrix0)' if move_num % 2 == 0 else 'Black (Stockfish)'} to move")
                 start_time = time.time()
 
-                if move_num % 2 == 0:  # White to move (Matrix0)
-                    move, move_time = self._get_matrix0_move(current_fen, moves)
-                else:  # Black to move (UCI engine)
-                    engine.set_position(current_fen, moves)
-                    move, move_time = engine.go(scenario.time_control)
+                try:
+                    # Validate board and detect terminal positions before making a move
+                    board = chess.Board(current_fen)
+                    for move_uci in moves:
+                        try:
+                            board.push_uci(move_uci)
+                        except Exception:
+                            termination_reason = "invalid_move_in_history"
+                            break
+                    if termination_reason:
+                        break
+                    if board.is_game_over():
+                        termination_reason = "terminal_position"
+                        logger.info("Position is terminal before move; ending game.")
+                        break
+                    if move_num % 2 == 0:  # White to move (Matrix0)
+                        logger.info("🤖 Matrix0 thinking...")
+                        move, move_time = self._get_matrix0_move(current_fen, moves)
+                        logger.info(f"🤖 Matrix0 played: {move}")
+                    else:  # Black to move (UCI engine)
+                        logger.info("♟️  Stockfish thinking...")
+                        engine.set_position(current_fen, moves)
+                        move, move_time = engine.go(scenario.time_control)
+                        logger.info(f"♟️  Stockfish played: {move}")
 
-                end_time = time.time()
-                actual_time = end_time - start_time
+                    end_time = time.time()
+                    actual_time = end_time - start_time
 
-                # Record move time
-                game_metrics.move_times.append({
-                    "move_num": move_num + 1,
-                    "player": "white" if move_num % 2 == 0 else "black",
-                    "move": move,
-                    "time": actual_time,
-                    "timestamp": end_time
-                })
+                    # Record move time
+                    game_metrics.move_times.append({
+                        "move_num": move_num + 1,
+                        "player": "white" if move_num % 2 == 0 else "black",
+                        "move": move,
+                        "time": actual_time,
+                        "timestamp": end_time
+                    })
 
-                # Update game state
-                moves.append(move)
+                    # Update game state
+                    moves.append(move)
+                    # Note: FEN updating would require chess library integration
+                    # For now, we'll keep the initial FEN and rely on move list
 
-                # Update timing totals
-                if move_num % 2 == 0:
-                    game_metrics.white_total_time += actual_time
-                else:
-                    game_metrics.black_total_time += actual_time
+                    # Update timing totals
+                    if move_num % 2 == 0:
+                        game_metrics.white_total_time += actual_time
+                    else:
+                        game_metrics.black_total_time += actual_time
 
-                # Check for game end (simplified - just check if we got a valid move)
-                if not move or move == "0000":
+                    # Check for game end or invalid move
+                    if not move or move == "0000":
+                        legal = list(board.legal_moves)
+                        if not legal:
+                            termination_reason = "terminal_position"
+                            logger.info("Game ended - no legal moves (terminal).")
+                        else:
+                            termination_reason = "invalid_move"
+                            logger.info("Game ended - invalid move received")
+                        break
+
+                except Exception as e:
+                    logger.error(f"Error during move {move_num + 1}: {e}")
+                    logger.info("Ending game due to error")
                     break
 
             # Calculate final statistics
             game_metrics.end_time = time.time()
             game_metrics.total_moves = len(moves)
 
-            # Determine result (simplified - assume draw if max moves reached)
+            # Determine result based on termination_reason
             if len(moves) >= scenario.max_moves:
                 game_metrics.result = "1/2-1/2"
                 game_metrics.winner = "draw"
+                logger.info(f"🏁 Game ended by move limit ({scenario.max_moves} moves)")
+            elif termination_reason.startswith("invalid"):
+                # Determine who made the invalid move
+                if len(moves) % 2 == 1:  # White made the last move (even indices)
+                    game_metrics.result = "0-1"
+                    game_metrics.winner = "black"
+                    logger.info(f"🏁 Game ended - White (Matrix0) made invalid move!")
+                else:
+                    game_metrics.result = "1-0"
+                    game_metrics.winner = "white"
+                    logger.info(f"🏁 Game ended - Black ({scenario.engine_config.name}) made invalid move!")
+            elif termination_reason == "terminal_position":
+                # Use chess rules to decide result
+                current_board = chess.Board()
+                for mv in moves:
+                    try:
+                        current_board.push_uci(mv)
+                    except Exception:
+                        break
+                if current_board.is_checkmate():
+                    if current_board.turn:  # Black to move -> white delivered mate
+                        game_metrics.result = "1-0"
+                        game_metrics.winner = "white"
+                    else:
+                        game_metrics.result = "0-1"
+                        game_metrics.winner = "black"
+                elif current_board.is_stalemate() or current_board.is_insufficient_material() or current_board.can_claim_threefold_repetition() or current_board.can_claim_fifty_moves():
+                    game_metrics.result = "1/2-1/2"
+                    game_metrics.winner = "draw"
             else:
-                # This would need proper game result detection
-                game_metrics.result = "1/2-1/2"  # Default to draw
-                game_metrics.winner = "draw"
+                # Check for checkmate or stalemate
+                current_board = chess.Board()
+                for move in moves:
+                    current_board.push_uci(move)
+
+                if current_board.is_checkmate():
+                    if current_board.turn:  # Black to move, so White won
+                        game_metrics.result = "1-0"
+                        game_metrics.winner = "white"
+                        logger.info(f"🏁 Checkmate! White (Matrix0) wins!")
+                    else:
+                        game_metrics.result = "0-1"
+                        game_metrics.winner = "black"
+                        logger.info(f"🏁 Checkmate! Black ({scenario.engine_config.name}) wins!")
+                elif current_board.is_stalemate():
+                    game_metrics.result = "1/2-1/2"
+                    game_metrics.winner = "draw"
+                    logger.info(f"🏁 Stalemate! Game is a draw")
+                else:
+                    game_metrics.result = "1/2-1/2"  # Default to draw
+                    game_metrics.winner = "draw"
+                    logger.info(f"🏁 Game ended - result unclear, recorded as draw")
 
             # Calculate averages
             if game_metrics.total_moves > 0:
                 game_metrics.white_avg_time_per_move = game_metrics.white_total_time / ((game_metrics.total_moves + 1) // 2)
                 game_metrics.black_avg_time_per_move = game_metrics.black_total_time / (game_metrics.total_moves // 2)
 
-            logger.info(f"Game completed: {game_metrics.total_moves} moves, result: {game_metrics.result}")
+            # Clear winner announcement
+            if game_metrics.winner == "white":
+                winner_name = "Matrix0"
+                logger.info(f"🎉 WINNER: Matrix0 (White) defeated {scenario.engine_config.name}!")
+            elif game_metrics.winner == "black":
+                winner_name = scenario.engine_config.name
+                logger.info(f"🎉 WINNER: {scenario.engine_config.name} (Black) defeated Matrix0!")
+            else:
+                winner_name = "Draw"
+                logger.info(f"🤝 DRAW: Matrix0 vs {scenario.engine_config.name}")
+
+            logger.info(f"Game completed: {game_metrics.total_moves} moves, result: {game_metrics.result} ({winner_name})")
             return game_metrics
 
         except Exception as e:
@@ -263,26 +403,59 @@ class BenchmarkRunner:
             return None
 
     def _get_matrix0_move(self, fen: str, moves: List[str]) -> Tuple[str, float]:
-        """Get move from Matrix0 model."""
+        """Get move from Matrix0 model using MCTS with 200 simulations."""
         try:
+            import chess
+            from azchess.encoding import encode_board
+
             start_time = time.time()
+            logger.info(f"🔍 Creating board position from {len(moves)} moves...")
 
-            # This is a simplified implementation
-            # In a real implementation, you'd need to:
-            # 1. Convert FEN to model input format
-            # 2. Run model inference
-            # 3. Convert model output to UCI move format
-            # 4. Apply time controls
+            # Create chess board from FEN and moves
+            board = chess.Board(fen)
+            for move_uci in moves:
+                board.push_uci(move_uci)
 
-            # For now, return a dummy move
-            move = "e2e4"  # Example move
-            move_time = time.time() - start_time
+            mcts_start = time.time()
 
-            return move, move_time
+            try:
+                # Run MCTS with 200 simulations per move for Matrix0
+                num_simulations = 200  # Target: 200 sims per move
+                logger.info(f"🧠 Running MCTS with {num_simulations} simulations...")
+                # Ensure MCTS uses the same device as the model
+                visits, policy, value = self.mcts.run(board, num_simulations=num_simulations)
+
+                mcts_time = time.time() - mcts_start
+                logger.info(f"🧠 MCTS completed in {mcts_time:.1f}s ({num_simulations} simulations)")
+            except Exception as e:
+                logger.error(f"MCTS failed after {time.time() - mcts_start:.1f}s: {e}")
+                raise
+
+            # Get best move from visit counts
+            if visits:
+                best_move = max(visits.items(), key=lambda x: x[1])[0]
+                move_uci = best_move.uci()
+                move_time = time.time() - start_time
+
+                logger.debug(f"Matrix0 move: {move_uci} in {move_time:.3f}s")
+                return move_uci, move_time
+            else:
+                logger.warning("No moves found from MCTS, using fallback")
+                # Fallback: random legal move to avoid deterministic blunders
+                legal_moves = list(board.legal_moves)
+                if legal_moves:
+                    import random
+                    fallback_move = random.choice(legal_moves)
+                    move_uci = fallback_move.uci()
+                    move_time = time.time() - start_time
+                    return move_uci, move_time
+                else:
+                    logger.error("No legal moves available (terminal position)")
+                    return "", 0.0
 
         except Exception as e:
             logger.error(f"Error getting Matrix0 move: {e}")
-            return "0000", 0.0
+            return "", 0.0
 
     def _calculate_aggregate_stats(self, benchmark_metrics: BenchmarkMetrics):
         """Calculate aggregate statistics for the benchmark."""
@@ -452,10 +625,26 @@ def main():
         print(f"White wins: {results.white_wins}")
         print(f"Black wins: {results.black_wins}")
         print(f"Draws: {results.draws}")
-        print(".3f")
-        print(".2f")
-        print(".3f")
-        print(".1f")
+        # Optional: print averages if available
+        if results.total_games > 0:
+            print(f"Avg duration: {results.avg_game_duration:.1f}s")
+            print(f"Avg moves: {results.avg_moves_per_game:.1f}")
+            if results.avg_time_per_move:
+                print(f"Avg time/move: {results.avg_time_per_move:.3f}s")
+            # Elo estimate (low-N): convert score to Elo diff and print a 95% CI (normal approx)
+            try:
+                import math
+                score = (results.white_wins + 0.5 * results.draws) / float(results.total_games)
+                s = min(max(score, 1e-6), 1.0 - 1e-6)
+                elo = 400.0 * math.log10(s / (1.0 - s))
+                se = math.sqrt(max(s * (1.0 - s) / float(results.total_games), 1e-12))
+                lo_s = min(max(s - 1.96 * se, 1e-6), 1.0 - 1e-6)
+                hi_s = min(max(s + 1.96 * se, 1e-6), 1.0 - 1e-6)
+                elo_lo = 400.0 * math.log10(lo_s / (1.0 - lo_s))
+                elo_hi = 400.0 * math.log10(hi_s / (1.0 - hi_s))
+                print(f"Elo estimate (low-N): {elo:.0f} [{elo_lo:.0f}, {elo_hi:.0f}]")
+            except Exception:
+                pass
 
         # Clean up
         runner.engine_manager.stop_all()

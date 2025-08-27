@@ -382,9 +382,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Do not force model parameter dtypes; keep params/buffers in fp32 for stability on MPS
 
     # Prepare input dtype for forward to match parameter dtype on MPS
-    s_forward = s
-    if use_autocast and device_type == "mps" and s.dtype != _amp_dtype:
-        s_forward = s.to(dtype=_amp_dtype)
+    # On MPS, keep FP32 inputs to match FP32 weights; avoid mixed-type conv errors
+    s_forward = s if device_type == "mps" else s
+    if use_autocast and device_type == "cuda" and s_forward.dtype != _amp_dtype:
+        s_forward = s_forward.to(dtype=_amp_dtype)
 
     # CRITICAL: Run model forward with its internal fp32 guards; keep outer autocast minimal
     # Disable outer autocast on MPS to avoid dtype issues inside model guards

@@ -1,0 +1,25 @@
+{
+  "total_games": 3,
+  "total_moves": 94,
+  "total_duration": 94.90010976791382,
+  "avg_game_duration": 31.63336992263794,
+  "avg_moves_per_game": 31.333333333333332,
+  "results": {
+    "white_wins": 3,
+    "black_wins": 0,
+    "draws": 0,
+    "win_rate": 1.0,
+    "draw_rate": 0.0
+  },
+  "timing": {
+    "avg_time_per_move": 1.0088362947423408,
+    "min_time_per_move": 0.1689767837524414,
+    "max_time_per_move": 2.535006046295166,
+    "time_variance": 0.2123534786226699
+  },
+  "resources": {
+    "avg_cpu_usage": 21.23874862788145,
+    "avg_memory_usage": 67.22766190998904,
+    "peak_memory_gb": 9.4539794921875
+  }
+}

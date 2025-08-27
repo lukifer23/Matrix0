@@ -71,7 +71,7 @@ class EnhancedEvaluator:
         # Results tracking
         self.results = []
         self.current_game = 0
-        self.total_games = 9  # 3 games × 3 simulation levels
+        self.total_games = 3  # default: play 3 games total
         
         # Create output directory
         self.output_dir = Path("data/eval_games")
@@ -144,34 +144,20 @@ class EnhancedEvaluator:
         mcfg_dict = dict(self.cfg.mcts())
         mcfg_dict.update({
             "num_simulations": num_simulations,
-            "selection_jitter": float(self.cfg.selfplay().get("selection_jitter", 0.0)),
+            "selection_jitter": 0.0,
             "batch_size": 1,
-            "fpu": float(self.cfg.mcts().get("fpu", 0.5)),
+            # Stronger decisive defaults; can be overridden by attributes
+            "cpuct": float(getattr(self, 'cpuct', 1.0)),
+            "fpu": float(getattr(self, 'fpu', 0.1)),
             "parent_q_init": bool(self.cfg.mcts().get("parent_q_init", True)),
             "tt_cleanup_frequency": int(self.cfg.mcts().get("tt_cleanup_frequency", 500)),
-            "draw_penalty": float(self.cfg.mcts().get("draw_penalty", -0.1)),
+            "draw_penalty": float(getattr(self, 'draw_penalty', -2.0)),
             # Ensure MCTS uses side-to-move value (flip from white when needed)
             "value_from_white": True,
             # Disable Dirichlet noise during evaluation for decisiveness
             "dirichlet_frac": 0.0,
             "dirichlet_plies": 0,
         })
-        
-        # Add aggressive settings to force decisive games
-        if temperature > 1.0:  # Fast/Medium configs
-            mcfg_dict.update({
-                "cpuct": 1.2,  # Much lower exploration for decisive play
-                "fpu": 0.2,    # Lower first play urgency
-                "draw_penalty": -1.0,  # Very strong draw penalty
-                "selection_jitter": 0.2,  # More randomness
-            })
-        else:  # Precise config
-            mcfg_dict.update({
-                "cpuct": 1.5,  # Lower exploration
-                "fpu": 0.3,
-                "draw_penalty": -0.8,  # Strong draw penalty
-                "selection_jitter": 0.1,
-            })
         
         mcfg = MCTSConfig.from_dict(mcfg_dict)
         self.logger.info(f"MCTS config created: {mcfg}")
@@ -252,6 +238,11 @@ class EnhancedEvaluator:
                 "Calculating..."
             )
         
+        # Internal flags for in-game tiebreak escalation
+        tiebreak_after = int(getattr(self, 'tiebreak_after_plies', 120))
+        tiebreak_sims = int(getattr(self, 'tiebreak_sims', 1200))
+        tiebreak_active = False
+
         while move_count < max_moves and not board.is_game_over():
             move_start = time.time()
             
@@ -298,8 +289,21 @@ class EnhancedEvaluator:
                 move = legal_moves[move_idx]
                 self.logger.info(f"Move {move_count + 1}: Sampled move {move} (idx {move_idx})")
             else:
-                # Greedy selection
-                move = max(visits.keys(), key=visits.get)
+                # Greedy selection (with anti-oscillation safeguard)
+                sorted_moves = sorted(visits.items(), key=lambda kv: kv[1], reverse=True)
+                move = sorted_moves[0][0]
+                try:
+                    anti_osc = bool(getattr(self, 'anti_oscillation', True))
+                except Exception:
+                    anti_osc = True
+                if anti_osc and moves:
+                    # Avoid immediate back-and-forth toggling if possible
+                    last_mv = chess.Move.from_uci(moves[-1])
+                    if move.to_square == last_mv.from_square and move.from_square == last_mv.to_square:
+                        if len(sorted_moves) > 1:
+                            alt_move = sorted_moves[1][0]
+                            self.logger.info(f"Move {move_count + 1}: Avoiding oscillation {move}, choosing {alt_move} instead")
+                            move = alt_move
                 self.logger.info(f"Move {move_count + 1}: Greedy move {move}")
             
             # Record move choice for variance analysis
@@ -315,9 +319,11 @@ class EnhancedEvaluator:
             self.logger.debug(f"Move {move_count + 1}: Recorded choice for {model_key} - move: {move}, visits: {visits.get(move, 0)}, value: {vroot:.3f}")
             
             # Check for resignation based on position evaluation - much stricter now
-            if move_count >= 60:  # Require 60+ plies before resignation
-                # Slightly more permissive resign threshold for decisive eval
-                resign_threshold = -0.80 if temp_now > 0.9 else -0.85
+            if move_count >= getattr(self, 'resign_plies', 60):  # Allow CLI override
+                # Use CLI-provided threshold if set; else temperature-based default
+                resign_threshold = getattr(self, 'resign_threshold', None)
+                if resign_threshold is None:
+                    resign_threshold = -0.80 if temp_now > 0.9 else -0.85
                 if vroot < resign_threshold:
                     self.logger.info(f"Move {move_count + 1}: {model_name} resigning due to truly hopeless position (value: {vroot:.3f} < {resign_threshold})")
                     # Determine winner based on whose turn it is
@@ -365,6 +371,22 @@ class EnhancedEvaluator:
                 self.logger.info(f"Move {move_count + 1}: Draw adjudicated")
                 break
             
+            # Escalate to tiebreak settings mid-game to avoid cap draws
+            if (not tiebreak_active) and move_count >= tiebreak_after:
+                self.logger.info(f"Escalating to tiebreak mode at ply {move_count}")
+                # Tighten resign and make search more decisive
+                setattr(self, 'resign_plies', min(move_count, int(getattr(self, 'resign_plies', 60))))
+                setattr(self, 'resign_threshold', float(getattr(self, 'tiebreak_resign_threshold', -0.60)))
+                # Override decisive search parameters
+                setattr(self, 'cpuct', float(getattr(self, 'tiebreak_cpuct', 0.9)))
+                setattr(self, 'fpu', float(getattr(self, 'tiebreak_fpu', 0.1)))
+                setattr(self, 'draw_penalty', float(getattr(self, 'tiebreak_draw_penalty', -2.5)))
+                # Recreate MCTS with higher sims for both sides
+                tcfg = self._create_mcts_config(tiebreak_sims, 0.0)
+                mcts_a = MCTS(tcfg, self.model_a, self.device)
+                mcts_b = MCTS(tcfg, self.model_b, self.device)
+                tiebreak_active = True
+
             move_count += 1
             
         # Determine result
@@ -598,11 +620,9 @@ class EnhancedEvaluator:
         self.console.print(f"B: {self.label_b}")
         self.logger.info("Starting enhanced evaluation")
         
-        # Evaluation parameters - more aggressive settings for decisive games
+        # Evaluation parameters - single decisive setting, adjustable via --sims
         eval_configs = [
-            {"name": "Fast", "sims": 100, "temp": 1.5, "description": "Aggressive play with good moves"},
-            {"name": "Medium", "sims": 250, "temp": 0.9, "description": "Balanced with some aggression"},
-            {"name": "Precise", "sims": 500, "temp": 0.3, "description": "Strong, competitive play"}
+            {"name": "Decisive", "sims": int(getattr(self, 'sims', 600)), "temp": float(getattr(self, 'opening_temp', 0.2))}
         ]
         
         # Create initial TUI table
@@ -647,6 +667,8 @@ class EnhancedEvaluator:
             
             # For each opening FEN, play a color-swapped pair
             for fen in opening_fens:
+                if self.current_game >= self.total_games:
+                    break
                 # Game 1: A as White, B as Black
                 self.current_game += 1
                 self.logger.info(f"Starting game {self.current_game} ({config['name']} | A=White, B=Black)")
@@ -726,6 +748,9 @@ class EnhancedEvaluator:
                     raise
 
                 # Game 2: B as White, A as Black (swap)
+                if self.current_game >= self.total_games:
+                    self.logger.info("Reached total_games limit; stopping further games.")
+                    break
                 self.current_game += 1
                 self.logger.info(f"Starting game {self.current_game} ({config['name']} | B=White, A=Black)")
                 try:
@@ -791,6 +816,10 @@ class EnhancedEvaluator:
                     self.logger.error(f"Game {self.current_game} failed: {e}", exc_info=True)
                     self.console.print(f"❌ Game {self.current_game} failed: {e}", style="red")
                     raise
+                
+                # Optional third game (tiebreak) if requested by --games
+                if self.current_game >= self.total_games:
+                    break
         
         # Final summary
         self._print_final_summary()
@@ -880,9 +909,17 @@ def main():
     parser.add_argument("--label-b", default="", help="Label for Model B (shown as Black)")
     parser.add_argument("--opening-fens", default="", help="Path to file containing opening FENs (one per line). Use 'startpos' for default.")
     parser.add_argument("--opening-plies", type=int, default=10, help="Number of plies to apply opening temperature")
-    parser.add_argument("--opening-temp", type=float, default=1.0, help="Temperature during opening plies")
-    parser.add_argument("--mid-temp", type=float, default=0.1, help="Temperature after opening plies")
+    parser.add_argument("--opening-temp", type=float, default=0.2, help="Temperature during opening plies (lower for decisive play)")
+    parser.add_argument("--mid-temp", type=float, default=0.0, help="Temperature after opening plies (greedy)")
     parser.add_argument("--max-moves", type=int, default=None, help="Override maximum moves before forced draw (defaults to config eval.max_moves)")
+    parser.add_argument("--games", type=int, default=3, help="Total number of games to play (default 3)")
+    parser.add_argument("--sims", type=int, default=600, help="Simulations per move (default 600 for decisiveness)")
+    parser.add_argument("--resign-plies", type=int, default=50, help="Minimum plies before allowing resignation (default 50)")
+    parser.add_argument("--resign-threshold", type=float, default=-0.70, help="Root-Q threshold to trigger resignation (default -0.70)")
+    parser.add_argument("--tiebreak-after-plies", type=int, default=120, help="Escalate to tiebreak mode after this many plies")
+    parser.add_argument("--tiebreak-sims", type=int, default=1200, help="Simulations per move during tiebreak mode")
+    parser.add_argument("--tiebreak-resign-threshold", type=float, default=-0.60, help="Resign threshold during tiebreak mode")
+    parser.add_argument("--anti-oscillation", action="store_true", help="Avoid immediate back-and-forth moves when greedy")
     
     args = parser.parse_args()
     
@@ -896,6 +933,15 @@ def main():
     setattr(evaluator, 'mid_temp', float(args.mid_temp))
     if args.max_moves:
         setattr(evaluator, 'max_moves', int(args.max_moves))
+    # Attach new decisive-play controls
+    setattr(evaluator, 'total_games', int(max(1, args.games)))
+    setattr(evaluator, 'sims', int(max(50, args.sims)))
+    setattr(evaluator, 'resign_plies', int(max(0, args.resign_plies)))
+    setattr(evaluator, 'resign_threshold', float(args.resign_threshold))
+    setattr(evaluator, 'tiebreak_after_plies', int(max(0, args.tiebreak_after_plies)))
+    setattr(evaluator, 'tiebreak_sims', int(max(100, args.tiebreak_sims)))
+    setattr(evaluator, 'tiebreak_resign_threshold', float(args.tiebreak_resign_threshold))
+    setattr(evaluator, 'anti_oscillation', bool(args.anti_oscillation))
     evaluator.run_evaluation()
 
 

@@ -6,6 +6,7 @@ model:
   planes: 19                       # Input planes for chess board
   channels: 320                    # Number of channels in residual blocks (32M model)
   blocks: 24                       # Number of residual blocks (32M model)
+  attention: true                  # Enable attention mechanisms
   attention_heads: 20              # Number of attention heads (32M model)
   policy_size: 4672                # Policy output size
   norm: "group"                    # GroupNorm instead of BatchNorm
@@ -21,13 +22,13 @@ model:
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
-  num_workers: 3                   # Three workers for generation
-  batch_size: 128                  # Larger batches for efficiency
-  max_games: 750                   # Generate 750 games per cycle
+  num_workers: 4                   # TEST RUN: 4 workers for generation
+  batch_size: 256                  # Increased from 128 for better efficiency
+  max_games: 20                    # TEST RUN: 20 games total
   max_game_len: 160                # Longer games to reduce early draws
   min_resign_plies: 50             # Avoid premature resignations
   resign_threshold: -0.98          # Stricter resignation
-  num_simulations: 160             # Balanced quality vs speed on MPS
+  num_simulations: 200             # Increased from 160 for better quality
   draw:
     min_plies: 60                  # Require more play before draw checks
     window: 16                     # Wider window
@@ -35,18 +36,18 @@ selfplay:
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
-  batch_size: 128                  # Reduced for MPS memory headroom
+  batch_size: 256                  # Increased from 128 for better MPS utilization
   epochs: 1                        # Single epoch per cycle; repeat cycles
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
   checkpoint: "enhanced_best.pt"   # Promote trained checkpoint as base
-  gradient_accumulation_steps: 1   # Reduce graph lifetime on MPS
+  gradient_accumulation_steps: 1   # Keep simple for MPS compatibility
   grad_clip_norm: 0.5              # Stable
   ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
   ssl_warmup_steps: 1500           # Longer warmup for smoother coupling
   ssl_target_weight: 1.0           # Normalize SSL magnitude
-  ssl_chunk_size: 16               # Prevent OOM
+  ssl_chunk_size: 32               # Increased from 16 with larger batches
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps
@@ -63,28 +64,28 @@ training:
   huber_delta: 1.0                 # Huber threshold
 
 orchestrator:
-  initial_games: 750               # 750 games per cycle
-  subsequent_games: 750            # Force self-play each cycle
-  games_per_cycle: 750             # Single large cycle
+  initial_games: 20                # TEST RUN: 20 games total
+  subsequent_games: 20             # Force self-play each cycle
+  games_per_cycle: 20              # TEST RUN: Small cycle
   train_epochs_per_cycle: 1        # One epoch per cycle
-  eval_games_per_cycle: 12         # Faster cadence
+  eval_games_per_cycle: 0          # TEST RUN: Skip evaluation
   keep_top_k: 1                    # Keep only best model
   continuous_mode: false           # Single run mode
-  checkpoint_override: "enhanced_best.pt"  # Promote trained checkpoint
+  checkpoint_override: "v2_base.pt" # Use new attention-enabled checkpoint
   tui: "table"                     # Use table display mode
   ui:
     compact: true                  # Child processes log to files; console stays clean
 
 eval:
   games: 4                         # Light orchestrator eval; use enhanced_eval for deep
-  num_simulations: 800             # Production simulations
+  num_simulations: 200             # Reduced from 800 for faster evaluation cycles
   max_moves: 160                   # Avoid early auto-draws
   external_engines: ["stockfish"]  # Compare against Stockfish
   tournament_rounds: 4             # More tournament rounds
   strength_estimation_games: 4     # More strength estimation games
 
 mcts:
-  num_simulations: 96               # Default; self-play overrides to 160
+  num_simulations: 200              # Increased from 96 for better accuracy
   cpuct: 2.2
   cpuct_start: 2.8
   cpuct_end: 1.8
@@ -98,7 +99,7 @@ mcts:
   tt_capacity: 1000000
   tt_cleanup_frequency: 500
   tt_memory_limit_mb: 1024
-  batch_size: 8                     # Smaller per-worker inference batches on MPS
+  batch_size: 16                    # Increased from 8 for better MPS utilization
   encoder_cache: true
   legal_softmax: true               # Softmax over legal moves only for priors
   max_children: 0
@@ -112,9 +113,9 @@ mcts:
   memory_cleanup_threshold_mb: 512
   max_tree_nodes: 70000
   # FIXED: Parallel MCTS with robust error handling and deadlock prevention
-  num_threads: 2                   # Fewer threads reduces contention on MPS
+  num_threads: 4                   # Increased from 2 for better CPU utilization
   parallel_simulations: true
-  simulation_batch_size: 8         # Smaller sim batches to keep latency under timeouts
+  simulation_batch_size: 16        # Increased from 8 for better throughput
   tree_parallelism: true
 
 presets:

@@ -1,0 +1,51 @@
+name: "Model Step 5000 Benchmark"
+description: "Benchmark model_step_5000.pt against Stockfish at different skill levels (250-400 sims per move)"
+
+engines:
+  stockfish_weakest:
+    command: "stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "0"    # Weakest level (~1200 ELO)
+
+  stockfish_club:
+    command: "stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "4"    # Club level (~1600 ELO)
+
+scenarios:
+  - name: "Stockfish_Weakest_Level0"
+    engine: "stockfish_weakest"
+    model_checkpoint: "checkpoints/model_step_5000.pt"
+    num_games: 3
+    time_control: "60+0.6"
+    concurrency: 1
+    max_moves: 150
+    random_openings: true
+    opening_plies: 8
+
+  - name: "Stockfish_Club_Level4"
+    engine: "stockfish_club"
+    model_checkpoint: "checkpoints/model_step_5000.pt"
+    num_games: 3
+    time_control: "60+0.6"
+    concurrency: 1
+    max_moves: 150
+    random_openings: true
+    opening_plies: 8
+
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  sample_interval: 0.5
+  log_system_load: true
+
+statistics:
+  confidence_level: 0.95
+  min_games_for_stats: 3
+  calculate_elo: true
+  elo_k_factor: 32

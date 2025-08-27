@@ -1,0 +1,27 @@
+name: Command Line Benchmark
+description: Matrix0 vs Stockfish skill 0 (25 games quick test)
+output_dir: benchmarks/results
+
+engines:
+  stockfish:
+    command: stockfish
+    options:
+      Threads: "1"
+      Hash: "256"
+      Skill Level: "0"
+
+scenarios:
+  - name: Stockfish_skill0_quick
+    engine: stockfish
+    model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_5000.pt
+    num_games: 25
+    time_control: "30+0.3"
+    max_moves: 200
+    opening_plies: 8
+
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  sample_interval: 0.1
+

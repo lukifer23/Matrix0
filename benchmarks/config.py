@@ -5,11 +5,14 @@ Handles UCI engine configurations, test scenarios, and performance settings.
 """
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -139,11 +142,8 @@ class ConfigManager:
     def save_config(config: BenchmarkConfig, output_path: str):
         """Save benchmark configuration to YAML file."""
         data = asdict(config)
-
-        # Convert complex objects to dictionaries
-        for scenario in data['scenarios']:
-            scenario['engine_config'] = asdict(scenario['engine_config'])
-        data['performance_config'] = asdict(data['performance_config'])
+        # asdict() already recursively converts nested dataclasses (scenarios, engine_config,
+        # performance_config). Avoid re-converting to prevent warnings and preserve structure.
 
         with open(output_path, 'w') as f:
             yaml.dump(data, f, default_flow_style=False, indent=2)
