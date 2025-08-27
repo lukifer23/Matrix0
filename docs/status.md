@@ -38,6 +38,18 @@
    - **Corresponding files/modules**: `tools/generate_stockfish_data.py`, `docs/configuration.md`
    - **Status**: ✅ Integrated — `training.extra_replay_dirs: [data/stockfish_games]`
 
+### 6. Core Module Updates (Aug 27, 2025)
+   - **Priority**: High
+   - **Benefit**: Stability, correctness, and performance improvements in core loop
+   - **Corresponding files/modules**: `azchess/data_manager.py`, `azchess/logging_utils.py`, `azchess/mcts.py`, `azchess/model/resnet.py`, `azchess/ssl_algorithms.py`, `azchess/training/train.py`
+   - **Status**: ✅ Landed
+     - DataManager: normalized `legal_mask` shape/dtype; ensures target move never masked
+     - Logging: JSONLHandler rotation (max_bytes/backup_count) for `structured.jsonl`
+     - MCTS: caches per-child `move_idx`; safer policy extraction; robustness tweaks
+     - Model: DropPath made per-sample and expectation-preserving; shared feats for SSL heads
+     - SSL Algos: vectorized square-control with blocking-aware rays; faster pin scan
+     - Training: SSL targets sourced via `model.create_ssl_targets`; contiguous-output checks; legal-mask aware policy masking
+
 ## 🎉 Major Milestones Completed (August 27, 2025)
 
 ### 🔥 Complete SSL Integration ✅ **ACHIEVED**

@@ -270,7 +270,7 @@ class ChessSSLAlgorithms:
         black_kings = pieces[:, 11, :, :]  # Black king
 
         # Identify potential pinning situations (simplified)
-        for b in range(min(batch_size, 16)):  # Limit batch size for memory
+        for b in range(batch_size):
             stm = side_to_move[b].item()
 
             # Get king position
@@ -293,10 +293,11 @@ class ChessSSLAlgorithms:
             directions = [(-1, 0), (1, 0), (0, -1), (0, 1),
                          (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
-            for dr, dc in directions:
-                # Look for enemy sliding pieces in this direction
-                enemy_sliders = enemy_pieces[2:5, :, :].sum(dim=0)  # Bishops, rooks, queens
+            # Precompute enemy sliders map once (bishops, rooks, queens)
+            enemy_sliders = enemy_pieces[2:5, :, :].sum(dim=0)  # (8,8)
 
+            for dr, dc in directions:
+                
                 # Check if there's an enemy slider in this direction
                 found_slider = False
                 slider_pos = None
@@ -419,128 +420,82 @@ class ChessSSLAlgorithms:
 
     def calculate_square_control_batch(self, board_states: torch.Tensor) -> torch.Tensor:
         """
-        Calculate square control using piece attack patterns.
+        Vectorized square control using piece attack patterns with blocking-aware ray casts.
 
-        Square control indicates which player controls each square based on piece attacks.
-
-        Args:
-            board_states: (B, 19, 8, 8) tensor of board states
-
-        Returns:
-            control_targets: (B, 8, 8) tensor where 1.0 = white controls, -1.0 = black controls, 0.0 = contested/neutral
+        Returns a float map in {-1.0, 0.0, 1.0}: -1=black controls, 1=white controls, 0=neutral/contested.
         """
-        batch_size = board_states.size(0)
         device = board_states.device
+        B = board_states.size(0)
+        pieces = board_states[:, :12, :, :]  # (B,12,8,8)
+        occ = (pieces.sum(dim=1) > 0)
 
-        control_map = torch.zeros(batch_size, 8, 8, device=device, dtype=torch.float32)
+        def _shift(mask: torch.Tensor, dr: int, dc: int) -> torch.Tensor:
+            s = torch.roll(mask, shifts=(dr, dc), dims=(1, 2))
+            if dr > 0:
+                s[:, :dr, :] = 0
+            elif dr < 0:
+                s[:, dr:, :] = 0
+            if dc > 0:
+                s[:, :, :dc] = 0
+            elif dc < 0:
+                s[:, :, dc:] = 0
+            return s
 
-        # Extract piece positions
-        pieces = board_states[:, :12, :, :]
+        white_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
+        black_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
 
-        for b in range(min(batch_size, 32)):  # Limit for memory efficiency
-            # Initialize attack counts for each square
-            white_attacks = torch.zeros(8, 8, device=device)
-            black_attacks = torch.zeros(8, 8, device=device)
+        # Pawns
+        wp = pieces[:, 0]
+        bp = pieces[:, 6]
+        white_att += _shift(wp, +1, -1)
+        white_att += _shift(wp, +1, +1)
+        black_att += _shift(bp, -1, -1)
+        black_att += _shift(bp, -1, +1)
 
-            # Check each piece for its attacks
-            for r in range(8):
-                for c in range(8):
-                    # White pieces (planes 0-5)
-                    if pieces[b, 0, r, c] > 0:  # White pawn
-                        # Pawns attack diagonally forward
-                        if r < 7:
-                            if c > 0: white_attacks[r+1, c-1] += 1  # Left diagonal
-                            if c < 7: white_attacks[r+1, c+1] += 1  # Right diagonal
+        # Knights
+        wn = pieces[:, 1]
+        bn = pieces[:, 7]
+        for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+            white_att += _shift(wn, dr, dc)
+            black_att += _shift(bn, dr, dc)
 
-                    elif pieces[b, 1, r, c] > 0:  # White knight
-                        # Knight attacks (L-shapes)
-                        for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < 8 and 0 <= nc < 8:
-                                white_attacks[nr, nc] += 1
+        # Kings
+        wk = pieces[:, 5]
+        bk = pieces[:, 11]
+        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+            white_att += _shift(wk, dr, dc)
+            black_att += _shift(bk, dr, dc)
 
-                    elif pieces[b, 2, r, c] > 0 or pieces[b, 4, r, c] > 0:  # White bishop or queen (diagonal)
-                        # Diagonal attacks
-                        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                            for step in range(1, 8):
-                                nr, nc = r + dr * step, c + dc * step
-                                if not (0 <= nr < 8 and 0 <= nc < 8):
-                                    break
-                                white_attacks[nr, nc] += 1
-                                if pieces[b, :, nr, nc].sum() > 0:  # Any piece blocks
-                                    break
+        # Sliding pieces with blocking-aware rays
+        wb = pieces[:, 2]
+        wr = pieces[:, 3]
+        wq = pieces[:, 4]
+        bb = pieces[:, 8]
+        br = pieces[:, 9]
+        bq = pieces[:, 10]
 
-                    elif pieces[b, 3, r, c] > 0 or pieces[b, 4, r, c] > 0:  # White rook or queen (orthogonal)
-                        # Orthogonal attacks
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            for step in range(1, 8):
-                                nr, nc = r + dr * step, c + dc * step
-                                if not (0 <= nr < 8 and 0 <= nc < 8):
-                                    break
-                                white_attacks[nr, nc] += 1
-                                if pieces[b, :, nr, nc].sum() > 0:  # Any piece blocks
-                                    break
+        diag_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        ortho_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-                    elif pieces[b, 5, r, c] > 0:  # White king
-                        # King attacks adjacent squares
-                        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < 8 and 0 <= nc < 8:
-                                white_attacks[nr, nc] += 1
+        def _accumulate_rays(src: torch.Tensor, directions) -> torch.Tensor:
+            attacks = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
+            for dr, dc in directions:
+                frontier = src.clone().to(torch.float32)
+                for _ in range(1, 8):
+                    frontier = _shift(frontier, dr, dc)
+                    attacks += frontier
+                    # Stop propagation beyond any occupied square
+                    frontier = frontier * (~occ).to(torch.float32)
+            return attacks
 
-                    # Black pieces (planes 6-11)
-                    elif pieces[b, 6, r, c] > 0:  # Black pawn
-                        # Pawns attack diagonally backward
-                        if r > 0:
-                            if c > 0: black_attacks[r-1, c-1] += 1  # Left diagonal
-                            if c < 7: black_attacks[r-1, c+1] += 1  # Right diagonal
+        white_att += _accumulate_rays(wb + wq, diag_dirs)
+        white_att += _accumulate_rays(wr + wq, ortho_dirs)
+        black_att += _accumulate_rays(bb + bq, diag_dirs)
+        black_att += _accumulate_rays(br + bq, ortho_dirs)
 
-                    elif pieces[b, 7, r, c] > 0:  # Black knight
-                        # Knight attacks (L-shapes)
-                        for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < 8 and 0 <= nc < 8:
-                                black_attacks[nr, nc] += 1
-
-                    elif pieces[b, 8, r, c] > 0 or pieces[b, 10, r, c] > 0:  # Black bishop or queen (diagonal)
-                        # Diagonal attacks
-                        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                            for step in range(1, 8):
-                                nr, nc = r + dr * step, c + dc * step
-                                if not (0 <= nr < 8 and 0 <= nc < 8):
-                                    break
-                                black_attacks[nr, nc] += 1
-                                if pieces[b, :, nr, nc].sum() > 0:  # Any piece blocks
-                                    break
-
-                    elif pieces[b, 9, r, c] > 0 or pieces[b, 10, r, c] > 0:  # Black rook or queen (orthogonal)
-                        # Orthogonal attacks
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            for step in range(1, 8):
-                                nr, nc = r + dr * step, c + dc * step
-                                if not (0 <= nr < 8 and 0 <= nc < 8):
-                                    break
-                                black_attacks[nr, nc] += 1
-                                if pieces[b, :, nr, nc].sum() > 0:  # Any piece blocks
-                                    break
-
-                    elif pieces[b, 11, r, c] > 0:  # Black king
-                        # King attacks adjacent squares
-                        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < 8 and 0 <= nc < 8:
-                                black_attacks[nr, nc] += 1
-
-            # Determine control based on attack difference
-            attack_diff = white_attacks - black_attacks
-
-            # Set control values
-            control_map[b, :, :] = torch.where(
-                attack_diff > 0, 1.0,  # White controls
-                torch.where(attack_diff < 0, -1.0, 0.0)  # Black controls or contested
-            )
-
-        return control_map
+        diff = white_att - black_att
+        control = torch.sign(diff).to(torch.float32)
+        return control
 
     def create_enhanced_ssl_targets(self, board_states: torch.Tensor) -> Dict[str, torch.Tensor]:
         """

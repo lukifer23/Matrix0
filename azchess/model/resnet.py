@@ -65,19 +65,21 @@ class ResidualBlock(nn.Module):
             if w.dtype != out.dtype:
                 w = w.to(dtype=out.dtype)
             out = out * w
-        out = out + x
+
+        # Standard DropPath: drop residual branch only and scale kept paths
+        res = out
+        if self.droppath > 0.0 and self.training:
+            keep_prob = 1.0 - float(self.droppath)
+            b = res.size(0)
+            # Per-sample mask with matching dtype/device (MPS-safe)
+            mask = torch.rand(b, 1, 1, 1, device=res.device, dtype=res.dtype) < res.new_tensor(keep_prob)
+            mask = mask.to(dtype=res.dtype)
+            res = res * mask / res.new_tensor(keep_prob)
+
+        out = x + res
         if not self.use_preact:
             out = self.activation(out)
-        
-        # Apply DropPath regularization
-        if self.droppath > 0.0 and self.training:
-            # Use tensor random with matching dtype/device to avoid type promotion on MPS
-            if torch.rand((), device=out.device, dtype=out.dtype) < out.new_tensor(self.droppath):
-                return x  # Drop the entire residual path
-            else:
-                scale = out.new_tensor(1.0 - self.droppath)
-                out = out / scale  # Scale up to maintain expectation
-        
+
         return out
 
 
@@ -791,7 +793,7 @@ class PolicyValueNet(nn.Module):
         else:
             return total_loss.detach()  # zero tensor
     
-    def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor], feats: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Compute SSL loss for supported tasks with advanced algorithms.
 
         This method handles multiple SSL tasks. Currently implements:
@@ -815,17 +817,18 @@ class PolicyValueNet(nn.Module):
 
         # Advanced SSL tasks using dedicated model heads
         advanced_tasks = ['threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
+        # Compute shared features once if any advanced task is requested and no features were provided
+        feats_shared: Optional[torch.Tensor] = None
+        if any((t in targets and t in ssl_tasks and t in self.ssl_heads) for t in advanced_tasks):
+            feats_shared = feats if feats is not None else self._forward_features(x, None)
         for task in advanced_tasks:
             if task in targets and task in ssl_tasks and task in self.ssl_heads:
                 try:
                     task_head = self.ssl_heads[task]
                     task_targets = targets[task]
 
-                    # Get features for SSL head
-                    feats = self._forward_features(x, None)  # No visual input for SSL
-
-                    # Compute task output
-                    task_output = task_head(feats)
+                    # Compute task output using shared or provided features
+                    task_output = task_head(feats_shared)
 
                     # Log task activity
                     if task_targets.numel() > 0:

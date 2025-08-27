@@ -78,16 +78,28 @@ def _ensure_contiguous(t: torch.Tensor, name: str) -> torch.Tensor:
 
 
 def _check_contiguous(outputs: dict):
-    """Validate that output tensors are contiguous.
+    """Validate that output tensors (or dicts of tensors) are contiguous.
 
     Raises:
         RuntimeError: if any tensor is not contiguous.
     """
     for name, tensor in outputs.items():
-        if tensor is not None and not tensor.is_contiguous():
-            raise RuntimeError(
-                f"{name} output tensor is not contiguous. Shape: {tensor.shape}, strides: {tensor.stride()}"
-            )
+        if tensor is None:
+            continue
+        if torch.is_tensor(tensor):
+            if not tensor.is_contiguous():
+                raise RuntimeError(
+                    f"{name} output tensor is not contiguous. Shape: {tensor.shape}, strides: {tensor.stride()}"
+                )
+        elif isinstance(tensor, dict):
+            for sub_name, sub_tensor in tensor.items():
+                if torch.is_tensor(sub_tensor) and not sub_tensor.is_contiguous():
+                    raise RuntimeError(
+                        f"{name}[{sub_name}] tensor is not contiguous. Shape: {sub_tensor.shape}, strides: {sub_tensor.stride()}"
+                    )
+        else:
+            # Non-tensor outputs are ignored
+            continue
 
 
 def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
@@ -235,131 +247,30 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
 
-    # Generate self-supervised learning targets (enhanced multi-task SSL)
+    # Generate self-supervised learning targets using the model API for consistency
     ssl_targets = None
-    if enable_ssl:
+    if enable_ssl and hasattr(model, 'create_ssl_targets'):
         try:
-            # Initialize ChessSSLAlgorithms for enhanced SSL target computation
-            ssl_algorithms = ChessSSLAlgorithms()
-
-            # Get SSL tasks from model configuration
-            ssl_tasks = getattr(model.cfg, 'ssl_tasks', ['piece']) if hasattr(model, 'cfg') else ['piece']
-
-            # Use thread worker for SSL target creation with timeout protection
-            import threading
-            from queue import Queue
-
-            result_q: Queue = Queue(maxsize=1)
-
-            def _ssl_worker():
-                try:
-                    # Decode board states from encoded tensors for SSL algorithm processing
-                    batch_size = s.shape[0]
-                    ssl_targets_dict = {}
-
-                    for i in range(min(batch_size, 32)):  # Limit for memory efficiency
-                        # Convert tensor back to chess board for SSL algorithms
-                        # This is a simplified approach - in production you'd want more efficient batch processing
-                        try:
-                            # Create a chess board from the tensor representation
-                            board_state = s[i]  # Shape: (19, 8, 8)
-                            # This is a placeholder - you'd need proper board reconstruction logic
-                            # For now, create a basic board for SSL algorithm testing
-                            from chess import Board
-                            board = Board()  # Default starting position for testing
-
-                            # Generate enhanced SSL targets using the algorithms
-                            if 'piece' in ssl_tasks:
-                                ssl_targets_dict.setdefault('piece', []).append(
-                                    ssl_algorithms._create_piece_targets(s[i:i+1])
-                                )
-                            if 'threat' in ssl_tasks:
-                                ssl_targets_dict.setdefault('threat', []).append(
-                                    ssl_algorithms.detect_threats_batch(s[i:i+1])
-                                )
-                            if 'pin' in ssl_tasks:
-                                ssl_targets_dict.setdefault('pin', []).append(
-                                    ssl_algorithms.detect_pins_batch(s[i:i+1])
-                                )
-                            if 'fork' in ssl_tasks:
-                                ssl_targets_dict.setdefault('fork', []).append(
-                                    ssl_algorithms.detect_forks_batch(s[i:i+1])
-                                )
-                            if 'control' in ssl_tasks:
-                                ssl_targets_dict.setdefault('control', []).append(
-                                    ssl_algorithms.calculate_square_control_batch(s[i:i+1])
-                                )
-
-                        except Exception as board_error:
-                            logger.debug(f"Board reconstruction failed for sample {i}: {board_error}")
-                            continue
-
-                    # Convert lists to tensors and stack
-                    final_ssl_targets = {}
-                    for task, target_list in ssl_targets_dict.items():
-                        if target_list:
-                            try:
-                                stacked = torch.stack(target_list, dim=0)
-                                final_ssl_targets[task] = stacked
-                                logger.debug(f"Generated {task} SSL targets: {stacked.shape}")
-                            except Exception as stack_error:
-                                logger.warning(f"Failed to stack {task} targets: {stack_error}")
-
-                    try:
-                        result_q.put(final_ssl_targets, block=False)
-                    except Exception:
-                        pass
-
-                except Exception as e:
-                    try:
-                        result_q.put(e, block=False)
-                    except Exception:
-                        pass
-
-            worker = threading.Thread(target=_ssl_worker, daemon=True)
-            worker.start()
-            # Configurable budget (seconds); keep conservative default
-            ssl_time_budget_s = 10.0
-            worker.join(timeout=ssl_time_budget_s)
-
-            if worker.is_alive():
-                logger.warning(f"SSL target creation exceeded {ssl_time_budget_s:.1f}s; skipping SSL for this batch")
-                enable_ssl = False
-                ssl_targets = None
-            else:
-                try:
-                    res = result_q.get_nowait()
-                    if isinstance(res, Exception):
-                        logger.warning(f"SSL target creation failed: {res}; skipping SSL for this batch")
-                        enable_ssl = False
-                        ssl_targets = None
-                    else:
-                        ssl_targets = res
-                        if ssl_targets:
-                            logger.debug(f"SSL targets generated for tasks: {list(ssl_targets.keys())}")
-                        else:
-                            logger.debug("No SSL targets generated")
-                except Exception:
-                    # No result available; skip SSL for this batch
-                    logger.warning("SSL target creation returned no result; skipping SSL for this batch")
-                    enable_ssl = False
-                    ssl_targets = None
-
+            ssl_targets = model.create_ssl_targets(s)
         except Exception as e:
-            logger.warning(f"SSL target creation setup failed: {e}; skipping SSL for this batch")
+            logger.warning(f"SSL target creation failed via model API: {e}; disabling SSL for this batch")
             enable_ssl = False
             ssl_targets = None
+    elif enable_ssl:
+        logger.warning("Model does not provide create_ssl_targets; disabling SSL for this batch")
+        enable_ssl = False
+        ssl_targets = None
 
     # PERFORMANCE PROFILING: SSL target creation complete
     ssl_target_time = time.time() - ssl_target_start
     if current_step % 10 == 0:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"PERF: SSL target creation: {ssl_target_time:.3f}s")
-        if ssl_target_time > 5.0:  # Log if it's taking too long
-            logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - this indicates a performance issue")
+        if ssl_target_time > 5.0:
+            logger.warning(f"SSL target creation is very slow: {ssl_target_time:.3f}s - consider reducing SSL tasks or chunk size")
 
         # DEBUG: Log SSL targets statistics (only when available)
-        if ssl_targets is not None and torch.rand(1).item() < 0.1:  # 10% chance to log
+        if ssl_targets is not None and torch.rand(1).item() < 0.1:
             try:
                 if isinstance(ssl_targets, torch.Tensor):
                     logger.info(
@@ -372,7 +283,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 pass
 
     if ssl_targets is None and enable_ssl:
-        logger.warning(f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}")
+        logger.warning(
+            f"TRAINING: SSL targets not created - enable_ssl={enable_ssl}, model_has_create_ssl_targets={hasattr(model, 'create_ssl_targets')}"
+        )
 
     # Do not unconditionally cast SSL targets; handle per-target at loss time
 
@@ -417,7 +330,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         
         # Ensure contiguity to avoid view-related autograd errors on some backends
         if ssl_out is not None:
-            ssl_out = _ensure_contiguous(ssl_out, "ssl_out")
+            if isinstance(ssl_out, dict):
+                # Ensure each tensor in the dict is contiguous; ignore non-tensor entries
+                for _k, _v in list(ssl_out.items()):
+                    if torch.is_tensor(_v):
+                        ssl_out[_k] = _ensure_contiguous(_v, f"ssl_out[{_k}]")
+            else:
+                ssl_out = _ensure_contiguous(ssl_out, "ssl_out")
 
         # Validate model outputs to catch any contiguity issues
         _check_contiguous({"policy": p, "value": v, "ssl_out": ssl_out})
@@ -548,26 +467,35 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             try:
                 # Enhanced SSL (dict) path - use this for advanced SSL tasks
                 if hasattr(model, 'get_enhanced_ssl_loss') and isinstance(ssl_targets, dict):
-                    ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets)
+                    # Reuse precomputed features when available to avoid duplicate tower passes
+                    ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets, feats=feats)
                     logger.debug(f"Enhanced SSL loss computed: {ssl_loss.item():.6f}")
                 # Fallback to basic piece SSL (tensor) path for backward compatibility
                 elif isinstance(ssl_targets, torch.Tensor) and ssl_out is not None:
-                    if torch.isnan(ssl_out).any() or torch.isinf(ssl_out).any():
-                        logger.warning("SSL logits contain NaN/Inf; sanitizing")
-                        ssl_out = torch.nan_to_num(ssl_out, nan=0.0, posinf=0.0, neginf=0.0)
-                    logits = ssl_out.permute(0, 2, 3, 1).reshape(-1, ssl_out.size(1))
-                    targets_flat = ssl_targets
-                    if targets_flat.dim() == 4 and targets_flat.size(1) == ssl_out.size(1):
-                        targets_flat = torch.argmax(targets_flat, dim=1)
-                    elif targets_flat.dim() == 3:
-                        pass
+                    # Accept dict or tensor for ssl_out; pick 'piece' logits when dict
+                    if isinstance(ssl_out, dict):
+                        ssl_logits = ssl_out.get('piece', None)
                     else:
-                        # Already flat or unexpected; reshape later
-                        pass
-                    targets_flat = targets_flat.reshape(-1).long()
-                    if targets_flat.numel() == logits.size(0):
-                        ssl_loss = nn.functional.cross_entropy(logits, targets_flat, reduction='mean')
-                        logger.debug(f"Basic SSL loss computed: {ssl_loss.item():.6f}")
+                        ssl_logits = ssl_out
+                    if ssl_logits is None or not torch.is_tensor(ssl_logits):
+                        logger.debug("No piece SSL logits available; skipping SSL for this batch")
+                    else:
+                        if torch.isnan(ssl_logits).any() or torch.isinf(ssl_logits).any():
+                            logger.warning("SSL logits contain NaN/Inf; sanitizing")
+                            ssl_logits = torch.nan_to_num(ssl_logits, nan=0.0, posinf=0.0, neginf=0.0)
+                        logits = ssl_logits.permute(0, 2, 3, 1).reshape(-1, ssl_logits.size(1))
+                        targets_flat = ssl_targets
+                        if targets_flat.dim() == 4 and targets_flat.size(1) == ssl_logits.size(1):
+                            targets_flat = torch.argmax(targets_flat, dim=1)
+                        elif targets_flat.dim() == 3:
+                            pass
+                        else:
+                            # Already flat or unexpected; reshape later
+                            pass
+                        targets_flat = targets_flat.reshape(-1).long()
+                        if targets_flat.numel() == logits.size(0):
+                            ssl_loss = nn.functional.cross_entropy(logits, targets_flat, reduction='mean')
+                            logger.debug(f"Basic SSL loss computed: {ssl_loss.item():.6f}")
                 else:
                     logger.debug("No valid SSL targets available for loss computation")
             except Exception as e:

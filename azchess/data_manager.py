@@ -270,6 +270,17 @@ class DataManager:
                         self._mark_shard_corrupted(shard_path)
                         continue
 
+                    # Normalize legal mask to shape (N, 4672) and dtype uint8/bool
+                    if legal_mask_all is not None:
+                        try:
+                            if legal_mask_all.ndim > 2:
+                                legal_mask_all = legal_mask_all.reshape(legal_mask_all.shape[0], -1)
+                            # Cast to uint8 to minimize memory; convert to bool later if needed
+                            if legal_mask_all.dtype != np.uint8:
+                                legal_mask_all = legal_mask_all.astype(np.uint8, copy=False)
+                        except Exception:
+                            legal_mask_all = None
+
                     # Shuffle within shard
                     indices = np.random.permutation(len(states))
                     states = states[indices]
@@ -286,6 +297,13 @@ class DataManager:
                         batch_legal = None
                         if legal_mask_all is not None:
                             batch_legal = legal_mask_all[i:i+batch_size]
+                            # Ensure target move is never masked out for one-hot labels
+                            try:
+                                target_mask = (batch_policies > 0)
+                                if batch_legal.shape == target_mask.shape:
+                                    batch_legal = np.logical_or(batch_legal.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
+                            except Exception:
+                                pass
 
                         # Ensure batch arrays are standard C-contiguous float32
                         if not batch_states.flags['C_CONTIGUOUS']:

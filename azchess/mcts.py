@@ -125,7 +125,7 @@ class MCTSConfig:
 
 
 class Node:
-    __slots__ = ("parent", "prior", "n", "w", "q", "children", "move", "expanded")
+    __slots__ = ("parent", "prior", "n", "w", "q", "children", "move", "expanded", "move_idx")
 
     def __init__(self, prior: float = 0.0, move: Optional[chess.Move] = None, parent: Optional["Node"] = None):
         self.parent: Optional[Node] = parent
@@ -136,6 +136,8 @@ class Node:
         self.children: Dict[chess.Move, Node] = {}
         self.move = move
         self.expanded = False
+        # Cache of encoded policy index for this move (filled for children at expansion)
+        self.move_idx: Optional[int] = None
 
     def _expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False) -> None:
         """Expand this node with children for all legal moves."""
@@ -147,20 +149,21 @@ class Node:
             return
         
         logits = p_logits.astype(np.float32, copy=False)
-        
+
         # Handle edge cases: NaN or infinite values
         if np.any(np.isnan(logits)) or np.any(np.isinf(logits)):
             # Fallback to uniform distribution
             lp = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
         else:
             # Convert logits to probabilities
+            # Precompute legal move indices once
+            if encoder is not None:
+                idxs = [encoder.encode_move(board, m) for m in legal_moves]
+            else:
+                idxs = [move_to_index(board, m) for m in legal_moves]
+
             if legal_only:
                 # Softmax over legal indices only
-                if encoder is not None:
-                    idxs = [encoder.encode_move(board, m) for m in legal_moves]
-                else:
-                    idxs = [move_to_index(board, m) for m in legal_moves]
-
                 sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
                 sel = torch.softmax(sel, dim=-1).numpy()
                 dist = sel  # probability distribution over legal moves
@@ -191,14 +194,16 @@ class Node:
                 try:
                     if legal_only:
                         prior = float(dist[i])
+                        move_idx = idxs[i]
                     else:
-                        idx = encoder.encode_move(board, move) if encoder is not None else move_to_index(board, move)
-                        prior = float(dist[idx])
+                        move_idx = idxs[i]
+                        prior = float(dist[move_idx])
                     # Ensure prior is valid
                     if np.isnan(prior) or np.isinf(prior) or prior < 0:
                         prior = 0.0
                     legal_priors.append(prior)
                 except Exception:
+                    move_idx = None
                     legal_priors.append(0.0)
 
             lp = np.asarray(legal_priors, dtype=np.float32)
@@ -210,8 +215,13 @@ class Node:
             else:
                 lp = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
 
-        for move, prior in zip(legal_moves, lp):
+        for (move, idx), prior in zip(zip(legal_moves, idxs), lp):
             child = Node(prior=float(prior), move=move, parent=self)
+            # Cache policy index for faster policy extraction later
+            try:
+                child.move_idx = int(idx)
+            except Exception:
+                child.move_idx = None
             if self.parent and self.parent.q != 0.0:
                 child.q = -self.parent.q
             self.children[move] = child
@@ -552,16 +562,21 @@ class MCTS:
         total = sum(c.n for c in root.children.values())
         if total > 0:
             for m, child in root.children.items():
-                idx = move_to_index(board, m)
-                pi[idx] = child.n / total
+                idx = child.move_idx if getattr(child, 'move_idx', None) is not None else move_to_index(board, m)
+                if 0 <= idx < pi.shape[0]:
+                    pi[idx] = child.n / total
         else:
             # If no visits, use uniform distribution over legal moves
             legal_moves = list(board.legal_moves)
             if legal_moves:
                 uniform_prob = 1.0 / len(legal_moves)
                 for move in legal_moves:
-                    idx = move_to_index(board, move)
-                    pi[idx] = uniform_prob
+                    try:
+                        idx = move_to_index(board, move)
+                        if 0 <= idx < pi.shape[0]:
+                            pi[idx] = uniform_prob
+                    except Exception:
+                        continue
         return pi
 
     def _select(self, board: chess.Board, root: Node, inflight_counts: Optional[Dict[Node, int]] = None, base_ply: int = 0) -> Tuple[Node, List[Node], chess.Board]:

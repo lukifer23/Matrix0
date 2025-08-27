@@ -15,7 +15,8 @@
 - [ ] SSL target typing/timeout hygiene
   - [x] Replace generic `ssl_targets.to(torch.long)` with per-target casting.
   - [x] Handle both tensor and dict targets explicitly; cast only what's needed.
-  - [ ] Remove `signal.alarm`; implement monotonic time budget with early exit + warning.
+  - [x] Remove blocking target creation path from training; use `model.create_ssl_targets()` API.
+  - [ ] Implement monotonic time budget with early exit + warning inside model SSL target creation (optional).
   - [x] Document piece-only SSL format: class map `(B,8,8)` or one-hot `(B,13,8,8)`.
 - [ ] Cache clearing policy
   - [ ] Remove unconditional `clear_memory_cache()` before SSL computation and during heartbeats.
@@ -43,6 +44,7 @@
 - [x] LR scheduler semantics with accumulation
   - [x] Configure scheduler on update-steps: `num_updates = ceil(total_steps / accum_steps)`.
   - [x] Log micro-step vs update-step counts for clarity.
+  - [x] Ensure scheduler steps after optimizer update; guard scaler validity.
 - [ ] Optional speed-ups
   - [ ] Enable `torch.compile` on CUDA path (guard + fallback); keep disabled for MPS if regressions.
   - [ ] Use channels_last on CUDA only.
