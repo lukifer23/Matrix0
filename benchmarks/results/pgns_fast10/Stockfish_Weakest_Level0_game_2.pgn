@@ -1,0 +1,9 @@
+[Event "Stockfish_Weakest_Level0"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Matrix0"]
+[Black "stockfish_weakest"]
+[Result "1-0"]
+
+1. a3 d5 2. f4 Nf6 3. Nh3 c5 4. b4 Bxh3 5. Rg1 Bf5 6. Bb2 d4 7. Bxd4 cxd4 8. h3 Nbd7 9. Rh1 Be6 10. h4 d3 11. Rh3 dxe2 12. Rf3 exd1=Q+ 13. Kf2 Qxf1+ 14. Kg3 Qa6 15. Kh2 Qc6 16. Nc3 a5 17. Rh3 Bf5 18. Nb1 Qxg2+ 19. Kxg2 Qb6 20. Rh1 Qc6+ 21. Kg3 axb4 22. Rh3 Qxc2 23. Rh2 bxa3 24. Re2 Qd3+ 25. Kh2 Qxe2+ 26. Kg1 Rd8 27. Kh1 Rb8 28. Kg1 Qd1+ 29. Kf2 Ng4+ 30. Kg3 Qg1+ 31. Kh3 Ngf6# 1-0

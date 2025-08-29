@@ -1,0 +1,28 @@
+description: Benchmark Matrix0 vs Stockfish Skill Level 4
+name: Matrix0 vs Stockfish Club
+output_dir: benchmarks/results
+performance_config:
+  log_system_load: true
+  sample_interval: 0.1
+  track_cpu: true
+  track_gpu: false
+  track_memory: true
+scenarios:
+- concurrency: 1
+  engine_config:
+    command: stockfish
+    name: stockfish_club
+    options:
+      Hash: '512'
+      Skill Level: '4'
+      Threads: '4'
+    working_dir: null
+  max_moves: 200
+  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/pretrain_ext_sf_enhanced_ema_after_fill_step_3000.pt
+  name: Stockfish_Club_Level4
+  num_games: 20
+  opening_book: null
+  opening_plies: 8
+  random_openings: true
+  time_control: 30+0.3
+statistical_config: {}

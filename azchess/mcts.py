@@ -84,7 +84,8 @@ class MCTSConfig:
     tt_cleanup_frequency: int = 5000
     tt_memory_limit_mb: int = 2048
     batch_size: int = 16  # Reduced for better MPS performance
-    fpu: float = 0.5  # First-Play Urgency
+    fpu: float = 0.5  # First-Play Urgency (legacy bias)
+    fpu_reduction: float = 0.15  # Leela-style FPU reduction: parent_q - fpu_reduction for unvisited children
     parent_q_init: bool = True # Initialize child Q with parent Q
     draw_penalty: float = -0.1  # Slight draw penalty to reduce draws
     virtual_loss: float = 1.0  # Penalty applied to in-flight edges during batched selection
@@ -92,6 +93,8 @@ class MCTSConfig:
     cpuct_start: Optional[float] = None
     cpuct_end: Optional[float] = None
     cpuct_plies: int = 0
+    cpuct_c_base: Optional[float] = None  # KataGo/Leela-style cpuct schedule base
+    cpuct_c_init: Optional[float] = None  # KataGo/Leela-style cpuct schedule init
     # If True, NN value is from absolute White's perspective and must be flipped
     # to side-to-move perspective for MCTS/backprop/resign logic
     value_from_white: bool = False
@@ -112,6 +115,10 @@ class MCTSConfig:
     parallel_simulations: bool = True # Enable parallel MCTS simulations
     simulation_batch_size: int = 16   # Batch simulations for efficiency
     tree_parallelism: bool = True     # Enable tree-level parallelism
+    # Optional: Playout cap randomization to diversify self-play
+    playout_random_frac: float = 0.0  # 0.0 disables; e.g., 0.3 → ±30%
+    # Exploration noise injection when policy is too uniform (training/self-play only)
+    enable_entropy_noise: bool = True
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -139,7 +146,7 @@ class Node:
         # Cache of encoded policy index for this move (filled for children at expansion)
         self.move_idx: Optional[int] = None
 
-    def _expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False) -> None:
+    def _expand(self, board: chess.Board, p_logits: np.ndarray, encoder: Optional[MoveEncoder] = None, legal_only: bool = False, allow_noise: bool = True) -> None:
         """Expand this node with children for all legal moves."""
         if self.is_expanded():
             return
@@ -180,8 +187,8 @@ class Node:
             except Exception:
                 entropy_ratio = 0.0
             
-            # If too uniform, add small noise and renormalize on the active distribution
-            if entropy_ratio > 0.9:
+            # If too uniform, add small noise and renormalize on the active distribution (when allowed)
+            if allow_noise and entropy_ratio > 0.9:
                 logger.debug(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
                 noise = np.random.normal(0, 0.1, dist.shape)
                 dist = dist + noise
@@ -234,7 +241,7 @@ class Node:
     def get_ucb_score(self, parent_visits: int, cpuct: float) -> float:
         """Calculate UCB score for node selection."""
         if self.n == 0:
-            # Optimistic value for unvisited nodes - encourage exploration
+            # For unvisited nodes, q starts at 0; caller may supply FPU elsewhere
             return cpuct * self.prior * math.sqrt(parent_visits) / (1 + self.n)
         return self.q + cpuct * self.prior * math.sqrt(parent_visits) / (1 + self.n)
 
@@ -298,14 +305,21 @@ class MCTS:
             if board.is_game_over():
                 terminal_value = self._terminal_value(board)
                 logger.debug(f"Game over detected, returning terminal value: {terminal_value}")
-                return {}, np.zeros(4672, dtype=np.float32), terminal_value
+                policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+                return {}, np.zeros(policy_size, dtype=np.float32), terminal_value
 
             key = board._transposition_key()
             root = self._tt_get(key)
             if root is None:
                 root = Node()
                 p_logits, v = self._infer(board)
-                root._expand(board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                root._expand(
+                    board,
+                    p_logits,
+                    encoder=self._enc,
+                    legal_only=self.cfg.legal_softmax,
+                    allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
+                )
                 self._prune_children(root)
                 self._tt_put(key, root, skip_lock=True)
             else:
@@ -325,6 +339,15 @@ class MCTS:
                 self._add_dirichlet(root)
 
             sims_to_run = num_simulations if num_simulations is not None else self.cfg.num_simulations
+            # Apply playout cap randomization if configured
+            try:
+                frac = float(getattr(self.cfg, 'playout_random_frac', 0.0))
+                if frac > 0.0 and sims_to_run > 0:
+                    low = int(max(1, sims_to_run * (1.0 - frac)))
+                    high = int(max(low, sims_to_run * (1.0 + frac)))
+                    sims_to_run = random.randint(low, high)
+            except Exception:
+                pass
 
             # Periodic memory cleanup
             if getattr(self.cfg, 'enable_memory_cleanup', True):
@@ -383,7 +406,8 @@ class MCTS:
         except Exception as e:
             logger.error(f"MCTS run error: {e}")
             # Return safe fallback values
-            return {}, np.zeros(4672, dtype=np.float32), 0.0
+            policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+            return {}, np.zeros(policy_size, dtype=np.float32), 0.0
 
     def _run_simulations_parallel_batched(self, board: chess.Board, root: Node, num_simulations: int):
         """Run simulations in parallel with simple batched inference."""
@@ -459,7 +483,13 @@ class MCTS:
                         # Apply results back to nodes
                         for i, (node, policy, value) in enumerate(zip(leaf_nodes, policies, values)):
                             if node is not None and not node.is_expanded():
-                                node._expand(leaf_positions[i], policy, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                                node._expand(
+                                    leaf_positions[i],
+                                    policy,
+                                    encoder=self._enc,
+                                    legal_only=self.cfg.legal_softmax,
+                                    allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
+                                )
                                 self._prune_children(node)
                                 self._register_children_in_tt(node, leaf_positions[i], skip_lock=True)
                     else:
@@ -470,7 +500,13 @@ class MCTS:
                                     p_logits, v = self._infer(pos)
                                     node = leaf_nodes[i]
                                     if node is not None and not node.is_expanded():
-                                        node._expand(pos, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                                        node._expand(
+                                            pos,
+                                            p_logits,
+                                            encoder=self._enc,
+                                            legal_only=self.cfg.legal_softmax,
+                                            allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
+                                        )
                                         self._prune_children(node)
                                         self._register_children_in_tt(node, pos, skip_lock=True)
                                 except Exception as e:
@@ -520,7 +556,13 @@ class MCTS:
                 try:
                     p_logits, v_leaf = self._infer(leaf_board)
                     if not node.is_expanded():
-                        node._expand(leaf_board, p_logits, encoder=self._enc, legal_only=self.cfg.legal_softmax)
+                        node._expand(
+                            leaf_board,
+                            p_logits,
+                            encoder=self._enc,
+                            legal_only=self.cfg.legal_softmax,
+                            allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
+                        )
                         self._prune_children(node)
                         self._register_children_in_tt(node, leaf_board, skip_lock=True)
                 except Exception as e:
@@ -558,7 +600,8 @@ class MCTS:
             pass
 
     def _policy_from_root(self, root: Node, board: chess.Board) -> np.ndarray:
-        pi = np.zeros(4672, dtype=np.float32)
+        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+        pi = np.zeros(policy_size, dtype=np.float32)
         total = sum(c.n for c in root.children.values())
         if total > 0:
             for m, child in root.children.items():
@@ -595,9 +638,13 @@ class MCTS:
                 
                 for child in node.children.values():
                     if child.n == 0:
-                        # FPU scaled by parent Q to emphasize uncertain branches
-                        fpu_bias = (self.cfg.fpu * (0.5 - node.q)) if self.cfg.parent_q_init else 0.0
-                        q = -fpu_bias
+                        # lc0-style FPU: use parent Q minus a fixed reduction
+                        if getattr(self.cfg, 'fpu_reduction', None) is not None:
+                            q = float(node.q) - float(self.cfg.fpu_reduction)
+                        else:
+                            # legacy fallback
+                            fpu_bias = (self.cfg.fpu * (0.5 - node.q)) if self.cfg.parent_q_init else 0.0
+                            q = -fpu_bias
                     else:
                         q = child.q
 
@@ -653,6 +700,13 @@ class MCTS:
 
     def _cpuct_at(self, ply: int) -> float:
         try:
+            # Prefer c_base/c_init schedule if provided (KataGo/Leela style)
+            c_base = getattr(self.cfg, 'cpuct_c_base', None)
+            c_init = getattr(self.cfg, 'cpuct_c_init', None)
+            if c_base is not None and c_init is not None:
+                N = max(1.0, float(ply + 1))
+                return float(c_init) + math.log((N + float(c_base)) / float(c_base))
+
             start = self.cfg.cpuct_start
             end = self.cfg.cpuct_end
             span = int(self.cfg.cpuct_plies)
@@ -719,7 +773,8 @@ class MCTS:
             encoded = encode_board(board)
             if encoded is None:
                 logger.warning("Failed to encode board, using fallback values")
-                return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+                return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
             
             # Original tensor preparation (circular import workaround)
             encoded = _ensure_contiguous_array(encoded)
@@ -765,16 +820,17 @@ class MCTS:
                                     raise
                     
                     # Comprehensive output validation
-                    expected_policy_shape = (encoded.shape[0], 4672)  # Standard policy size
+                    policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+                    expected_policy_shape = (encoded.shape[0], policy_size)
                     expected_value_shape = (encoded.shape[0],)  # Single value per position
 
                     if policy.shape != expected_policy_shape:
                         logger.error(f"Policy shape mismatch: got {policy.shape}, expected {expected_policy_shape}")
-                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
 
                     if value.shape != expected_value_shape:
                         logger.error(f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}")
-                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
 
                     # Validate policy values
                     if np.any(np.isnan(policy)) or np.any(np.isinf(policy)):
@@ -812,7 +868,8 @@ class MCTS:
                     else:
                         logger.error(f"Inference timeout after {max_retries + 1} attempts: {e}")
                         # Return fallback values to prevent MCTS crash
-                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
                         
                 except Exception as e:
                     if attempt < max_retries:
@@ -822,12 +879,14 @@ class MCTS:
                     else:
                         logger.error(f"Inference failed after {max_retries + 1} attempts: {e}")
                         # Return fallback values to prevent MCTS crash
-                        return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
                         
         except Exception as e:
             logger.error(f"Critical inference error: {e}")
             # Return safe fallback values
-            return np.ones(4672, dtype=np.float32) / 4672, 0.0
+            policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
+            return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
 
     def _terminal_value(self, board: chess.Board) -> float:
         if board.is_checkmate():
@@ -957,11 +1016,12 @@ class MCTS:
     def _generate_prior_based_policy(self, board: chess.Board) -> np.ndarray:
         """Generate fallback policy based on move priors when NN output is invalid."""
         legal_moves = list(board.legal_moves)
+        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
         if not legal_moves:
-            return np.zeros(4672, dtype=np.float32)
+            return np.zeros(policy_size, dtype=np.float32)
         
         # Create policy based on move priors (piece values, position, etc.)
-        policy = np.zeros(4672, dtype=np.float32)
+        policy = np.zeros(policy_size, dtype=np.float32)
         total_weight = 0.0
         
         for move in legal_moves:
@@ -977,7 +1037,9 @@ class MCTS:
         else:
             # Uniform over legal moves as ultimate fallback
             for move in legal_moves:
-                policy[move_to_index(board, move)] = 1.0 / len(legal_moves)
+                idx = move_to_index(board, move)
+                if 0 <= idx < policy_size:
+                    policy[idx] = 1.0 / len(legal_moves)
         return policy.astype(np.float32, copy=False)
     
     def _get_move_weight(self, board: chess.Board, move: chess.Move) -> float:

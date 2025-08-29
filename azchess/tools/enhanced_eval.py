@@ -478,6 +478,16 @@ class EnhancedEvaluator:
                 self.logger.error(f"Error processing move {move_uci}: {e}")
                 # Skip problematic moves but continue
                 continue
+
+        # Validate and correct the PGN result header if needed
+        try:
+            if board.is_game_over(claim_draw=True):
+                true_res = board.result(claim_draw=True)
+                if str(true_res) != str(game.headers.get("Result", "")):
+                    self.logger.warning(f"PGN result mismatch: header={game.headers.get('Result')} actual={true_res}; correcting header")
+                    game.headers["Result"] = true_res
+        except Exception:
+            pass
         
         # Save PGN
         pgn_filename = f"eval_game_{sim_level}_{game_num:02d}_{game_meta['result_str'].replace('/', '-')}.pgn"

@@ -18,6 +18,7 @@ from .config import Config, select_device
 from .draw import should_adjudicate_draw
 from .elo import EloBook, update_elo
 from .mcts import MCTS, MCTSConfig
+from .encoding import move_to_index
 from .selfplay.inference import (InferenceClient, run_inference_server,
                                  setup_shared_memory_for_worker)
 from .utils.model_loader import load_model_and_mcts
@@ -84,10 +85,27 @@ def _arena_run_one_game(args_tuple):
                 move = moves[idxc]
         else:
             if not visits:
-                # Fallback: if MCTS returns no visits, use random legal move
+                # Fallback: if MCTS returns no visits, pick by policy over legal moves
                 legal_moves = list(board.legal_moves)
-                move = random.choice(legal_moves)
-                print(f"  ⚠️  MCTS returned no visits, using random move")
+                if legal_moves:
+                    try:
+                        best = None
+                        best_score = -1.0
+                        for mv in legal_moves:
+                            try:
+                                idx = move_to_index(board, mv)
+                                score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                            except Exception:
+                                score = 0.0
+                            if score > best_score:
+                                best_score = score
+                                best = mv
+                        move = best or random.choice(legal_moves)
+                    except Exception:
+                        move = random.choice(legal_moves)
+                else:
+                    break
+                print(f"  ⚠️  MCTS returned no visits, using policy fallback")
             else:
                 move = max(visits.items(), key=lambda kv: kv[1])[0]
         board.push(move)
@@ -200,10 +218,27 @@ def arena_worker_loop(cfg_dict, ckpt_a_path, ckpt_b_path, num_sims_inner, batch_
                     move = moves[idxc]
             else:
                 if not visits:
-                    # Fallback: if MCTS returns no visits, use random legal move
+                    # Fallback: if MCTS returns no visits, pick by policy over legal moves
                     legal_moves = list(board.legal_moves)
-                    move = random.choice(legal_moves)
-                    print(f"  ⚠️  MCTS returned no visits, using random move")
+                    if legal_moves:
+                        try:
+                            best = None
+                            best_score = -1.0
+                            for mv in legal_moves:
+                                try:
+                                    idx = move_to_index(board, mv)
+                                    score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                                except Exception:
+                                    score = 0.0
+                                if score > best_score:
+                                    best_score = score
+                                    best = mv
+                            move = best or random.choice(legal_moves)
+                        except Exception:
+                            move = random.choice(legal_moves)
+                    else:
+                        break
+                    print(f"  ⚠️  MCTS returned no visits, using policy fallback")
                 else:
                     move = max(visits.items(), key=lambda kv: kv[1])[0]
             board.push(move)
@@ -252,7 +287,15 @@ def _save_pgn(moves: list[chess.Move], result: str, headers: dict, out_dir: str,
     for mv in moves:
         node = node.add_variation(mv)
         board.push(mv)
+    # Set and validate result
     game.headers["Result"] = result
+    try:
+        if board.is_game_over(claim_draw=True):
+            true_res = board.result(claim_draw=True)
+            if str(true_res) != str(result):
+                game.headers["Result"] = true_res
+    except Exception:
+        pass
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"game_{idx:04d}.pgn")
     with open(path, "w") as f:
@@ -331,6 +374,8 @@ def play_match(
             "parent_q_init": bool(mcfg_dict.get("parent_q_init", True)),
             "tt_cleanup_frequency": int(mcfg_dict.get("tt_cleanup_frequency", 500)),
             "draw_penalty": float(mcfg_dict.get("draw_penalty", -0.1)),
+            # Disable exploration noise in eval to avoid random priors
+            "enable_entropy_noise": False,
         }
     )
     mcfg = MCTSConfig.from_dict(mcfg_dict)

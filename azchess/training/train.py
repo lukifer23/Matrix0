@@ -124,6 +124,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                ssl_weight: float = 0.1, enable_ssl: bool = True,
                label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0,
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
+               ssl_targets_provider: str = "auto",
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
@@ -171,12 +172,18 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0))
     
+    # Determine dynamic policy size from model config (fallback to legacy 4672)
+    try:
+        policy_size = int(getattr(getattr(model, 'cfg', None), 'policy_size', 4672))
+    except Exception:
+        policy_size = 4672
+
     # Validate tensor shapes with detailed error messages
     try:
         if s.shape[0] != pi.shape[0] or s.shape[0] != z.shape[0]:
             raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
-        if pi.shape[1] != np.prod(POLICY_SHAPE):
-            raise RuntimeError(f"Policy tensor shape mismatch: expected {np.prod(POLICY_SHAPE)}, got {pi.shape[1]}")
+        if pi.shape[1] != policy_size:
+            raise RuntimeError(f"Policy tensor shape mismatch: expected {policy_size}, got {pi.shape[1]}")
         # Value tensor can be 1D (batch_size,) or 2D (batch_size, 1) - both are valid
         if len(z.shape) == 1:
             # 1D tensor: (batch_size,) - this is correct
@@ -221,7 +228,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
         r = torch.rand(1, device=s.device).item()
-        if r < 0.5:
+        # Geometric permutations are only defined for legacy 8x8x73 layout (4672)
+        if r < 0.5 and policy_size == int(np.prod(POLICY_SHAPE)):
             # Horizontal flip (mirror files)
             s = torch.flip(s, dims=[3]).contiguous()
             pi_sh = torch.flip(pi.view(-1, *POLICY_SHAPE), dims=[2]).contiguous()
@@ -232,7 +240,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             if legal_mask_t is not None:
                 lm_sh = torch.flip(legal_mask_t.view(-1, *POLICY_SHAPE), dims=[2]).contiguous()
                 legal_mask_t = lm_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).to(dtype=torch.bool)
-        elif r < 0.75 and augment_rotate180:
+        elif r < 0.75 and augment_rotate180 and policy_size == int(np.prod(POLICY_SHAPE)):
             # 180-degree rotation (flip ranks and files)
             s = torch.flip(s, dims=[2, 3]).contiguous()
             pi_sh = torch.flip(pi.view(-1, *POLICY_SHAPE), dims=[1, 2]).contiguous()
@@ -247,19 +255,36 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
 
-    # Generate self-supervised learning targets using the model API for consistency
+    # Generate self-supervised learning targets
     ssl_targets = None
-    if enable_ssl and hasattr(model, 'create_ssl_targets'):
-        try:
-            ssl_targets = model.create_ssl_targets(s)
-        except Exception as e:
-            logger.warning(f"SSL target creation failed via model API: {e}; disabling SSL for this batch")
+    if enable_ssl:
+        use_simple = (str(ssl_targets_provider).lower() == 'simple')
+        if hasattr(model, 'create_ssl_targets') and not use_simple:
+            try:
+                ssl_targets = model.create_ssl_targets(s)
+            except Exception as e:
+                logger.warning(f"SSL target creation failed via model API: {e}; will try simple provider if available")
+                ssl_targets = None
+        # Optional simple provider (reconstruct board from planes)
+        if ssl_targets is None and use_simple:
+            try:
+                from azchess.training.ssl_targets import generate_ssl_targets_from_states
+                # s is (B,19,8,8) torch; convert to numpy on CPU for target gen
+                s_np = s.detach().to('cpu').numpy()
+                simple = generate_ssl_targets_from_states(s_np)
+                # Convert to torch tensors on current device
+                ssl_targets = {k: torch.from_numpy(v).to(device=s.device, dtype=torch.float32) for k, v in simple.items()}
+                # Apply target weight scaling if requested
+                if ssl_target_weight != 1.0:
+                    for k in list(ssl_targets.keys()):
+                        ssl_targets[k] = ssl_targets[k] * float(ssl_target_weight)
+            except Exception as e:
+                logger.warning(f"Simple SSL target provider failed: {e}; disabling SSL for this batch")
+                ssl_targets = None
+                enable_ssl = False
+        elif ssl_targets is None and not hasattr(model, 'create_ssl_targets'):
+            logger.warning("Model does not provide create_ssl_targets; no SSL targets available for this batch")
             enable_ssl = False
-            ssl_targets = None
-    elif enable_ssl:
-        logger.warning("Model does not provide create_ssl_targets; disabling SSL for this batch")
-        enable_ssl = False
-        ssl_targets = None
 
     # PERFORMANCE PROFILING: SSL target creation complete
     ssl_target_time = time.time() - ssl_target_start
@@ -1109,6 +1134,7 @@ def train_comprehensive(
                 ssl_warmup_steps=int(tr_cfg.get('ssl_warmup_steps', 0)),
                 current_step=int(current_step),
                 ssl_target_weight=float(tr_cfg.get('ssl_target_weight', 1.0)),
+                ssl_targets_provider=str(tr_cfg.get('ssl_targets_provider', 'auto')),
                 use_wdl=bool(cfg.model().get('wdl', False)),
                 wdl_weight=float(tr_cfg.get('wdl_weight', 0.0)),
                 wdl_margin=float(tr_cfg.get('wdl_margin', 0.25)),

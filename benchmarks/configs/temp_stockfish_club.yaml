@@ -1,0 +1,21 @@
+name: "Matrix0 vs Stockfish Club"
+description: "Benchmark Matrix0 vs Stockfish Skill Level 4"
+output_dir: benchmarks/results
+engines:
+  stockfish_club:
+    command: stockfish
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "4"
+scenarios:
+  - name: Stockfish_Club_Level4
+    engine: stockfish_club
+    model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/pretrain_ext_sf_enhanced_ema_after_fill_step_3000.pt
+    num_games: 20
+    time_control: 30+0.3
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: false
+  sample_interval: 0.1

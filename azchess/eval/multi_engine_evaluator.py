@@ -16,6 +16,7 @@ from ..config import Config, select_device
 from ..elo import EloBook, update_elo
 from ..engines import EngineManager
 from ..mcts import MCTS, MCTSConfig
+from ..encoding import move_to_index
 from ..model import PolicyValueNet
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,13 @@ class MultiEngineEvaluator:
         
         # Load Matrix0 model
         self.matrix0_model = PolicyValueNet.from_config(config.model()).to(self.device)
-        self.matrix0_mcts = MCTS(MCTSConfig.from_dict(config.eval()), self.matrix0_model, self.device)
+        eval_cfg = MCTSConfig.from_dict(config.eval())
+        # Disable entropy noise during external engine evaluation
+        try:
+            eval_cfg.enable_entropy_noise = False
+        except Exception:
+            pass
+        self.matrix0_mcts = MCTS(eval_cfg, self.matrix0_model, self.device)
         
         # Load best checkpoint if available
         checkpoint_path = config.engines().get("matrix0", {}).get("checkpoint", "checkpoints/best.pt")
@@ -271,8 +278,27 @@ class MultiEngineEvaluator:
         if engine_name == "matrix0":
             # Use Matrix0 MCTS
             visit_counts, pi, v = self.matrix0_mcts.run(board)
-            move = max(visit_counts.items(), key=lambda kv: kv[1])[0]
-            return move
+            if visit_counts:
+                move = max(visit_counts.items(), key=lambda kv: kv[1])[0]
+                return move
+            # Fallback: choose legal move with highest NN policy
+            legal_moves = list(board.legal_moves)
+            if legal_moves and pi is not None and len(pi) >= 4672:
+                best = None
+                best_score = -1.0
+                for mv in legal_moves:
+                    try:
+                        idx = move_to_index(board, mv)
+                        score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                    except Exception:
+                        score = 0.0
+                    if score > best_score:
+                        best_score = score
+                        best = mv
+                if best is not None:
+                    return best
+            # Final fallback
+            return next(iter(board.legal_moves), None)
         else:
             # Use external engine
             engine_client = engine_manager.get_engine(engine_name)

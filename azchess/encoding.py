@@ -48,7 +48,14 @@ def _bitboard_to_plane(bb: chess.Bitboard) -> np.ndarray:
 
 # --- 4672-action mapping ---
 
-POLICY_SHAPE = (8, 8, 73)
+POLICY_SHAPE = (8, 8, 73)  # Legacy 4672 action space (64 * 73)
+
+# Optional AlphaZero/lc0 1858-action space toggle
+USE_AZ1858: bool = False  # Set true after migration; keeps legacy path otherwise
+
+# Precomputed size for convenience
+LEGACY_POLICY_SIZE = int(np.prod(POLICY_SHAPE))
+AZ1858_POLICY_SIZE = 1858
 
 RAY_DIRS: Tuple[Tuple[int, int], ...] = (
     (1, 0),   # north (toward higher rank)
@@ -105,9 +112,12 @@ def _underpromo_offset(board: chess.Board, dr: int, df: int, promo: Optional[int
 
 def move_to_index(board: chess.Board, move: chess.Move) -> int:
     """
-    Map a python-chess Move to [0, 4671] using fixed 64×73 layout.
+    Map a python-chess Move to legacy [0, 4671] using fixed 64×73 layout.
     Queen promotions are encoded via ray moves; underpromotions occupy the last 9 slots.
     """
+    if USE_AZ1858:
+        # Placeholder: raise to signal caller that 1858 path is not yet wired
+        raise NotImplementedError("1858 move_to_index not yet implemented")
     if not board.is_legal(move):
         raise ValueError(f"Illegal move: {move}")
     from_sq = move.from_square
@@ -163,6 +173,8 @@ class MoveEncoder:
         return result
 
     def decode_move(self, board: chess.Board, action_idx: int) -> chess.Move:
+        if USE_AZ1858:
+            raise NotImplementedError("1858 decode_move not yet implemented")
         if not (0 <= action_idx < 4672):
             raise ValueError("action_idx out of range")
         from_sq = action_idx // 73
@@ -229,7 +241,13 @@ class MoveEncoder:
         }
 
     def get_legal_actions(self, board: chess.Board) -> np.ndarray:
-        mask = np.zeros(4672, dtype=bool)
+        if USE_AZ1858:
+            mask = np.zeros(AZ1858_POLICY_SIZE, dtype=bool)
+            # Placeholder until 1858 mapping is implemented
+            for _ in board.legal_moves:
+                pass
+            return mask
+        mask = np.zeros(LEGACY_POLICY_SIZE, dtype=bool)
         for m in board.legal_moves:
             mask[move_to_index(board, m)] = True
         return mask
@@ -248,10 +266,10 @@ class MoveEncoder:
     def get_action_statistics(self, board: chess.Board) -> Dict[str, int | float]:
         mask = self.get_legal_actions(board)
         return {
-            "total_actions": 4672,
+            "total_actions": (AZ1858_POLICY_SIZE if USE_AZ1858 else LEGACY_POLICY_SIZE),
             "legal_actions": int(mask.sum()),
             "illegal_actions": int((~mask).sum()),
-            "legal_ratio": float(mask.sum() / 4672.0),
+            "legal_ratio": float(mask.sum() / float(mask.size)),
         }
 
 

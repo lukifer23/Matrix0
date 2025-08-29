@@ -66,6 +66,11 @@ class GameMetrics:
 
     # System resource usage during game
     system_metrics: List[SystemMetrics] = None
+    
+    # Search diagnostics
+    mcts_empty_visits: int = 0
+    root_policy_entropy_sum: float = 0.0
+    root_policy_entropy_samples: int = 0
 
     def __post_init__(self):
         if self.move_times is None:
@@ -84,6 +89,13 @@ class GameMetrics:
         if self.total_moves == 0:
             return 0.0
         return (self.white_total_time + self.black_total_time) / self.total_moves
+
+    @property
+    def avg_root_policy_entropy(self) -> float:
+        """Average root policy entropy across Matrix0 moves (nats)."""
+        if self.root_policy_entropy_samples == 0:
+            return 0.0
+        return self.root_policy_entropy_sum / float(self.root_policy_entropy_samples)
 
 
 @dataclass
@@ -246,10 +258,37 @@ class MetricsAnalyzer:
         total_moves = sum(game.total_moves for game in games)
         total_duration = sum(game.duration for game in games)
 
-        # Game results
+        # Game results (color-based)
         white_wins = sum(1 for game in games if game.result == "1-0")
         black_wins = sum(1 for game in games if game.result == "0-1")
         draws = sum(1 for game in games if game.result == "1/2-1/2")
+
+        # Engine-centric aggregation (independent of color)
+        engine_stats: Dict[str, Dict[str, Any]] = {}
+        engine_names = set()
+        for g in games:
+            engine_names.add(g.white_engine)
+            engine_names.add(g.black_engine)
+        for name in engine_names:
+            engine_stats[name] = {"wins": 0, "losses": 0, "draws": 0, "win_rate": 0.0}
+        for g in games:
+            if g.winner == "white":
+                w = g.white_engine
+                b = g.black_engine
+                engine_stats[w]["wins"] += 1
+                engine_stats[b]["losses"] += 1
+            elif g.winner == "black":
+                w = g.black_engine
+                b = g.white_engine
+                engine_stats[w]["wins"] += 1
+                engine_stats[b]["losses"] += 1
+            else:
+                engine_stats[g.white_engine]["draws"] += 1
+                engine_stats[g.black_engine]["draws"] += 1
+        for name, s in engine_stats.items():
+            total_p = s["wins"] + s["losses"] + s["draws"]
+            if total_p > 0:
+                s["win_rate"] = (s["wins"] + 0.5 * s["draws"]) / float(total_p)
 
         # Timing analysis
         all_move_times = []
@@ -288,6 +327,8 @@ class MetricsAnalyzer:
                 "win_rate": white_wins / total_games if total_games > 0 else 0,
                 "draw_rate": draws / total_games if total_games > 0 else 0
             },
+
+            "by_engine": engine_stats,
 
             "timing": {
                 "avg_time_per_move": avg_time_per_move,

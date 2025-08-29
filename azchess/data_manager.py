@@ -30,6 +30,7 @@ class DataShard:
     created_at: str
     checksum: str
     version: str
+    source: str | None = None
     corrupted: bool = False
 
     def __repr__(self) -> str:
@@ -945,6 +946,33 @@ class DataManager:
                 logger.error(f"Failed to import shard {f}: {e}")
         return count
 
+    def import_stockfish_tree(self, root_dir: str, move_files: bool = False) -> int:
+        """Recursively import NPZ files from a Stockfish-generated tree, tagging sources.
+
+        Expected layout: <root>/<domain>/<subcategory>/*.npz
+        Records source as "stockfish:<domain>/<subcategory>" for filtering.
+        """
+        root = Path(root_dir)
+        if not root.exists():
+            logger.warning("Stockfish root does not exist: %s", root)
+            return 0
+        imported = 0
+        for npz_path in root.rglob('*.npz'):
+            try:
+                rel = npz_path.relative_to(root)
+                parts = rel.parts
+                if len(parts) < 3:
+                    # domain/subcategory/file.npz
+                    source_tag = "stockfish:unknown"
+                else:
+                    domain = parts[0]
+                    subcat = parts[1]
+                    source_tag = f"stockfish:{domain}/{subcat}"
+                imported += self.import_replay_dir(str(npz_path.parent), source=source_tag, move_files=move_files)
+            except Exception as e:
+                logger.error("Failed to import %s: %s", npz_path, e)
+        return imported
+
     def _record_shard(self, path: str, size_bytes: int, sample_count: int, 
                       created_at: str, checksum: str, source: str = "selfplay"):
         """Record shard metadata in database."""
@@ -967,22 +995,108 @@ class DataManager:
         """Get paths of valid (non-corrupted) shards."""
         conn = self._connect()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT path FROM shards WHERE corrupted = FALSE ORDER BY created_at DESC")
-        paths = [row[0] for row in cursor.fetchall()]
-        
+        rows = cursor.fetchall()
         conn.close()
-        
+        paths = [row[0] for row in rows]
         # Filter out paths that don't exist on disk
         valid_paths = []
         for path in paths:
             if Path(path).exists():
                 valid_paths.append(path)
             else:
-                # Mark as corrupted if file doesn't exist
                 self._mark_shard_corrupted(path)
-        
         return valid_paths
+
+    def _get_valid_shard_paths_by_source_prefixes(self, prefixes: List[str]) -> List[str]:
+        """Get valid shard paths whose source starts with any of the given prefixes."""
+        if not prefixes:
+            return self._get_valid_shard_paths()
+        conn = self._connect()
+        cursor = conn.cursor()
+        # Fetch path and source to filter in Python for portability
+        cursor.execute("SELECT path, source FROM shards WHERE corrupted = FALSE ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        valid = []
+        for path, source in rows:
+            try:
+                if not Path(path).exists():
+                    self._mark_shard_corrupted(path)
+                    continue
+                src = source or ""
+                if any(src.startswith(pref) for pref in prefixes):
+                    valid.append(path)
+            except Exception:
+                continue
+        return valid
+
+    def get_training_batch_by_source_prefixes(self, batch_size: int, prefixes: List[str]) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+        """Yield training batches constrained to shards whose source matches any prefix.
+
+        Prefix example: ["stockfish:openings/", "stockfish:king_safety/"]
+        """
+        shard_paths = self._get_valid_shard_paths_by_source_prefixes(prefixes)
+        if not shard_paths:
+            raise RuntimeError("No valid training data available for requested sources")
+        np.random.shuffle(shard_paths)
+        for shard_path in shard_paths:
+            try:
+                with np.load(shard_path, mmap_mode='r') as data:
+                    states = data['s']
+                    policies = data['pi']
+                    values = data['z']
+                    legal_mask_all = data.get('legal_mask', None)
+                    if values.ndim == 2 and values.shape[1] == 1:
+                        values = values.reshape(values.shape[0])
+                    if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
+                        self._mark_shard_corrupted(shard_path)
+                        continue
+                    if legal_mask_all is not None:
+                        try:
+                            if legal_mask_all.ndim > 2:
+                                legal_mask_all = legal_mask_all.reshape(legal_mask_all.shape[0], -1)
+                            if legal_mask_all.dtype != np.uint8:
+                                legal_mask_all = legal_mask_all.astype(np.uint8, copy=False)
+                        except Exception:
+                            legal_mask_all = None
+                    indices = np.random.permutation(len(states))
+                    states = states[indices]
+                    policies = policies[indices]
+                    values = values[indices]
+                    if legal_mask_all is not None:
+                        legal_mask_all = legal_mask_all[indices]
+                    for i in range(0, len(states), batch_size):
+                        batch_states = states[i:i+batch_size]
+                        batch_policies = policies[i:i+batch_size]
+                        batch_values = values[i:i+batch_size]
+                        batch_legal = None
+                        if legal_mask_all is not None:
+                            batch_legal = legal_mask_all[i:i+batch_size]
+                            try:
+                                target_mask = (batch_policies > 0)
+                                if batch_legal.shape == target_mask.shape:
+                                    batch_legal = np.logical_or(batch_legal.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
+                            except Exception:
+                                pass
+                        if not batch_states.flags['C_CONTIGUOUS']:
+                            batch_states = np.ascontiguousarray(batch_states)
+                        if not batch_policies.flags['C_CONTIGUOUS']:
+                            batch_policies = np.ascontiguousarray(batch_policies)
+                        if not batch_values.flags['C_CONTIGUOUS']:
+                            batch_values = np.ascontiguousarray(batch_values)
+                        if batch_states.dtype != np.float32:
+                            batch_states = batch_states.astype(np.float32, copy=False)
+                        if batch_policies.dtype != np.float32:
+                            batch_policies = batch_policies.astype(np.float32, copy=False)
+                        if batch_values.dtype != np.float32:
+                            batch_values = batch_values.astype(np.float32, copy=False)
+                        if len(batch_states) == batch_size:
+                            yield batch_states, batch_policies, batch_values, batch_legal
+            except Exception as e:
+                logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
+                self._mark_shard_corrupted(shard_path)
+                continue
     
     def _get_all_shards(self) -> List[DataShard]:
         """Get all shards with metadata."""
@@ -990,7 +1104,7 @@ class DataManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT path, size_bytes, sample_count, created_at, checksum, version, corrupted
+            SELECT path, size_bytes, sample_count, created_at, checksum, version, source, corrupted
             FROM shards ORDER BY created_at DESC
         """)
         
@@ -1003,7 +1117,8 @@ class DataManager:
                 created_at=row[3],
                 checksum=row[4],
                 version=row[5],
-                corrupted=bool(row[6])
+                source=row[6],
+                corrupted=bool(row[7])
             ))
         
         conn.close()

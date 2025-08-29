@@ -14,7 +14,9 @@ engines:
     options:
       Threads: "4"
       Hash: "512"
-      Skill Level: "20"
+      Skill Level: "10"
+      UCI_LimitStrength: "true"
+      UCI_Elo: "2000"
 
   lc0:
     command: "lc0"

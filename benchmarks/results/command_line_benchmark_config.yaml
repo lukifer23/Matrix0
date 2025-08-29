@@ -12,12 +12,13 @@ scenarios:
   engine_config:
     command: stockfish
     name: stockfish
-    options: {}
+    options:
+      Skill Level: '0'
     working_dir: null
   max_moves: 200
-  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/enhanced_best.pt
+  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/pretrain_ext_sf_enhanced_ema_after_fill_step_3000.pt
   name: stockfish_benchmark
-  num_games: 3
+  num_games: 10
   opening_book: null
   opening_plies: 8
   random_openings: true

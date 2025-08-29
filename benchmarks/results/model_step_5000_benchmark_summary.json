@@ -1,25 +1,39 @@
 {
-  "total_games": 6,
-  "total_moves": 224,
-  "total_duration": 526.5806562900543,
-  "avg_game_duration": 87.76344271500905,
-  "avg_moves_per_game": 37.333333333333336,
+  "total_games": 1,
+  "total_moves": 2,
+  "total_duration": 10.898175954818726,
+  "avg_game_duration": 10.898175954818726,
+  "avg_moves_per_game": 2.0,
   "results": {
-    "white_wins": 0,
+    "white_wins": 1,
     "black_wins": 0,
-    "draws": 6,
-    "win_rate": 0.0,
-    "draw_rate": 1.0
+    "draws": 0,
+    "win_rate": 1.0,
+    "draw_rate": 0.0
+  },
+  "by_engine": {
+    "Matrix0": {
+      "wins": 0,
+      "losses": 1,
+      "draws": 0,
+      "win_rate": 0.0
+    },
+    "stockfish_club": {
+      "wins": 1,
+      "losses": 0,
+      "draws": 0,
+      "win_rate": 1.0
+    }
   },
   "timing": {
-    "avg_time_per_move": 2.3501142965895787,
-    "min_time_per_move": 0.004718780517578125,
-    "max_time_per_move": 17.250284910202026,
-    "time_variance": 5.428731936421082
+    "avg_time_per_move": 5.437907934188843,
+    "min_time_per_move": 0.013883829116821289,
+    "max_time_per_move": 10.861932039260864,
+    "time_variance": 29.420037492402344
   },
   "resources": {
-    "avg_cpu_usage": 39.062966507176974,
-    "avg_memory_usage": 62.38047846889954,
-    "peak_memory_gb": 10.008529663085938
+    "avg_cpu_usage": 62.881818181818204,
+    "avg_memory_usage": 60.96363636363637,
+    "peak_memory_gb": 10.085418701171875
   }
 }

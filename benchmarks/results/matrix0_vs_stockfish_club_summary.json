@@ -1,0 +1,39 @@
+{
+  "total_games": 20,
+  "total_moves": 692,
+  "total_duration": 1175.1039078235626,
+  "avg_game_duration": 58.755195391178134,
+  "avg_moves_per_game": 34.6,
+  "results": {
+    "white_wins": 10,
+    "black_wins": 10,
+    "draws": 0,
+    "win_rate": 0.5,
+    "draw_rate": 0.0
+  },
+  "by_engine": {
+    "stockfish_club": {
+      "wins": 0,
+      "losses": 20,
+      "draws": 0,
+      "win_rate": 0.0
+    },
+    "Matrix0": {
+      "wins": 20,
+      "losses": 0,
+      "draws": 0,
+      "win_rate": 1.0
+    }
+  },
+  "timing": {
+    "avg_time_per_move": 1.694747287069442,
+    "min_time_per_move": 0.409883975982666,
+    "max_time_per_move": 9.030537128448486,
+    "time_variance": 1.52047475146154
+  },
+  "resources": {
+    "avg_cpu_usage": 55.236662228140275,
+    "avg_memory_usage": 56.25917443408889,
+    "peak_memory_gb": 10.483230590820312
+  }
+}

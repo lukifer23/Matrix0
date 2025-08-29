@@ -49,7 +49,7 @@ def main():
     print("\n📋 To run a real benchmark:")
     print("1. Ensure you have a trained Matrix0 model in checkpoints/")
     print("2. Install UCI engines (Stockfish, lc0, etc.)")
-    print("3. Run: python benchmarks/benchmark.py --config benchmarks/configs/default.yaml")
+    print("3. Run: python benchmarks/benchmark.py --config benchmarks/configs/default.yaml --mcts-sims 1200 --live")
 
     print("\n📊 Expected output files:")
     print("• benchmarks/results/matrix0_benchmark_results.json")

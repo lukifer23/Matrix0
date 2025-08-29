@@ -18,13 +18,13 @@ scenarios:
       Threads: '4'
     working_dir: null
   max_moves: 150
-  model_checkpoint: checkpoints/model_step_5000.pt
+  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_3000.pt
   name: Stockfish_Weakest_Level0
-  num_games: 3
+  num_games: 10
   opening_book: null
   opening_plies: 8
   random_openings: true
-  time_control: 60+0.6
+  time_control: 15+0.2
 statistical_config:
   calculate_elo: true
   confidence_level: 0.95

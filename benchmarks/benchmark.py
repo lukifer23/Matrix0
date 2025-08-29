@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import chess
+import chess.pgn
 
 import psutil
 import yaml
@@ -40,6 +41,10 @@ from benchmarks.config import (BenchmarkConfig, ConfigManager, TestScenario,
 from benchmarks.metrics import (BenchmarkMetrics, GameMetrics, MetricsAnalyzer,
                                 MetricsCollector)
 from benchmarks.uci_bridge import EngineManager
+from azchess.encoding import move_to_index
+from rich.table import Table
+from rich.live import Live
+from rich import box
 
 if TORCH_AVAILABLE:
     from azchess.config import Config
@@ -51,12 +56,18 @@ if TORCH_AVAILABLE:
 class BenchmarkRunner:
     """Main benchmark execution engine."""
 
-    def __init__(self, config: BenchmarkConfig):
+    def __init__(self, config: BenchmarkConfig, live_enabled: bool = False, pgn_dir: Optional[str] = None, hb_interval: float = 5.0, mcts_sims: Optional[int] = None):
         self.config = config
         self.engine_manager = EngineManager()
         self.metrics_collector = MetricsCollector(
             sample_interval=config.performance_config.sample_interval
         )
+        self.live_enabled = bool(live_enabled)
+        self.pgn_dir: Optional[Path] = Path(pgn_dir) if pgn_dir else None
+        self.hb_interval: float = float(hb_interval)
+        self.live: Optional[Live] = None
+        # Optional CLI override for Matrix0 MCTS simulations
+        self.cli_sims: Optional[int] = int(mcts_sims) if mcts_sims is not None else None
 
         # Load Matrix0 model
         self.model = None
@@ -74,6 +85,81 @@ class BenchmarkRunner:
 
         logger.info(f"Initialized benchmark runner with {len(config.scenarios)} scenarios")
         logger.info(f"System resources - CPU cores: {len(psutil.cpu_percent(percpu=True))} | Memory: {psutil.virtual_memory().total // (1024**3)}GB | Device: {self.device}")
+
+    def _build_live_table(self, scenario: TestScenario, current_game: int, total_games: int, games: List[GameMetrics], game_status: str = "") -> Table:
+        # Aggregate Matrix0-centric results from games list
+        m_wins = 0
+        m_losses = 0
+        draws = 0
+        total_moves = 0
+        all_move_times: List[float] = []
+        for g in games:
+            total_moves += int(g.total_moves)
+            for mv in g.move_times:
+                t = mv.get('time', 0.0)
+                if isinstance(t, (int, float)):
+                    all_move_times.append(float(t))
+            if g.result == "1/2-1/2":
+                draws += 1
+            elif g.winner == "white" and g.white_engine == "Matrix0":
+                m_wins += 1
+            elif g.winner == "black" and g.black_engine == "Matrix0":
+                m_wins += 1
+            else:
+                # loss for Matrix0 when other side wins
+                if g.result in ("1-0", "0-1"):
+                    m_losses += 1
+
+        played = len(games)
+        win_rate = (m_wins + 0.5 * draws) / played if played > 0 else 0.0
+        # Low-N Elo estimate with 95% CI
+        elo_str = "-"
+        if played > 0:
+            import math
+            s = min(max(win_rate, 1e-6), 1.0 - 1e-6)
+            elo = 400.0 * math.log10(s / (1.0 - s))
+            se = math.sqrt(max(s * (1.0 - s) / float(played), 1e-12))
+            lo_s = min(max(s - 1.96 * se, 1e-6), 1.0 - 1e-6)
+            hi_s = min(max(s + 1.96 * se, 1e-6), 1.0 - 1e-6)
+            elo_lo = 400.0 * math.log10(lo_s / (1.0 - lo_s))
+            elo_hi = 400.0 * math.log10(hi_s / (1.0 - hi_s))
+            elo_str = f"{elo:.0f} [{elo_lo:.0f},{elo_hi:.0f}]"
+
+        avg_moves = (total_moves / played) if played > 0 else 0.0
+        avg_t = (sum(all_move_times) / len(all_move_times)) if all_move_times else 0.0
+        var_t = MetricsAnalyzer._calculate_variance(all_move_times) if all_move_times else 0.0
+
+        table = Table(title=f"Matrix0 vs {scenario.engine_config.name} — {scenario.time_control}", box=box.SIMPLE_HEAVY)
+        table.add_column("Progress", justify="left")
+        table.add_column("W", justify="right")
+        table.add_column("D", justify="right")
+        table.add_column("L", justify="right")
+        table.add_column("Win%", justify="right")
+        table.add_column("Elo±", justify="right")
+        table.add_column("AvgMoves", justify="right")
+        table.add_column("AvgT/move", justify="right")
+        table.add_column("VarT", justify="right")
+        table.add_row(
+            f"{min(current_game, total_games)}/{total_games}",
+            str(m_wins),
+            str(draws),
+            str(m_losses),
+            f"{(100.0*win_rate):.1f}",
+            elo_str,
+            f"{avg_moves:.1f}",
+            f"{avg_t:.3f}s",
+            f"{var_t:.4f}"
+        )
+
+        if game_status:
+            table.add_row(f"{game_status}", "", "", "", "", "", "", "", "")
+        return table
+
+    def _refresh_live(self, scenario: TestScenario, current_game: int, total_games: int, games: List[GameMetrics], game_status: str = "") -> None:
+        if not self.live_enabled or self.live is None:
+            return
+        table = self._build_live_table(scenario, current_game, total_games, games, game_status)
+        self.live.update(table)
 
     def load_model(self, checkpoint_path: str) -> bool:
         """Load Matrix0 model from checkpoint."""
@@ -103,16 +189,17 @@ class BenchmarkRunner:
 
             # Initialize MCTS with benchmark-appropriate settings
             mcts_config = MCTSConfig(
-                num_simulations=200,  # Match config.yaml setting
+                num_simulations=(self.cli_sims if self.cli_sims is not None else 800),
                 cpuct=2.2,
                 dirichlet_alpha=0.3,
                 dirichlet_frac=0.0,
                 tt_capacity=100000,
-                selection_jitter=0.0
+                selection_jitter=0.0,
+                enable_entropy_noise=False  # No entropy noise during benchmark eval
             )
 
             self.mcts = MCTS(mcts_config, self.model, self.device)
-            logger.info(f"MCTS initialized with 200 simulations per move on device: {self.device}")
+            logger.info(f"MCTS initialized with {mcts_config.num_simulations} simulations per move on device: {self.device}")
             return True
 
         except Exception as e:
@@ -130,29 +217,38 @@ class BenchmarkRunner:
             end_time=0.0  # Will be updated when benchmark completes
         )
 
+        # Optional live view context per scenario
         # Run each scenario
         for scenario in self.config.scenarios:
             logger.info(f"Running scenario: {scenario.name}")
 
-            # Load model if needed
-            if self.model is None:
-                if not self.load_model(scenario.model_checkpoint):
-                    logger.error(f"Skipping scenario {scenario.name} - model load failed")
+            live_ctx = Live(self._build_live_table(scenario, 0, scenario.num_games, benchmark_metrics.games, "Ready"), refresh_per_second=4) if self.live_enabled else None
+            if live_ctx:
+                self.live = live_ctx
+                self.live.start()
+            try:
+                # Load model if needed
+                if self.model is None:
+                    if not self.load_model(scenario.model_checkpoint):
+                        logger.error(f"Skipping scenario {scenario.name} - model load failed")
+                        continue
+
+                # Add and start engine
+                logger.info(f"Adding engine {scenario.engine_config.name}...")
+                if not self.engine_manager.add_engine(scenario.engine_config):
+                    logger.error(f"Skipping scenario {scenario.name} - engine start failed")
                     continue
+                logger.info(f"Engine {scenario.engine_config.name} started successfully")
 
-            # Add and start engine
-            logger.info(f"Adding engine {scenario.engine_config.name}...")
-            if not self.engine_manager.add_engine(scenario.engine_config):
-                logger.error(f"Skipping scenario {scenario.name} - engine start failed")
-                continue
-            logger.info(f"Engine {scenario.engine_config.name} started successfully")
-
-            # Run scenario
-            scenario_metrics = self._run_scenario(scenario)
-            benchmark_metrics.games.extend(scenario_metrics)
-
-            # Clean up engine
-            self.engine_manager.remove_engine(scenario.engine_config.name)
+                # Run scenario
+                scenario_metrics = self._run_scenario(scenario)
+                benchmark_metrics.games.extend(scenario_metrics)
+            finally:
+                # Clean up engine and live view
+                self.engine_manager.remove_engine(scenario.engine_config.name)
+                if live_ctx:
+                    live_ctx.stop()
+                    self.live = None
 
         # Finalize benchmark
         benchmark_metrics.end_time = time.time()
@@ -224,6 +320,9 @@ class BenchmarkRunner:
                 logger.error(f"Engine {scenario.engine_config.name} not available")
                 return None
 
+            # Alternate sides: even-indexed games -> Matrix0 plays White, odd -> Matrix0 plays Black
+            matrix0_white = (game_id % 2 == 0)
+
             game_metrics = GameMetrics(
                 game_id=f"{scenario.name}_game_{game_id}",
                 start_time=time.time(),
@@ -231,8 +330,8 @@ class BenchmarkRunner:
                 total_moves=0,  # Will be updated as game progresses
                 result="*",  # Will be updated when game ends
                 winner="unknown",  # Will be updated when game ends
-                white_engine="Matrix0",
-                black_engine=scenario.engine_config.name
+                white_engine=("Matrix0" if matrix0_white else scenario.engine_config.name),
+                black_engine=(scenario.engine_config.name if matrix0_white else "Matrix0")
             )
 
             # Initialize engines
@@ -250,11 +349,22 @@ class BenchmarkRunner:
 
             # Play game
             termination_reason = ""
+            last_hb = time.time()
             for move_num in range(scenario.max_moves):
-                logger.info(f"Move {move_num + 1}: {'White (Matrix0)' if move_num % 2 == 0 else 'Black (Stockfish)'} to move")
+                is_white_turn = (move_num % 2 == 0)
+                is_matrix0_turn = (is_white_turn and matrix0_white) or ((not is_white_turn) and (not matrix0_white))
+                side_label = ("White" if is_white_turn else "Black")
+                to_move_label = f"{side_label} ({'Matrix0' if is_matrix0_turn else scenario.engine_config.name})"
+                logger.info(f"Move {move_num + 1}: {to_move_label} to move")
                 start_time = time.time()
 
                 try:
+                    # Live heartbeat update
+                    if self.live_enabled and self.live is not None and (time.time() - last_hb) >= self.hb_interval:
+                        status = f"Game {game_id + 1}/{scenario.num_games} • Move {move_num + 1} • {to_move_label}"
+                        # Update outer progress table using all completed games so far
+                        self._refresh_live(scenario, game_id + 1, scenario.num_games, [*[]], status)
+                        last_hb = time.time()
                     # Validate board and detect terminal positions before making a move
                     board = chess.Board(current_fen)
                     for move_uci in moves:
@@ -269,27 +379,39 @@ class BenchmarkRunner:
                         termination_reason = "terminal_position"
                         logger.info("Position is terminal before move; ending game.")
                         break
-                    if move_num % 2 == 0:  # White to move (Matrix0)
+                    if is_matrix0_turn:
                         logger.info("🤖 Matrix0 thinking...")
-                        move, move_time = self._get_matrix0_move(current_fen, moves)
+                        move, move_time, diag = self._get_matrix0_move(current_fen, moves)
                         logger.info(f"🤖 Matrix0 played: {move}")
-                    else:  # Black to move (UCI engine)
+                    else:
                         logger.info("♟️  Stockfish thinking...")
                         engine.set_position(current_fen, moves)
                         move, move_time = engine.go(scenario.time_control)
+                        diag = None
                         logger.info(f"♟️  Stockfish played: {move}")
 
                     end_time = time.time()
                     actual_time = end_time - start_time
 
-                    # Record move time
-                    game_metrics.move_times.append({
+                    # Record move time + diagnostics
+                    mt_rec = {
                         "move_num": move_num + 1,
                         "player": "white" if move_num % 2 == 0 else "black",
                         "move": move,
                         "time": actual_time,
                         "timestamp": end_time
-                    })
+                    }
+                    # Attach diagnostics on Matrix0 moves
+                    if is_matrix0_turn and isinstance(diag, dict):
+                        if diag.get('empty_visits'):
+                            game_metrics.mcts_empty_visits += 1
+                        ent = diag.get('root_policy_entropy')
+                        if isinstance(ent, (int, float)):
+                            game_metrics.root_policy_entropy_sum += float(ent)
+                            game_metrics.root_policy_entropy_samples += 1
+                        mt_rec['root_entropy'] = ent
+                        mt_rec['mcts_empty'] = bool(diag.get('empty_visits', False))
+                    game_metrics.move_times.append(mt_rec)
 
                     # Update game state
                     moves.append(move)
@@ -297,7 +419,7 @@ class BenchmarkRunner:
                     # For now, we'll keep the initial FEN and rely on move list
 
                     # Update timing totals
-                    if move_num % 2 == 0:
+                    if is_white_turn:
                         game_metrics.white_total_time += actual_time
                     else:
                         game_metrics.black_total_time += actual_time
@@ -346,12 +468,13 @@ class BenchmarkRunner:
                     except Exception:
                         break
                 if current_board.is_checkmate():
-                    if current_board.turn:  # Black to move -> white delivered mate
-                        game_metrics.result = "1-0"
-                        game_metrics.winner = "white"
-                    else:
+                    # Side to move is checkmated in python-chess
+                    if current_board.turn:
                         game_metrics.result = "0-1"
                         game_metrics.winner = "black"
+                    else:
+                        game_metrics.result = "1-0"
+                        game_metrics.winner = "white"
                 elif current_board.is_stalemate() or current_board.is_insufficient_material() or current_board.can_claim_threefold_repetition() or current_board.can_claim_fifty_moves():
                     game_metrics.result = "1/2-1/2"
                     game_metrics.winner = "draw"
@@ -362,14 +485,15 @@ class BenchmarkRunner:
                     current_board.push_uci(move)
 
                 if current_board.is_checkmate():
-                    if current_board.turn:  # Black to move, so White won
-                        game_metrics.result = "1-0"
-                        game_metrics.winner = "white"
-                        logger.info(f"🏁 Checkmate! White (Matrix0) wins!")
-                    else:
+                    # Side to move is checkmated
+                    if current_board.turn:
                         game_metrics.result = "0-1"
                         game_metrics.winner = "black"
-                        logger.info(f"🏁 Checkmate! Black ({scenario.engine_config.name}) wins!")
+                        logger.info(f"🏁 Checkmate! Black ({game_metrics.black_engine}) wins!")
+                    else:
+                        game_metrics.result = "1-0"
+                        game_metrics.winner = "white"
+                        logger.info(f"🏁 Checkmate! White ({game_metrics.white_engine}) wins!")
                 elif current_board.is_stalemate():
                     game_metrics.result = "1/2-1/2"
                     game_metrics.winner = "draw"
@@ -386,24 +510,61 @@ class BenchmarkRunner:
 
             # Clear winner announcement
             if game_metrics.winner == "white":
-                winner_name = "Matrix0"
-                logger.info(f"🎉 WINNER: Matrix0 (White) defeated {scenario.engine_config.name}!")
+                winner_name = game_metrics.white_engine
+                loser_name = game_metrics.black_engine
+                logger.info(f"🎉 WINNER: {winner_name} (White) defeated {loser_name}!")
             elif game_metrics.winner == "black":
-                winner_name = scenario.engine_config.name
-                logger.info(f"🎉 WINNER: {scenario.engine_config.name} (Black) defeated Matrix0!")
+                winner_name = game_metrics.black_engine
+                loser_name = game_metrics.white_engine
+                logger.info(f"🎉 WINNER: {winner_name} (Black) defeated {loser_name}!")
             else:
                 winner_name = "Draw"
-                logger.info(f"🤝 DRAW: Matrix0 vs {scenario.engine_config.name}")
+                logger.info(f"🤝 DRAW: {game_metrics.white_engine} vs {game_metrics.black_engine}")
 
             logger.info(f"Game completed: {game_metrics.total_moves} moves, result: {game_metrics.result} ({winner_name})")
+
+            # Optional PGN export
+            try:
+                if self.pgn_dir:
+                    self.pgn_dir.mkdir(parents=True, exist_ok=True)
+                    game = chess.pgn.Game()
+                    game.headers["Event"] = scenario.name
+                    game.headers["White"] = game_metrics.white_engine
+                    game.headers["Black"] = game_metrics.black_engine
+                    game.headers["Result"] = game_metrics.result
+                    board = chess.Board()
+                    node = game
+                    for mv in moves:
+                        try:
+                            move_obj = chess.Move.from_uci(mv)
+                            node = node.add_main_variation(move_obj)
+                            board.push(move_obj)
+                        except Exception:
+                            break
+                    # Validate/Correct PGN result header vs reconstructed board
+                    if board.is_game_over(claim_draw=True):
+                        true_res = board.result(claim_draw=True)
+                        if str(true_res) != str(game.headers.get("Result", "")):
+                            logger.warning(f"PGN result mismatch: header={game.headers.get('Result')} actual={true_res}; correcting header")
+                            game.headers["Result"] = true_res
+                    out_path = self.pgn_dir / f"{scenario.name}_game_{game_id}.pgn"
+                    with open(out_path, 'w') as f:
+                        print(game, file=f)
+            except Exception as e:
+                logger.warning(f"PGN export failed for game {game_id}: {e}")
+
             return game_metrics
 
         except Exception as e:
             logger.error(f"Error playing game {game_id}: {e}")
             return None
 
-    def _get_matrix0_move(self, fen: str, moves: List[str]) -> Tuple[str, float]:
-        """Get move from Matrix0 model using MCTS with 200 simulations."""
+    def _get_matrix0_move(self, fen: str, moves: List[str]) -> Tuple[str, float, Dict[str, Any]]:
+        """Get move from Matrix0 model using MCTS with configured simulations.
+
+        Returns: (move_uci, move_time_seconds, diagnostics)
+        diagnostics: { 'empty_visits': bool, 'root_policy_entropy': float }
+        """
         try:
             import chess
             from azchess.encoding import encode_board
@@ -419,8 +580,8 @@ class BenchmarkRunner:
             mcts_start = time.time()
 
             try:
-                # Run MCTS with 200 simulations per move for Matrix0
-                num_simulations = 200  # Target: 200 sims per move
+                # Run MCTS with configured simulations per move for Matrix0
+                num_simulations = int(self.cli_sims) if self.cli_sims is not None else int(getattr(self.mcts.cfg, 'num_simulations', 200))
                 logger.info(f"🧠 Running MCTS with {num_simulations} simulations...")
                 # Ensure MCTS uses the same device as the model
                 visits, policy, value = self.mcts.run(board, num_simulations=num_simulations)
@@ -431,6 +592,27 @@ class BenchmarkRunner:
                 logger.error(f"MCTS failed after {time.time() - mcts_start:.1f}s: {e}")
                 raise
 
+            # Diagnostics: compute legal-only entropy from returned policy
+            root_entropy = None
+            try:
+                legal = list(board.legal_moves)
+                if legal and policy is not None and len(policy) >= 4672:
+                    import math
+                    import numpy as np
+                    mass = []
+                    for mv in legal:
+                        try:
+                            idx = move_to_index(board, mv)
+                            mass.append(float(policy[idx]) if 0 <= idx < len(policy) else 0.0)
+                        except Exception:
+                            mass.append(0.0)
+                    s = sum(mass)
+                    if s > 0:
+                        p = [x / s for x in mass]
+                        root_entropy = -sum((x * math.log(max(x, 1e-12)) for x in p))
+            except Exception:
+                root_entropy = None
+
             # Get best move from visit counts
             if visits:
                 best_move = max(visits.items(), key=lambda x: x[1])[0]
@@ -438,24 +620,38 @@ class BenchmarkRunner:
                 move_time = time.time() - start_time
 
                 logger.debug(f"Matrix0 move: {move_uci} in {move_time:.3f}s")
-                return move_uci, move_time
+                return move_uci, move_time, {"empty_visits": False, "root_policy_entropy": root_entropy}
             else:
-                logger.warning("No moves found from MCTS, using fallback")
-                # Fallback: random legal move to avoid deterministic blunders
+                logger.warning("No moves found from MCTS, using policy-based fallback")
+                # Fallback: choose legal move with highest policy probability
+                legal_moves = list(board.legal_moves)
+                if legal_moves and policy is not None and len(policy) >= 4672:
+                    best = None
+                    best_score = -1.0
+                    for mv in legal_moves:
+                        try:
+                            idx = move_to_index(board, mv)
+                            score = float(policy[idx]) if 0 <= idx < len(policy) else 0.0
+                        except Exception:
+                            score = 0.0
+                        if score > best_score:
+                            best_score = score
+                            best = mv
+                    if best is not None:
+                        move_uci = best.uci()
+                        move_time = time.time() - start_time
+                        return move_uci, move_time, {"empty_visits": True, "root_policy_entropy": root_entropy}
+                # Final fallback
                 legal_moves = list(board.legal_moves)
                 if legal_moves:
-                    import random
-                    fallback_move = random.choice(legal_moves)
-                    move_uci = fallback_move.uci()
-                    move_time = time.time() - start_time
-                    return move_uci, move_time
-                else:
-                    logger.error("No legal moves available (terminal position)")
-                    return "", 0.0
+                    best = legal_moves[0]
+                    return best.uci(), time.time() - start_time, {"empty_visits": True, "root_policy_entropy": root_entropy}
+                logger.error("No legal moves available (terminal position)")
+                return "", 0.0, {"empty_visits": True, "root_policy_entropy": root_entropy}
 
         except Exception as e:
             logger.error(f"Error getting Matrix0 move: {e}")
-            return "", 0.0
+            return "", 0.0, {"empty_visits": True, "root_policy_entropy": None}
 
     def _calculate_aggregate_stats(self, benchmark_metrics: BenchmarkMetrics):
         """Calculate aggregate statistics for the benchmark."""
@@ -468,6 +664,45 @@ class BenchmarkRunner:
         benchmark_metrics.white_wins = sum(1 for game in games if game.result == "1-0")
         benchmark_metrics.black_wins = sum(1 for game in games if game.result == "0-1")
         benchmark_metrics.draws = sum(1 for game in games if game.result == "1/2-1/2")
+
+        # Engine-centric aggregation (Matrix0 vs Opponent)
+        engine_names = set()
+        for g in games:
+            engine_names.add(g.white_engine)
+            engine_names.add(g.black_engine)
+
+        engine_stats: Dict[str, Dict[str, Any]] = {}
+        for name in engine_names:
+            engine_stats[name] = {
+                "wins": 0,
+                "losses": 0,
+                "draws": 0,
+                "win_rate": 0.0,
+            }
+
+        for g in games:
+            if g.winner == "white":
+                winner = g.white_engine
+                loser = g.black_engine
+                engine_stats[winner]["wins"] += 1
+                engine_stats[loser]["losses"] += 1
+            elif g.winner == "black":
+                winner = g.black_engine
+                loser = g.white_engine
+                engine_stats[winner]["wins"] += 1
+                engine_stats[loser]["losses"] += 1
+            else:
+                # Draw counts for both engines
+                engine_stats[g.white_engine]["draws"] += 1
+                engine_stats[g.black_engine]["draws"] += 1
+
+        # Finalize win rates per engine
+        for name, s in engine_stats.items():
+            total_played = s["wins"] + s["losses"] + s["draws"]
+            if total_played > 0:
+                s["win_rate"] = (s["wins"] + 0.5 * s["draws"]) / float(total_played)
+
+        benchmark_metrics.engine_stats = engine_stats
 
         # Calculate averages
         total_duration = sum(game.duration for game in games)
@@ -513,6 +748,8 @@ class BenchmarkRunner:
         # Export summary report
         summary_path = output_dir / f"{self.config.name.replace(' ', '_').lower()}_summary.json"
         summary = MetricsAnalyzer.analyze_game_metrics(benchmark_metrics.games)
+        # Attach engine-centric aggregation to summary for clarity
+        summary["by_engine"] = benchmark_metrics.engine_stats
 
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2)
@@ -572,7 +809,12 @@ def main():
     parser.add_argument("--engine", type=str, help="UCI engine name")
     parser.add_argument("--games", type=int, default=10, help="Number of games")
     parser.add_argument("--time-control", type=str, default="30+0.3", help="Time control")
+    parser.add_argument("--mcts-sims", type=int, default=None, help="Override Matrix0 MCTS simulations per move (recommended 800–1600)")
+    parser.add_argument("--engine-option", action='append', default=None, help="UCI engine option override, e.g. --engine-option 'Skill Level=8' --engine-option 'UCI_Elo=1500'")
     parser.add_argument("--output", type=str, default="benchmarks/results", help="Output directory")
+    parser.add_argument("--live", action="store_true", help="Enable live TUI updates per game")
+    parser.add_argument("--export-pgns", type=str, default=None, help="Directory to export PGN files per game")
+    parser.add_argument("--hb-interval", type=float, default=5.0, help="Heartbeat interval in seconds for live TUI")
 
     args = parser.parse_args()
 
@@ -584,10 +826,17 @@ def main():
             # Create config from command line args
             from benchmarks.config import TestScenario, UCIEngineConfig
 
+            # Build engine options from CLI overrides
+            options = {}
+            if args.engine_option:
+                for kv in args.engine_option:
+                    if '=' in kv:
+                        k, v = kv.split('=', 1)
+                        options[k.strip()] = v.strip()
             engine_config = UCIEngineConfig(
                 name=args.engine,
                 command=args.engine.lower(),
-                options={}
+                options=options
             )
 
             scenario = TestScenario(
@@ -616,26 +865,30 @@ def main():
             config = ConfigManager.load_config(config_path)
 
         # Run benchmark
-        runner = BenchmarkRunner(config)
+        runner = BenchmarkRunner(config, live_enabled=bool(args.live), pgn_dir=args.export_pgns, hb_interval=float(args.hb_interval), mcts_sims=args.mcts_sims)
         results = runner.run_benchmark()
 
-        # Print summary
-        print("\n📊 Benchmark Summary:")
+        # Print summary (engine-centric)
+        print("\n📊 Benchmark Summary (Matrix0-centric):")
         print(f"Games played: {results.total_games}")
-        print(f"White wins: {results.white_wins}")
-        print(f"Black wins: {results.black_wins}")
-        print(f"Draws: {results.draws}")
+        # Engine-centric lines
+        m = results.engine_stats.get("Matrix0", {"wins": 0, "losses": 0, "draws": 0, "win_rate": 0.0})
+        # Find opponent name(s) excluding Matrix0
+        opponents = [name for name in results.engine_stats.keys() if name != "Matrix0"]
+        opp_display = opponents[0] if opponents else "Opponent"
+        print(f"Matrix0 vs {opp_display}: W {m['wins']} / D {m['draws']} / L {m['losses']} | Win% {(100.0*m['win_rate']):.1f}")
+        # Optional color-based for debugging
+        print(f"(Color split) White wins: {results.white_wins} | Black wins: {results.black_wins} | Draws: {results.draws}")
         # Optional: print averages if available
         if results.total_games > 0:
             print(f"Avg duration: {results.avg_game_duration:.1f}s")
             print(f"Avg moves: {results.avg_moves_per_game:.1f}")
             if results.avg_time_per_move:
                 print(f"Avg time/move: {results.avg_time_per_move:.3f}s")
-            # Elo estimate (low-N): convert score to Elo diff and print a 95% CI (normal approx)
+            # Elo estimate (Matrix0-centric, low-N)
             try:
                 import math
-                score = (results.white_wins + 0.5 * results.draws) / float(results.total_games)
-                s = min(max(score, 1e-6), 1.0 - 1e-6)
+                s = min(max(m['win_rate'], 1e-6), 1.0 - 1e-6)
                 elo = 400.0 * math.log10(s / (1.0 - s))
                 se = math.sqrt(max(s * (1.0 - s) / float(results.total_games), 1e-12))
                 lo_s = min(max(s - 1.96 * se, 1e-6), 1.0 - 1e-6)

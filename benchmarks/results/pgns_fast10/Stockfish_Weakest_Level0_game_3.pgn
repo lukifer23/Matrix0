@@ -1,0 +1,9 @@
+[Event "Stockfish_Weakest_Level0"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "stockfish_weakest"]
+[Black "Matrix0"]
+[Result "0-1"]
+
+1. e4 a5 2. Bc4 d5 3. exd5 Nh6 4. Nc3 Bg4 5. f3 Rg8 6. d4 Kd7 7. Bxh6 Rh8 8. Bf4 b6 9. Kf1 Rg8 10. fxg4 Na6 11. Qd3 Rh8 12. Qe2 h6 13. Nf3 Rg8 14. Bb5+ c6 15. Bxc6+ Kc8 16. d6 Kb8 17. Be4 Rh8 18. dxe7+ Kc8 19. Bf5+ Kb7 20. Qe4+ Ka7 21. Nb5# 0-1

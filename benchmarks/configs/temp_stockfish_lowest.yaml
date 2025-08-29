@@ -1,0 +1,21 @@
+name: "Matrix0 vs Stockfish Lowest"
+description: "Benchmark Matrix0 vs Stockfish Skill Level 0"
+output_dir: benchmarks/results
+engines:
+  stockfish_lowest:
+    command: stockfish
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "0"
+scenarios:
+  - name: Stockfish_Lowest
+    engine: stockfish_lowest
+    model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/pretrain_ext_sf_enhanced_ema_after_fill_step_3000.pt
+    num_games: 10
+    time_control: 30+0.3
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  sample_interval: 0.1
