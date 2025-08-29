@@ -174,7 +174,7 @@ model:
   cross_modal_attention: true     # enable cross-modal attention
   
   # Enhanced SSL/SSRL
-  ssl_tasks: ["piece"]  # basic piece recognition working
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
   ssl_curriculum: true            # enable progressive difficulty
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
   
@@ -383,7 +383,7 @@ model:
   policy_factor_rank: 0
   enable_visual: false
   enable_llm_tutor: false
-  ssl_tasks: ["piece"]  # basic SSL only (currently working)
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
 ```
 
 ### Gradual Fallback Options
@@ -482,7 +482,7 @@ model:
   aux_policy_move_type: true
   enable_visual: true
   enable_llm_tutor: true
-  ssl_tasks: ["piece"]
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
   ssl_curriculum: true
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
 

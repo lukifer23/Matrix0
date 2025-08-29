@@ -18,16 +18,17 @@ model:
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece"]  # Sanity test: piece-only SSL for speed
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # Enable all SSL aux tasks
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
-  num_workers: 4                   # TEST RUN: 4 workers for generation
+  num_workers: 3                   # Next pass: 3 workers
   batch_size: 256                  # Increased from 128 for better efficiency
   max_games: 20                    # TEST RUN: 20 games total
-  max_game_len: 160                # Longer games to reduce early draws
+  max_game_len: 180                # Encourage decisive results
   min_resign_plies: 50             # Avoid premature resignations
-  resign_threshold: -0.98          # Stricter resignation
+  resign_threshold: -0.80          # Slightly earlier resigns to end lost games
+  opening_random_plies: 8          # Randomize first N plies to reduce draws
   num_simulations: 200             # Increased from 160 for better quality
   draw:
     min_plies: 60                  # Require more play before draw checks
@@ -66,11 +67,11 @@ training:
     - data/stockfish_games
 
 orchestrator:
-  initial_games: 20                # TEST RUN: 20 games total
-  subsequent_games: 20             # Force self-play each cycle
-  games_per_cycle: 20              # TEST RUN: Small cycle
+  initial_games: 105               # 3 workers × 35 games
+  subsequent_games: 105            # Keep same scale on subsequent runs
+  games_per_cycle: 105             # Total games per cycle
   train_epochs_per_cycle: 1        # One epoch per cycle
-  eval_games_per_cycle: 0          # TEST RUN: Skip evaluation
+  eval_games_per_cycle: 10         # Enable per-cycle model-vs-best eval
   keep_top_k: 1                    # Keep only best model
   continuous_mode: false           # Single run mode
   checkpoint_override: "v2_base.pt" # Use new attention-enabled checkpoint
@@ -106,11 +107,14 @@ mcts:
   cpuct_start: 2.8
   cpuct_end: 1.8
   cpuct_plies: 40
+  cpuct_c_base: 19652
+  cpuct_c_init: 1.25
   dirichlet_alpha: 0.3
   dirichlet_frac: 0.25
   dirichlet_plies: 16
   selection_jitter: 0.05
   fpu: 0.2
+  fpu_reduction: 0.15
   draw_penalty: -0.5
   tt_capacity: 1000000
   tt_cleanup_frequency: 500
@@ -133,6 +137,7 @@ mcts:
   parallel_simulations: true
   simulation_batch_size: 16        # Increased from 8 for better throughput
   tree_parallelism: true
+  playout_random_frac: 0.3
 
 presets:
   mps:

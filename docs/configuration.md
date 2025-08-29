@@ -236,7 +236,7 @@ The system uses dataclasses for type-safe configuration:
 ```yaml
 model:
   ssl_curriculum: true             # Progressive difficulty
-  ssl_tasks: ["piece"]            # Basic piece recognition working
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
   ssl_warmup_steps: 200            # Gradual SSL introduction
 
 training:
