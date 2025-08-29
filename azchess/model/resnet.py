@@ -1059,6 +1059,20 @@ class PolicyValueNet(nn.Module):
 
         from ..ssl_algorithms import get_ssl_algorithms
         ssl_targets = get_ssl_algorithms().create_enhanced_ssl_targets(board_states)
+        # Optional augmentation for tasks not provided by ssl_algorithms
+        # (e.g., 'pawn_structure', 'king_safety') using a simple python-chess-based provider.
+        try:
+            need_aug = any(t in ssl_tasks for t in ('pawn_structure', 'king_safety'))
+            if need_aug:
+                # Convert to numpy (B,19,8,8) and generate only missing keys
+                from azchess.training.ssl_targets import generate_ssl_targets_from_states
+                s_np = board_states.detach().to('cpu').numpy()
+                simple = generate_ssl_targets_from_states(s_np)
+                for k in ('pawn_structure', 'king_safety'):
+                    if k in ssl_tasks and k not in ssl_targets and k in simple:
+                        ssl_targets[k] = torch.from_numpy(simple[k]).to(device=board_states.device, dtype=torch.float32)
+        except Exception as e:
+            logger.debug(f"SSL simple augmentation skipped: {e}")
         if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
             for key in ssl_targets:
                 if ssl_targets[key].dtype in [torch.float32, torch.float16, torch.bfloat16]:

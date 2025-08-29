@@ -623,6 +623,13 @@ def play_match(
     print("=" * 60)
 
     score = 0.0
+    # Diagnostics accumulators across games (Matrix0 A vs B)
+    a_empty_visits_total = 0
+    b_empty_visits_total = 0
+    a_entropy_sum = 0.0
+    b_entropy_sum = 0.0
+    a_entropy_count = 0
+    b_entropy_count = 0
     pgn_kept = 0
     game_results = []
     start_time = time.time()
@@ -655,6 +662,13 @@ def play_match(
         move_history = []  # Track move history for repetition detection
         
         # Game progress tracking
+        # Per-game diagnostics
+        a_empty_visits = 0
+        b_empty_visits = 0
+        a_ent_sum = 0.0
+        b_ent_sum = 0.0
+        a_ent_count = 0
+        b_ent_count = 0
         while (not board.is_game_over(claim_draw=True)) and (moves_count < max_moves):
             stm_is_white = board.turn == chess.WHITE
             mcts = engines[0] if stm_is_white else engines[1]
@@ -675,6 +689,39 @@ def play_match(
 
             # Pass ply to properly gate early-game exploration and noise
             visits, pi, vroot = mcts.run(board, ply=moves_count)
+            # Diagnostics: record empty visits and root policy entropy (legal-only)
+            try:
+                stm_is_white = board.turn == chess.WHITE
+                is_a_turn = (stm_is_white and white_model.startswith("A")) or ((not stm_is_white) and black_model.startswith("A"))
+                # Empty visits counter
+                if not visits:
+                    if is_a_turn:
+                        a_empty_visits += 1
+                    else:
+                        b_empty_visits += 1
+                # Entropy over legal moves
+                legal = list(board.legal_moves)
+                if legal and pi is not None and len(pi) >= 4672:
+                    mass = []
+                    for mv in legal:
+                        try:
+                            idx = move_to_index(board, mv)
+                            mass.append(float(pi[idx]) if 0 <= idx < len(pi) else 0.0)
+                        except Exception:
+                            mass.append(0.0)
+                    s_mass = sum(mass)
+                    if s_mass > 0:
+                        import math
+                        p = [x / s_mass for x in mass]
+                        ent = -sum((x * math.log(max(x, 1e-12)) for x in p))
+                        if is_a_turn:
+                            a_ent_sum += ent
+                            a_ent_count += 1
+                        else:
+                            b_ent_sum += ent
+                            b_ent_count += 1
+            except Exception:
+                pass
 
             if debug_moves:
                 try:
@@ -708,10 +755,27 @@ def play_match(
                     move = moves[idx]
             else:
                 if not visits:
-                    # Fallback: if MCTS returns no visits, use random legal move
+                    # Fallback: if MCTS returns no visits, pick by policy over legal moves
                     legal_moves = list(board.legal_moves)
-                    move = random.choice(legal_moves)
-                    print(f"  ⚠️  MCTS returned no visits, using random move")
+                    if legal_moves:
+                        try:
+                            best = None
+                            best_score = -1.0
+                            for mv in legal_moves:
+                                try:
+                                    idx = move_to_index(board, mv)
+                                    score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                                except Exception:
+                                    score = 0.0
+                                if score > best_score:
+                                    best_score = score
+                                    best = mv
+                            move = best or random.choice(legal_moves)
+                        except Exception:
+                            move = random.choice(legal_moves)
+                    else:
+                        break
+                    print(f"  ⚠️  MCTS returned no visits, using policy fallback")
                 else:
                     # Low-visit fallback in eval: raise effective temperature when shallow
                     max_visits = max(visits.values()) if visits else 0
@@ -780,6 +844,13 @@ def play_match(
             "final_position": board.fen()
         }
         game_results.append(game_details)
+        # Accumulate per-game diagnostics into run totals
+        a_empty_visits_total += a_empty_visits
+        b_empty_visits_total += b_empty_visits
+        a_entropy_sum += a_ent_sum
+        b_entropy_sum += b_ent_sum
+        a_entropy_count += a_ent_count
+        b_entropy_count += b_ent_count
         
         # Live game result display
         print(f"🎮 Game {g+1:2d}: {game_result:8s} | {moves_count:3d} moves | {game_time:5.1f}s | White: {white_model}")
@@ -862,6 +933,10 @@ def play_match(
     print(f"  🤝 Draws: {draws} ({draws/games:.1%})")
     # Consistent single-line summary
     print(f"EVAL SUMMARY: A={a_wins} B={b_wins} D={draws} WR={win_rate:.3f}")
+    # Diagnostics summary
+    avg_a_entropy = (a_entropy_sum / a_entropy_count) if a_entropy_count > 0 else 0.0
+    avg_b_entropy = (b_entropy_sum / b_entropy_count) if b_entropy_count > 0 else 0.0
+    print(f"DIAG: A_empty={a_empty_visits_total} B_empty={b_empty_visits_total} | A_H(ent)={avg_a_entropy:.3f} B_H(ent)={avg_b_entropy:.3f}")
     # JSONL eval summary
     try:
         import json as _json
@@ -876,6 +951,10 @@ def play_match(
             'draws': int(draws),
             'win_rate': float(win_rate),
             'timestamp': int(__import__('time').time()),
+            'a_empty_visits': int(a_empty_visits_total),
+            'b_empty_visits': int(b_empty_visits_total),
+            'a_avg_root_entropy': float(avg_a_entropy),
+            'b_avg_root_entropy': float(avg_b_entropy),
         }
         with (_logs / 'eval_summary.jsonl').open('a') as _f:
             _f.write(_json.dumps(_rec) + "\n")

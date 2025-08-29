@@ -6,4 +6,4 @@
 [Black "stockfish"]
 [Result "0-1"]
 
-1. g4 h5 2. Nh3 hxg4 3. b4 d6 4. Ng5 d5 5. Ba3 e6 6. Nh7 Bxb4 7. Rg1 Be7 8. Nf8 Bxf8 9. Rh1 Bxa3 10. Rg1 Bc5 11. Rxg4 Nh6 12. Rxg7 Qf6 13. e4 Qxf2# 0-1
+1. Nh3 e5 2. Ng5 d5 3. Nxh7 Bc5 4. Nf8 Bd6 5. c4 dxc4 6. Nh7 f6 7. f4 Rxh7 8. Rg1 Nc6 9. Qb3 f5 10. Qxb7 Bxb7 11. Kd1 Rb8 12. Rh1 Qh4 13. Kc2 Rd8 14. Kc3 Bb4+ 15. Kxc4 Ba6+ 16. Kb3 Rd4 17. Ka4 Be7+ 18. Kb3 g6 19. Rg1 Qxf4 20. Kc3 Qxf1 21. Kb3 Qxe2 22. Kc3 Qc4# 0-1

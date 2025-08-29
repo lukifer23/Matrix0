@@ -99,10 +99,25 @@ def analyze_single_game(ckpt_a_path: str, ckpt_b_path: str, game_idx: int = 0,
                 print(f"📊 Root value: {vroot:.3f}")
                 
             else:
-                # MCTS failed - this is what we want to investigate
-                move = np.random.choice(legal_moves)
+                # MCTS failed - use policy-based fallback for analysis fidelity
+                try:
+                    from azchess.encoding import move_to_index
+                    best = None
+                    best_score = -1.0
+                    for mv in legal_moves:
+                        try:
+                            idx = move_to_index(board, mv)
+                            score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                        except Exception:
+                            score = 0.0
+                        if score > best_score:
+                            best_score = score
+                            best = mv
+                    move = best or np.random.choice(legal_moves)
+                except Exception:
+                    move = np.random.choice(legal_moves)
                 print(f"❌ MCTS returned no visits!")
-                print(f"⚠️  Using random move: {move} (SAN: {board.san(move)})")
+                print(f"⚠️  Using policy-based fallback: {move} (SAN: {board.san(move)})")
                 print(f"🔍 This position needs investigation!")
                 
                 # Let's analyze why MCTS failed
@@ -112,8 +127,23 @@ def analyze_single_game(ckpt_a_path: str, ckpt_b_path: str, game_idx: int = 0,
                 
         except Exception as e:
             print(f"💥 MCTS error: {e}")
-            move = np.random.choice(legal_moves)
-            print(f"⚠️  Using random move: {move}")
+            try:
+                from azchess.encoding import move_to_index
+                best = None
+                best_score = -1.0
+                for mv in legal_moves:
+                    try:
+                        idx = move_to_index(board, mv)
+                        score = float(pi[idx]) if 0 <= idx < len(pi) else 0.0
+                    except Exception:
+                        score = 0.0
+                    if score > best_score:
+                        best_score = score
+                        best = mv
+                move = best or np.random.choice(legal_moves)
+            except Exception:
+                move = np.random.choice(legal_moves)
+            print(f"⚠️  Using policy-based fallback: {move}")
         
         # Record the move
         game_moves.append({

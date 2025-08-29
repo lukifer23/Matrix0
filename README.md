@@ -172,6 +172,23 @@ python -m azchess.tools.bench_mcts
 python -m azchess.tools.process_lichess
 ```
 
+### Diagnostics & Evaluation Improvements
+- Evaluation and benchmarks now report search diagnostics:
+  - `mcts_empty_visits` (count of empty-search fallbacks)
+  - average root policy entropy over legal moves (nats)
+- PGN exports are validated: header `Result` is corrected if it mismatches the reconstructed board result.
+- Evaluation fallbacks are policy-based (no random move injection) and exploration noise is disabled during eval.
+- Recommended MCTS simulations for benchmarks: `--mcts-sims 800–1600`.
+
+### Fast Iteration (Smaller Model)
+- A smaller configuration for faster training/iteration is provided:
+  - `config_small.yaml` (160 channels × 14 blocks, attention-enabled, SSL on)
+- Example run:
+```bash
+python -m azchess.training.train --config config_small.yaml
+```
+Use this to iterate quickly on data/algorithms, then switch back to the main config for strength.
+
 ## 📚 Documentation
 - [Configuration guide](docs/configuration.md)
 - [Web UI guide](docs/webui.md)
@@ -288,5 +305,4 @@ See [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md), [docs/webu
 
 
 cd /Users/admin/Downloads/VSCode/Matrix0 && source .venv/bin/activate && python -m azchess.orchestrator --config config.yaml --games 9 --workers 3 --tui table
-
 

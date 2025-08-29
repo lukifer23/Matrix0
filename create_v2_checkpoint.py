@@ -84,9 +84,12 @@ def create_v2_checkpoint():
         checkpoints_dir = os.path.join(project_root, 'checkpoints')
         os.makedirs(checkpoints_dir, exist_ok=True)
 
-        # Create checkpoint data
+        # Create checkpoint data (save in a compatible format for all loaders)
+        state_dict = model.state_dict()
         checkpoint = {
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': state_dict,
+            'model': state_dict,        # compatibility with loaders expecting 'model'
+            'model_ema': state_dict,    # seed EMA with same weights for fresh start
             'optimizer_state_dict': None,  # Fresh start
             'scheduler_state_dict': None,  # Fresh start
             'epoch': 0,
@@ -95,8 +98,10 @@ def create_v2_checkpoint():
             'config': model_cfg,
             'version': 'v2_fresh_clean',
             'model_config': {
+                'planes': net_config.planes,
                 'channels': net_config.channels,
                 'blocks': net_config.blocks,
+                'policy_size': net_config.policy_size,
                 'attention_heads': net_config.attention_heads,
                 'policy_factor_rank': net_config.policy_factor_rank,
                 'ssl_tasks': net_config.ssl_tasks,

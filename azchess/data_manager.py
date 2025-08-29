@@ -340,12 +340,15 @@ class DataManager:
             Training batch dict with keys 's', 'pi', 'z' or None if no data
         """
         try:
+            # Prefer Stockfish-tagged shards when available
             if source == "tactical":
                 return self._get_tactical_batch(batch_size)
             elif source == "openings":
                 return self._get_openings_batch(batch_size)
             elif source == "mixed":
-                return self._get_mixed_external_batch(batch_size)
+                # Try balanced Stockfish mix first, fallback to legacy mixed
+                sf = self._get_stockfish_mixed_batch(batch_size)
+                return sf if sf is not None else self._get_mixed_external_batch(batch_size)
             else:
                 logger.warning(f"Unknown external data source: {source}")
                 return None
@@ -577,8 +580,10 @@ class DataManager:
     
     def _get_curriculum_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
         """Get curriculum batch with balanced mix and self-play data."""
-        # Try to get external data first
-        external_batch = self._get_mixed_external_batch(batch_size // 2)
+        # Try to get external data first (prefer Stockfish-tagged shards)
+        external_batch = self._get_stockfish_mixed_batch(batch_size // 2)
+        if external_batch is None:
+            external_batch = self._get_mixed_external_batch(batch_size // 2)
         
         # Try to get self-play data for the other half
         try:
@@ -630,6 +635,67 @@ class DataManager:
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum mixed'):
             return None
         return combined_batch
+
+    def _get_stockfish_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Balanced batch sampled from Stockfish-imported shards by domain.
+
+        Mix: 30% openings, 30% tactical, 20% king_safety/weaknesses, 20% endgames/positional.
+        Falls back gracefully if some buckets are missing.
+        """
+        try:
+            # Define prefixes per bucket
+            buckets = [
+                (int(max(1, round(batch_size * 0.30))), ["stockfish:openings/"]),
+                (int(max(1, round(batch_size * 0.30))), ["stockfish:tactical/"]),
+                (int(max(1, round(batch_size * 0.10))), ["stockfish:king_safety/"]),
+                (int(max(1, round(batch_size * 0.10))), ["stockfish:weaknesses/"]),
+                (int(max(1, round(batch_size * 0.10))), ["stockfish:endgames/"]),
+                (batch_size - (int(max(1, round(batch_size * 0.30))) + int(max(1, round(batch_size * 0.30))) + 3*int(max(1, round(batch_size * 0.10))))), ["stockfish:positional/"],
+            ]
+
+            parts: List[Dict[str, np.ndarray]] = []
+            for take, prefs in buckets:
+                if take <= 0:
+                    continue
+                try:
+                    gen = self.get_training_batch_by_source_prefixes(take, prefs)
+                    batch = next(gen, None)
+                    if batch is None:
+                        continue
+                    s, pi, z, lm = batch if len(batch) == 4 else (*batch, None)
+                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
+                    if lm is not None:
+                        d["legal_mask"] = lm
+                    parts.append(d)
+                except Exception:
+                    continue
+
+            if not parts:
+                return None
+
+            # Concatenate parts
+            combined: Dict[str, np.ndarray] = {}
+            for key in ["s", "pi", "z"]:
+                combined[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
+            if all("legal_mask" in p for p in parts):
+                try:
+                    combined["legal_mask"] = np.concatenate([p["legal_mask"] for p in parts], axis=0)
+                except Exception:
+                    combined.pop("legal_mask", None)
+
+            # Shuffle
+            idx = np.random.permutation(len(combined["s"]))
+            for key in ["s", "pi", "z"]:
+                combined[key] = combined[key][idx]
+            if "legal_mask" in combined:
+                combined["legal_mask"] = combined["legal_mask"][idx]
+
+            if not self._validate_shapes(combined['s'], combined['pi'], combined['z'], self.expected_planes, 'stockfish mixed'):
+                return None
+            return combined
+        except Exception as e:
+            logger.debug(f"Stockfish mixed batch failed: {e}")
+            return None
     
     def get_external_data_stats(self) -> Dict[str, int]:
         """Get statistics about external training data availability."""
@@ -1188,7 +1254,8 @@ class DataManager:
         """
         n = states.shape[0]
         ok_states = (states.shape == (n, expected_planes, 8, 8))
-        ok_policies = (policies.shape == (n, 4672))
+        # Accept legacy 4672 and future 1858 policy sizes
+        ok_policies = (policies.shape[0] == n and policies.ndim == 2 and policies.shape[1] in (4672, 1858))
         ok_values = (values.shape == (n,)) or (values.ndim == 2 and values.shape == (n, 1))
         if not (ok_states and ok_policies and ok_values):
             logger.warning(

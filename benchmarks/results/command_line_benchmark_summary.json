@@ -1,9 +1,9 @@
 {
   "total_games": 10,
-  "total_moves": 357,
-  "total_duration": 494.07496666908264,
-  "avg_game_duration": 49.407496666908266,
-  "avg_moves_per_game": 35.7,
+  "total_moves": 387,
+  "total_duration": 627.9916346073151,
+  "avg_game_duration": 62.799163460731506,
+  "avg_moves_per_game": 38.7,
   "results": {
     "white_wins": 5,
     "black_wins": 5,
@@ -26,14 +26,14 @@
     }
   },
   "timing": {
-    "avg_time_per_move": 1.3813073494855095,
-    "min_time_per_move": 0.4020106792449951,
-    "max_time_per_move": 7.406166076660156,
-    "time_variance": 0.8855665844038569
+    "avg_time_per_move": 1.619999271954677,
+    "min_time_per_move": 0.40483713150024414,
+    "max_time_per_move": 9.951988220214844,
+    "time_variance": 1.5996510559469967
   },
   "resources": {
-    "avg_cpu_usage": 18.69089759797718,
-    "avg_memory_usage": 69.72597977243986,
-    "peak_memory_gb": 9.14013671875
+    "avg_cpu_usage": 20.969025522041672,
+    "avg_memory_usage": 75.5827311899237,
+    "peak_memory_gb": 8.086044311523438
   }
 }

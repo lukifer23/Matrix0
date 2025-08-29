@@ -42,7 +42,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
-  checkpoint: "enhanced_best.pt"   # Promote trained checkpoint as base
+  checkpoint: "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/v2_base.pt"   # Start fresh from base
   gradient_accumulation_steps: 2   # Keep effective batch ~256
   grad_clip_norm: 0.5              # Stable
   ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
@@ -57,8 +57,9 @@ training:
   steps_per_epoch: 8000            # Extended training per cycle
   use_curriculum: true
   curriculum_phases:
-    - { name: openings, steps: 1500, description: "Bootstrap with openings-heavy data" }
-    - { name: mixed,    steps: 6500, description: "Blend external + self-play" }
+    - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
+    - { name: tactics,  steps: 3600, description: "Emphasize tactical calculation" }
+    - { name: mixed,    steps: 7600, description: "Blend external + self-play" }
   policy_masking: true             # Smart masking
   policy_label_smoothing: 0.05     # Mild label smoothing for policy CE
   value_loss: "huber"              # Robust value regression
@@ -138,6 +139,7 @@ mcts:
   simulation_batch_size: 16        # Increased from 8 for better throughput
   tree_parallelism: true
   playout_random_frac: 0.3
+  enable_entropy_noise: true
 
 presets:
   mps:
