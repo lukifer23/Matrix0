@@ -1,0 +1,9 @@
+[Event "stockfish_benchmark"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "stockfish"]
+[Black "Matrix0"]
+[Result "1-0"]
+
+1. e4 f5 2. exf5 Nh6 3. Bd3 g5 4. fxg6 Rg8 5. gxh7 b6 6. Qh5+ Rg6 7. Bxg6+ Nf7 8. Bxf7# 1-0

@@ -1,0 +1,9 @@
+[Event "Stockfish_ELO_2000"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Matrix0"]
+[Black "stockfish"]
+[Result "1-0"]
+
+1. d3 d5 2. Nh3 Nc6 3. c3 e5 4. Ng5 h6 5. e4 hxg5 6. Rg1 g4 7. a3 Bc5 8. Rh1 Be6 9. a4 Nf6 10. Rg1 a5 11. Ra3 dxe4 12. Rb3 exd3 13. Bxd3 Bxb3 14. Bh7 Qxd1# 1-0

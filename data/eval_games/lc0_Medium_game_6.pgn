@@ -1,0 +1,9 @@
+[Event "lc0_Medium"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Matrix0"]
+[Black "lc0"]
+[Result "1-0"]
+
+1. c3 d5 2. Nh3 c5 3. Nf4 e5 4. Ng6 hxg6 5. a4 Nc6 6. Rg1 Rxh2 7. a5 Nf6 8. Rh1 Rxh1 9. Ra2 Ng4 10. Ra4 Rxf1+ 11. Kxf1 Qh4 12. Rxg4 Qh1# 1-0

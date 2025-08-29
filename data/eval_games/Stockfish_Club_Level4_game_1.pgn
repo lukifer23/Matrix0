@@ -1,0 +1,9 @@
+[Event "Stockfish_Club_Level4"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "stockfish_club"]
+[Black "Matrix0"]
+[Result "0-1"]
+
+1. e3 Nh6 2. Nf3 a5 3. e4 Rg8 4. Nc3 b6 5. Be2 Rh8 6. d4 Ba6 7. a3 Rg8 8. Bf4 Bc8 9. h3 Rh8 10. d5 e6 11. O-O Rg8 12. Qd4 Qe7 13. Bxc7 Rh8 14. d6 e5 15. dxe7 Rg8 16. exf8=Q+ Rxf8 17. Qxe5# 0-1

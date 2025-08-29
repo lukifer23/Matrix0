@@ -1,0 +1,85 @@
+# Matrix0 Small Model Configuration (fast iteration)
+
+model:
+  planes: 19
+  channels: 160            # Smaller backbone
+  blocks: 14               # Fewer residual blocks
+  attention: true
+  attention_heads: 8
+  attention_every_k: 3
+  policy_size: 4672
+  norm: "group"
+  activation: "silu"
+  preact: true
+  droppath: 0.02
+  policy_factor_rank: 64
+  aux_policy_from_square: true
+  aux_policy_move_type: true
+  self_supervised: true
+  ssl_curriculum: true
+  ssl_tasks: ["piece", "control", "pawn_structure", "king_safety", "threat", "pin", "fork"]
+
+selfplay:
+  num_workers: 4
+  batch_size: 256
+  max_games: 50
+  max_game_len: 160
+  opening_random_plies: 8
+  num_simulations: 160
+
+training:
+  batch_size: 192          # Smaller model allows larger batch
+  epochs: 1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  checkpoint_dir: "checkpoints"
+  checkpoint: "small_best.pt"
+  gradient_accumulation_steps: 1
+  grad_clip_norm: 0.5
+  ssl_weight: 0.04
+  ssl_warmup_steps: 1000
+  ssl_target_weight: 1.0
+  ssl_chunk_size: 16
+  precision: "fp16"
+  use_amp: true
+  warmup_steps: 400
+  memory_limit_gb: 10
+  gradient_checkpointing_strategy: "tower_only"
+  steps_per_epoch: 6000
+  use_curriculum: true
+  curriculum_phases:
+    - { name: openings, steps: 1200 }
+    - { name: mixed,    steps: 4800 }
+  policy_masking: true
+  policy_label_smoothing: 0.05
+  value_loss: "huber"
+  huber_delta: 1.0
+
+eval:
+  games: 6
+  num_simulations: 200
+  max_moves: 160
+
+mcts:
+  num_simulations: 160
+  cpuct: 2.2
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  dirichlet_plies: 16
+  selection_jitter: 0.05
+  fpu: 0.2
+  tt_capacity: 500000
+  batch_size: 16
+  encoder_cache: true
+  legal_softmax: true
+  parent_q_init: true
+  value_from_white: true
+  virtual_loss: 1.0
+  enable_memory_cleanup: true
+  max_tree_nodes: 70000
+  num_threads: 4
+  parallel_simulations: true
+  simulation_batch_size: 16
+  tree_parallelism: true
+  enable_entropy_noise: true
+
