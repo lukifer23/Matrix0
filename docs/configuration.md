@@ -38,6 +38,94 @@ model:
   ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (advanced algorithms integrated)
 ```
 
+### Advanced Benchmark Configuration
+
+The Matrix0 benchmark system supports comprehensive multi-engine evaluation with SSL performance tracking:
+
+```yaml
+# Benchmark Scenarios Configuration
+scenarios:
+  - name: "LC0_Matrix0_Showdown"
+    description: "Direct competition with neural network engine"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["lc0_strong"]
+    num_games: 50
+    time_control: "30+0.3"
+    max_moves: 150
+    concurrency: 4
+    ssl_tracking: true
+    mcts_sims: 800
+
+  - name: "Multi_Engine_Tournament"
+    description: "Tournament-style evaluation"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_medium", "stockfish_strong", "lc0_medium"]
+    tournament_format: "round_robin"
+    num_games_per_pairing: 10
+    time_control: "45+0.5"
+    ssl_tracking: true
+
+# SSL Performance Tracking
+ssl_config:
+  enabled: true
+  loss_weight: 0.04
+  track_individual_heads: true
+  heads_to_monitor: ["threat", "pin", "fork", "control", "piece"]
+  learning_analysis: true
+  convergence_tracking: true
+
+# Apple Silicon Performance Monitoring
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  track_mps: true          # MPS monitoring for Apple Silicon
+  sample_interval: 0.5
+  log_system_load: true
+```
+
+### Engine Configurations
+
+#### Stockfish Configuration
+```yaml
+engines:
+  stockfish_weak:
+    command: "/opt/homebrew/bin/stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "8"      # Club level (~1800 ELO)
+      UCI_LimitStrength: "true"
+      UCI_Elo: "1800"
+
+  stockfish_strong:
+    command: "/opt/homebrew/bin/stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "20"     # Full strength
+      UCI_LimitStrength: "false"
+```
+
+#### LC0 Configuration (Apple Silicon Optimized)
+```yaml
+engines:
+  lc0_strong:
+    command: "/opt/homebrew/bin/lc0"
+    options:
+      Threads: "4"
+      NNCacheSize: "2000000"
+      MinibatchSize: "32"
+      Backend: "metal"        # Apple Silicon Metal optimization
+      Blas: "true"           # Enable BLAS acceleration
+      CPuct: "1.745000"      # Optimized for LC0
+      MaxPrefetch: "32"
+      RamLimitMb: "0"        # No RAM limit
+      MoveOverheadMs: "200"
+      TimeManager: "legacy"
+      MultiPV: "1"
+```
+
 ### External Engine & Stockfish Data Defaults
 
 Add engines configuration and register Stockfish-generated datasets for training:
@@ -45,9 +133,11 @@ Add engines configuration and register Stockfish-generated datasets for training
 ```yaml
 engines:
   stockfish:
-    path: /usr/local/bin/stockfish
-    parameters:
-      Threads: 2
+    command: /opt/homebrew/bin/stockfish  # Auto-detected path
+    options:
+      Threads: 4
+      Hash: 512
+      Skill Level: 20
       Hash: 256
       MultiPV: 1
     time_control: 100ms

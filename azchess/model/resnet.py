@@ -360,13 +360,13 @@ class PolicyValueNet(nn.Module):
                 )
                 logger.info(f"SSL fork head created with {sum(p.numel() for p in self.ssl_heads['fork'].parameters())} parameters")
 
-            # Square control SSL
+            # Square control SSL (3-class: black, neutral, white)
             if 'control' in ssl_tasks:
                 self.ssl_heads['control'] = nn.Sequential(
                     nn.Conv2d(C, C // 2, kernel_size=1, bias=False),
                     _norm(C // 2, cfg.norm),
                     activation,
-                    nn.Conv2d(C // 2, 1, kernel_size=1, bias=False),  # Binary: white/black control
+                    nn.Conv2d(C // 2, 3, kernel_size=1, bias=False),  # 3-class control logits
                 )
                 logger.info(f"SSL control head created with {sum(p.numel() for p in self.ssl_heads['control'].parameters())} parameters")
 
@@ -857,14 +857,13 @@ class PolicyValueNet(nn.Module):
                         task_targets_flat = task_targets.reshape(-1, 1).float()
                         task_loss = F.binary_cross_entropy_with_logits(task_output_flat, task_targets_flat)
                     elif task == 'control':
-                        # Ternary classification: -1 (black control), 0 (neutral), 1 (white control)
-                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 1)
-                        task_targets_flat = task_targets.reshape(-1, 1).float()
-                        # Convert to 3-class problem: 0=black, 1=neutral, 2=white
-                        task_targets_3class = torch.where(task_targets_flat < 0, torch.tensor(0.0, device=device),
-                                                         torch.where(task_targets_flat > 0, torch.tensor(2.0, device=device),
-                                                                    torch.tensor(1.0, device=device)))
-                        task_loss = F.cross_entropy(task_output_flat.squeeze(-1), task_targets_3class.long())
+                        # Ternary classification: -1 (black), 0 (neutral), 1 (white) -> map to 0,1,2
+                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 3)
+                        task_targets_flat = task_targets.reshape(-1).float()
+                        task_targets_3class = torch.where(task_targets_flat < 0, torch.tensor(0, device=device),
+                                                         torch.where(task_targets_flat > 0, torch.tensor(2, device=device),
+                                                                    torch.tensor(1, device=device)))
+                        task_loss = F.cross_entropy(task_output_flat, task_targets_3class.long())
                     elif task == 'pawn_structure':
                         # 8-class classification for pawn structure features
                         task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 8)

@@ -12,13 +12,13 @@ model:
   norm: "group"                    # GroupNorm instead of BatchNorm
   activation: "silu"               # SiLU activation instead of ReLU
   preact: true                     # Pre-activation residual blocks
-  droppath: 0.05                   # DropPath regularization (reduced for stability)
+  droppath: 0.0                    # Temporarily disable DropPath to avoid MPS tiny alloc OOMs
   policy_factor_rank: 128          # Factorized policy head (32M model)
   aux_policy_from_square: true     # Auxiliary from-square prediction
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # Enable all SSL aux tasks
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
@@ -37,7 +37,7 @@ selfplay:
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
-  batch_size: 128                  # Lowered for MPS headroom
+  batch_size: 96                   # Further reduced for MPS headroom
   epochs: 1                        # Single epoch per cycle; repeat cycles
   learning_rate: 0.001
   weight_decay: 0.0001
@@ -47,8 +47,10 @@ training:
   grad_clip_norm: 0.5              # Stable
   ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
   ssl_warmup_steps: 1500           # Longer warmup for smoother coupling
+  ssl_every_n: 4                   # Compute SSL every 4th step (reduces MPS spikes)
+  ssl_chunk_size: 32               # Chunk SSL loss over 32-sample slices
   ssl_target_weight: 1.0           # Normalize SSL magnitude
-  ssl_chunk_size: 16               # Reduce per-step memory
+  # removed duplicate ssl_chunk_size key
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps

@@ -18,8 +18,10 @@ logger = logging.getLogger(__name__)
 try:
     import torch
     TORCH_AVAILABLE = True
+    MPS_AVAILABLE = torch.backends.mps.is_available() if hasattr(torch, 'backends') and hasattr(torch.backends, 'mps') else False
 except ImportError:
     TORCH_AVAILABLE = False
+    MPS_AVAILABLE = False
     logger.warning("PyTorch not available, GPU metrics will be limited")
 
 
@@ -36,6 +38,12 @@ class SystemMetrics:
     gpu_memory_used_gb: Optional[float] = None
     gpu_memory_total_gb: Optional[float] = None
     gpu_utilization: Optional[float] = None
+
+    # Apple Silicon MPS metrics
+    mps_memory_allocated_gb: Optional[float] = None
+    mps_memory_reserved_gb: Optional[float] = None
+    mps_utilization: Optional[float] = None
+    mps_device_count: Optional[int] = None
 
     # Process-specific metrics
     process_cpu_percent: Optional[float] = None
@@ -211,16 +219,52 @@ class MetricsCollector:
                 gpu_memory_total_gb = None
                 gpu_utilization = None
 
-                if TORCH_AVAILABLE and torch.cuda.is_available():
-                    try:
-                        gpu_memory = torch.cuda.get_device_properties(0)
-                        gpu_memory_total_gb = gpu_memory.total_memory / (1024**3)
+                # Apple Silicon MPS metrics
+                mps_memory_allocated_gb = None
+                mps_memory_reserved_gb = None
+                mps_utilization = None
+                mps_device_count = None
 
-                        if torch.cuda.memory_allocated(0) > 0:
-                            gpu_memory_used_gb = torch.cuda.memory_allocated(0) / (1024**3)
-                            gpu_utilization = torch.cuda.utilization(0) if hasattr(torch.cuda, 'utilization') else None
-                    except Exception as e:
-                        logger.debug(f"Could not collect GPU metrics: {e}")
+                if TORCH_AVAILABLE:
+                    # CUDA GPU metrics
+                    if torch.cuda.is_available():
+                        try:
+                            gpu_memory = torch.cuda.get_device_properties(0)
+                            gpu_memory_total_gb = gpu_memory.total_memory / (1024**3)
+
+                            if torch.cuda.memory_allocated(0) > 0:
+                                gpu_memory_used_gb = torch.cuda.memory_allocated(0) / (1024**3)
+                                gpu_utilization = torch.cuda.utilization(0) if hasattr(torch.cuda, 'utilization') else None
+                        except Exception as e:
+                            logger.debug(f"Could not collect CUDA GPU metrics: {e}")
+
+                    # Apple Silicon MPS metrics
+                    if MPS_AVAILABLE:
+                        try:
+                            mps_device_count = 1  # Apple Silicon typically has 1 MPS device
+
+                            # MPS memory metrics
+                            if hasattr(torch.mps, 'current_allocated_memory'):
+                                mps_memory_allocated_gb = torch.mps.current_allocated_memory() / (1024**3)
+
+                            if hasattr(torch.mps, 'driver_allocated_memory'):
+                                mps_memory_reserved_gb = torch.mps.driver_allocated_memory() / (1024**3)
+
+                            # MPS utilization (if available)
+                            if hasattr(torch.mps, 'utilization'):
+                                mps_utilization = torch.mps.utilization()
+                            elif hasattr(torch, 'mps') and hasattr(torch.mps, 'synchronize'):
+                                # Estimate utilization by measuring sync time
+                                import time
+                                start_time = time.time()
+                                torch.mps.synchronize()
+                                sync_time = time.time() - start_time
+                                # Rough utilization estimate based on sync time
+                                mps_utilization = min(100.0, sync_time * 1000)  # Convert to percentage
+
+                        except Exception as e:
+                            logger.debug(f"Could not collect MPS metrics: {e}")
+                            logger.debug(f"MPS available: {MPS_AVAILABLE}, torch.mps attributes: {dir(torch.mps) if hasattr(torch, 'mps') else 'torch.mps not available'}")
 
                 # Create metrics snapshot
                 metrics = SystemMetrics(
@@ -232,6 +276,10 @@ class MetricsCollector:
                     gpu_memory_used_gb=gpu_memory_used_gb,
                     gpu_memory_total_gb=gpu_memory_total_gb,
                     gpu_utilization=gpu_utilization,
+                    mps_memory_allocated_gb=mps_memory_allocated_gb,
+                    mps_memory_reserved_gb=mps_memory_reserved_gb,
+                    mps_utilization=mps_utilization,
+                    mps_device_count=mps_device_count,
                     process_cpu_percent=process_cpu_percent,
                     process_memory_mb=process_memory_mb,
                     process_threads=process_threads

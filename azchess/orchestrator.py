@@ -856,16 +856,14 @@ def main():
         cfg = Config.load(temp_args.config)
         import os
 
-        # Get memory limit from config and set appropriate ratios
-        memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
-        memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
-
-        # Set environment variables before PyTorch initializes
-        os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = str(memory_ratio)
-        os.environ['PYTORCH_MPS_LOW_WATERMARK_RATIO'] = str(memory_ratio * 0.8)
-        os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-
-        print(f"✅ Set MPS memory limit to {memory_limit_gb}GB (ratio: {memory_ratio:.2f})")
+        # Respect pre-set env; only set defaults if not provided
+        if 'PYTORCH_MPS_HIGH_WATERMARK_RATIO' not in os.environ or 'PYTORCH_MPS_LOW_WATERMARK_RATIO' not in os.environ:
+            memory_limit_gb = cfg.training().get('memory_limit_gb', 12)
+            memory_ratio = min(memory_limit_gb / 18.0, 0.9)  # Cap at 90% to be safe
+            os.environ.setdefault('PYTORCH_MPS_HIGH_WATERMARK_RATIO', str(memory_ratio))
+            os.environ.setdefault('PYTORCH_MPS_LOW_WATERMARK_RATIO', str(memory_ratio * 0.8))
+            print(f"✅ Set MPS memory limit to {memory_limit_gb}GB (ratio: {memory_ratio:.2f})")
+        os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
     except Exception as e:
         print(f"⚠️  Could not set memory limits: {e}")
 

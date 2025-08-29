@@ -6,32 +6,60 @@ See [docs/configuration.md](docs/configuration.md) for general configuration det
 
 ## Overview
 
-Matrix0 now supports integration with external chess engines through the UCI protocol, enabling:
+Matrix0 now supports advanced integration with external chess engines through the UCI protocol, enabling:
 
 - **Training Partner Integration**: Generate games between Matrix0 and external engines
-- **Multi-Engine Evaluation**: Evaluate Matrix0's strength against external engines
-- **Competitive Training**: Use external engines as training opponents
-- **Strength Benchmarking**: Measure Matrix0's progress against established engines
+- **Multi-Engine Tournaments**: Round-robin, Swiss, and single-elimination formats
+- **SSL Performance Tracking**: Monitor SSL effectiveness during engine competitions
+- **Apple Silicon Optimization**: Metal backend support for LC0 neural networks
+- **Automated Engine Discovery**: Intelligent detection and configuration of installed engines
+- **Comprehensive Analysis**: Statistical significance testing and performance evaluation
 
 ## Supported Engines
 
 ### Stockfish
-- **Path**: `/usr/local/bin/stockfish` (configurable)
-- **Parameters**: Threads, Hash size, MultiPV
-- **Time Control**: Configurable (default: 100ms)
-- **Status**: ✅ Fully integrated and tested
+- **Path**: `/opt/homebrew/bin/stockfish` (auto-detected)
+- **Parameters**: Threads, Hash, Skill Level, ELO limits
+- **Apple Silicon**: Native x86_64 emulation support
+- **Time Control**: Configurable (default: 30+0.3)
+- **Status**: ✅ Fully integrated with automated discovery
 
 ### Leela Chess Zero (LC0)
-- **Path**: `/usr/local/bin/lc0` (configurable)
-- **Parameters**: Threads, minibatch-size, backend
-- **Time Control**: Configurable (default: 100ms)
-- **Status**: ✅ Fully integrated and tested
+- **Path**: `/opt/homebrew/bin/lc0` (auto-detected)
+- **Parameters**: Threads, NNCacheSize, MinibatchSize, Backend
+- **Apple Silicon**: Metal backend optimization for M1/M2/M3
+- **Neural Network**: Full neural evaluation with CUDA/Metal acceleration
+- **Time Control**: Configurable (default: 30+0.3)
+- **Status**: ✅ Fully integrated with Apple Silicon optimization
 
 ### Matrix0 (Internal)
-- **Type**: Internal neural network model
-- **Checkpoint**: `checkpoints/v2_base.pt`
-- **Evaluation**: MCTS with neural network guidance
-- **Status**: ✅ Enhanced with external engine integration
+- **Type**: Internal neural network model with SSL integration
+- **Checkpoint**: `checkpoints/v2_base.pt` (53M parameters)
+- **Evaluation**: MCTS with SSL-enhanced neural network guidance
+- **SSL Heads**: Threat, pin, fork, control, piece detection
+- **Status**: ✅ Enhanced with comprehensive benchmark system
+
+### Additional Engines
+The system supports automatic discovery of additional UCI-compliant engines:
+- **Komodo**: Commercial engine with strong positional play
+- **Houdini**: High-performance tactical engine
+- **Fire**: Open-source engine with good endgame strength
+- **Custom Engines**: Any UCI-compliant chess engine
+
+## New Features in v2.1
+
+### Advanced Benchmark System
+- **Multi-Engine Tournaments**: Automated competitive evaluation
+- **SSL Performance Tracking**: Real-time SSL effectiveness monitoring
+- **Apple Silicon Optimization**: Metal backend for neural engines
+- **Automated Discovery**: Intelligent engine detection and configuration
+- **Comprehensive Analysis**: Statistical significance and regression testing
+
+### Enhanced Engine Management
+- **Process Isolation**: Robust engine process management
+- **Health Monitoring**: Automatic engine health checks
+- **Resource Management**: CPU and memory optimization
+- **Configuration Optimization**: Engine-specific parameter tuning
 
 ## Configuration
 
@@ -151,6 +179,44 @@ results = await evaluate_matrix0_against_engines(
 # Print results
 for engine_name, result in results.items():
     print(f"{engine_name}: {result.win_rate:.3f} win rate")
+```
+
+### 4. Advanced Benchmark System
+Use the enhanced benchmark system for comprehensive evaluation:
+
+```bash
+# Discover and validate all installed engines
+python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml --discover-engines
+
+# Run LC0 vs Matrix0 tournament
+python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml --scenario LC0_Matrix0_Showdown
+
+# Run complete benchmark suite with SSL tracking
+python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml
+```
+
+### 5. Tournament Mode
+Run multi-engine tournaments with advanced analysis:
+
+```python
+from benchmarks.tournament import Tournament, TournamentConfig, TournamentFormat
+
+# Configure tournament
+config = TournamentConfig(
+    name="Championship Tournament",
+    format=TournamentFormat.ROUND_ROBIN,
+    engines=["matrix0", "stockfish", "lc0"],
+    num_games_per_pairing=20,
+    time_control="60+0.6"
+)
+
+# Run tournament
+tournament = Tournament(config)
+results = await tournament.run_tournament()
+
+# Get comprehensive analysis
+rankings = results.get("final_rankings", [])
+statistics = results.get("statistics", {})
 ```
 
 ### 4. External Engine Self-Play (advanced)

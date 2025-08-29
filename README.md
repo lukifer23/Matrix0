@@ -16,6 +16,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **🏗️ Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
 - **🍎 Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
 - **📊 Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
+- **🏆 Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## 📊 Project Status
 **🚀 ACTIVE DEVELOPMENT** - **Complete SSL integration achieved**, training pipeline fully operational with advanced SSL capabilities. See the
@@ -47,6 +48,13 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Multi-Task Training**: Combined policy/value/SSL optimization with proper gradient accumulation
 - **Model Evaluation**: Tournament system with SSL-aware strength estimation
 - **Checkpoint Management**: Advanced checkpoint creation preserving SSL architecture
+
+### 🏆 Advanced Benchmark System
+- **Multi-Engine Tournaments**: Round-robin, Swiss, and single-elimination formats
+- **SSL Performance Tracking**: Real-time monitoring of SSL head effectiveness
+- **Apple Silicon Optimization**: MPS memory monitoring and Metal backend support
+- **Automated Engine Discovery**: Intelligent detection and configuration of installed engines
+- **Comprehensive Analysis**: Statistical significance testing and performance regression analysis
 
 ### 🍎 Apple Silicon Optimization
 - **MPS GPU Acceleration**: Native Apple Silicon support with unified memory
@@ -167,6 +175,12 @@ python -m azchess.tools.bench_inference
 
 # MCTS performance benchmarking
 python -m azchess.tools.bench_mcts
+
+# Enhanced Benchmark System
+python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml
+
+# Quick benchmark against external engines
+python benchmarks/benchmark.py --model checkpoints/v2_base.pt --engine stockfish --games 10
 
 # Training data analysis
 python -m azchess.tools.process_lichess

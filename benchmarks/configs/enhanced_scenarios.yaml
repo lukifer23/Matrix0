@@ -1,0 +1,218 @@
+# Enhanced Benchmark Scenarios for Matrix0
+# Advanced configurations leveraging Apple Silicon optimizations, SSL tracking, and tournament features
+
+name: "Matrix0 Enhanced Benchmark Suite"
+description: "Comprehensive benchmark suite with Apple Silicon optimizations, SSL tracking, and multi-engine evaluation"
+
+# Output directory for results
+output_dir: "benchmarks/results"
+
+# Enhanced engine configurations with Apple Silicon optimizations
+engines:
+  stockfish_strong:
+    command: "/opt/homebrew/bin/stockfish"
+    options:
+      Threads: "4"
+      Hash: "512"
+      Skill Level: "20"
+      UCI_LimitStrength: "false"
+      UCI_Elo: "3500"
+
+  stockfish_medium:
+    command: "/opt/homebrew/bin/stockfish"
+    options:
+      Threads: "4"
+      Hash: "256"
+      Skill Level: "15"
+      UCI_LimitStrength: "true"
+      UCI_Elo: "2500"
+
+  stockfish_weak:
+    command: "/opt/homebrew/bin/stockfish"
+    options:
+      Threads: "2"
+      Hash: "128"
+      Skill Level: "8"
+      UCI_LimitStrength: "true"
+      UCI_Elo: "1800"
+
+  lc0_strong:
+    command: "/opt/homebrew/bin/lc0"
+    options:
+      Threads: "4"
+      NNCacheSize: "2000000"
+      MinibatchSize: "32"
+      Backend: "metal"
+      Blas: "true"
+      CPuct: "1.745000"
+      MaxPrefetch: "32"
+      NodesPerSecondLimit: "0.000000"
+      RamLimitMb: "0"
+
+  lc0_medium:
+    command: "/opt/homebrew/bin/lc0"
+    options:
+      Threads: "4"
+      NNCacheSize: "1000000"
+      MinibatchSize: "16"
+      Backend: "metal"
+      Blas: "true"
+      CPuct: "2.000000"
+      MaxPrefetch: "16"
+      RamLimitMb: "0"
+
+  matrix0_ssl:
+    type: "internal"
+    checkpoint: "checkpoints/v2_base.pt"
+    ssl_tracking: true
+    mcts_sims: 800
+
+# Advanced benchmark scenarios
+scenarios:
+  # 1. Progressive Difficulty Challenge
+  - name: "Progressive_Difficulty_Challenge"
+    description: "Test Matrix0 against progressively stronger Stockfish levels"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_weak", "stockfish_medium", "stockfish_strong"]
+    num_games: 20
+    time_control: "60+0.6"
+    max_moves: 200
+    concurrency: 3
+    progressive_difficulty: true
+    ssl_tracking: true
+    mcts_sims: 800
+
+  # 2. LC0 vs Matrix0 Showdown
+  - name: "LC0_Matrix0_Showdown"
+    description: "Direct competition between LC0 and Matrix0 with Apple Silicon optimizations"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["lc0_strong"]
+    num_games: 50
+    time_control: "30+0.3"
+    max_moves: 150
+    concurrency: 4
+    random_openings: true
+    opening_plies: 8
+    ssl_tracking: true
+    mcts_sims: 800
+    apple_silicon_optimized: true
+
+  # 3. Multi-Engine Tournament
+  - name: "Multi_Engine_Tournament"
+    description: "Tournament-style evaluation with multiple engines"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_medium", "stockfish_strong", "lc0_medium", "lc0_strong"]
+    tournament_format: "round_robin"
+    num_games_per_pairing: 10
+    time_control: "45+0.5"
+    max_moves: 180
+    concurrency: 2
+    ssl_tracking: true
+    mcts_sims: 600
+
+  # 4. SSL Learning Validation
+  - name: "SSL_Learning_Validation"
+    description: "Validate SSL learning effectiveness against various opponents"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_weak", "stockfish_medium"]
+    num_games: 30
+    time_control: "30+0.3"
+    max_moves: 120
+    concurrency: 3
+    ssl_tracking: true
+    ssl_performance_analysis: true
+    mcts_sims: 400
+
+  # 5. Rapid Time Control Challenge
+  - name: "Rapid_Time_Challenge"
+    description: "High-intensity rapid games to test tactical strength"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_strong", "lc0_strong"]
+    num_games: 40
+    time_control: "15+0.2"
+    max_moves: 100
+    concurrency: 4
+    random_openings: true
+    opening_plies: 6
+    ssl_tracking: false  # Disable SSL tracking for speed
+    mcts_sims: 400
+
+  # 6. Long Time Control Analysis
+  - name: "Long_Time_Analysis"
+    description: "Deep analysis games with extended thinking time"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_medium", "lc0_medium"]
+    num_games: 15
+    time_control: "120+1.0"
+    max_moves: 250
+    concurrency: 1
+    random_openings: false
+    ssl_tracking: true
+    mcts_sims: 1200
+
+  # 7. Apple Silicon Performance Benchmark
+  - name: "Apple_Silicon_Performance"
+    description: "Benchmark Apple Silicon MPS performance and optimization"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_strong"]
+    num_games: 25
+    time_control: "60+0.6"
+    max_moves: 150
+    concurrency: 2
+    apple_silicon_optimized: true
+    mps_monitoring: true
+    system_performance_tracking: true
+    ssl_tracking: true
+    mcts_sims: 600
+
+  # 8. SSL Curriculum Learning Test
+  - name: "SSL_Curriculum_Test"
+    description: "Test SSL learning progression with curriculum difficulty"
+    model_checkpoint: "checkpoints/v2_base.pt"
+    engines: ["stockfish_weak"]
+    num_games: 35
+    time_control: "45+0.5"
+    max_moves: 140
+    concurrency: 3
+    ssl_curriculum: true
+    ssl_tracking: true
+    ssl_performance_analysis: true
+    mcts_sims: 500
+
+# Enhanced performance monitoring configuration
+performance:
+  track_cpu: true
+  track_memory: true
+  track_gpu: true
+  track_mps: true  # Apple Silicon MPS tracking
+  sample_interval: 0.5
+  log_system_load: true
+  track_ssl_performance: true
+  track_mcts_diagnostics: true
+
+# Advanced statistical analysis configuration
+statistics:
+  confidence_level: 0.95
+  min_games_for_stats: 20
+  calculate_elo: true
+  elo_k_factor: 32
+  calculate_ssl_effectiveness: true
+  calculate_performance_regression: true
+  generate_tournament_rankings: true
+
+# SSL-specific configuration
+ssl_config:
+  enabled: true
+  loss_weight: 0.04
+  track_individual_heads: true
+  heads_to_monitor: ["threat", "pin", "fork", "control", "piece"]
+  learning_analysis: true
+  convergence_tracking: true
+
+# Tournament configuration (for tournament scenarios)
+tournament:
+  enabled: true
+  formats: ["round_robin", "swiss"]
+  calculate_ratings: true
+  generate_rankings: true
+  track_engine_performance: true

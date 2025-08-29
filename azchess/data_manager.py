@@ -729,17 +729,29 @@ class DataManager:
     def cleanup_old_shards(self, keep_recent: int = 64):
         """Remove old shards to maintain storage limits."""
         shards = self._get_all_shards()
-        
-        if len(shards) <= keep_recent:
+
+        # Only prune replay-buffer shards inside data/replays and never external/Stockfish-tagged ones
+        replays_root = self.replays_dir.resolve()
+        eligible: List[DataShard] = []
+        for s in shards:
+            try:
+                p = Path(s.path).resolve()
+                src = (s.source or "")
+                if str(p).startswith(str(replays_root)) and not src.startswith("stockfish:"):
+                    eligible.append(s)
+            except Exception:
+                continue
+
+        if len(eligible) <= keep_recent:
             return
-        
-        # Sort by creation time, keep most recent
-        shards.sort(key=lambda x: x.created_at, reverse=True)
-        to_remove = shards[keep_recent:]
-        
+
+        # Sort by creation time, keep most recent within eligible set
+        eligible.sort(key=lambda x: x.created_at, reverse=True)
+        to_remove = eligible[keep_recent:]
+
         for shard in to_remove:
             try:
-                Path(shard.path).unlink()
+                Path(shard.path).unlink(missing_ok=True)
                 self._remove_shard_record(shard.path)
                 logger.info(f"Removed old shard: {shard.path}")
             except Exception as e:

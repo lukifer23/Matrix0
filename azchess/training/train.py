@@ -125,7 +125,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0,
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                ssl_targets_provider: str = "auto",
-               use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16"):
+               use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16",
+               ssl_every_n: int = 1, ssl_chunk_size: int = 0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -329,7 +330,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Disable outer autocast on MPS to avoid dtype issues inside model guards
     _outer_autocast = (use_autocast and device_type == "cuda")
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=_outer_autocast):
-        if use_wdl and hasattr(model, 'forward_with_features'):
+        if hasattr(model, 'forward_with_features'):
             p, v, ssl_out, feats = model.forward_with_features(s_forward, return_ssl=True)
         else:
             feats = None
@@ -492,9 +493,46 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             try:
                 # Enhanced SSL (dict) path - use this for advanced SSL tasks
                 if hasattr(model, 'get_enhanced_ssl_loss') and isinstance(ssl_targets, dict):
-                    # Reuse precomputed features when available to avoid duplicate tower passes
-                    ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets, feats=feats)
-                    logger.debug(f"Enhanced SSL loss computed: {ssl_loss.item():.6f}")
+                    # Optionally skip SSL on non-scheduled steps to reduce memory pressure
+                    if int(max(1, ssl_every_n)) > 1 and (int(current_step) % int(max(1, ssl_every_n)) != 0):
+                        logger.debug("SSL gating active: skipping enhanced SSL this step")
+                        ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
+                    else:
+                        # Chunked SSL to avoid MPS OOM
+                        try:
+                            batch_size_total = int(s.size(0))
+                            chunk = int(max(0, ssl_chunk_size))
+                            if chunk and chunk < batch_size_total:
+                                accum_ssl = torch.zeros((), device=device, dtype=policy_loss.dtype)
+                                start = 0
+                                while start < batch_size_total:
+                                    end = min(batch_size_total, start + chunk)
+                                    s_chunk = s[start:end]
+                                    feats_chunk = feats[start:end] if feats is not None else None
+                                    # Slice targets per key
+                                    st_chunk = {}
+                                    for k, v in ssl_targets.items():
+                                        try:
+                                            st_chunk[k] = v[start:end]
+                                        except Exception:
+                                            st_chunk[k] = v
+                                    part = model.get_enhanced_ssl_loss(s_chunk, st_chunk, feats=feats_chunk)
+                                    frac = float(end - start) / float(max(1, batch_size_total))
+                                    accum_ssl = accum_ssl + (part * frac)
+                                    start = end
+                                ssl_loss = accum_ssl
+                            else:
+                                # Full-batch SSL
+                                ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets, feats=feats)
+                            logger.debug(f"Enhanced SSL loss computed (chunked={bool(chunk and chunk < batch_size_total)}): {ssl_loss.item():.6f}")
+                        except RuntimeError as oom_err:
+                            logger.warning(f"Enhanced SSL OOM: {oom_err}; setting ssl_loss=0 and continuing")
+                            try:
+                                import torch.mps
+                                torch.mps.empty_cache()
+                            except Exception:
+                                pass
+                            ssl_loss = 0.0
                 # Fallback to basic piece SSL (tensor) path for backward compatibility
                 elif isinstance(ssl_targets, torch.Tensor) and ssl_out is not None:
                     # Accept dict or tensor for ssl_out; pick 'piece' logits when dict
@@ -525,7 +563,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     logger.debug("No valid SSL targets available for loss computation")
             except Exception as e:
                 logger.warning(f"SSL loss computation failed: {e}; setting ssl_loss=0 for this batch")
-                ssl_loss = torch.tensor(0.0, device=device, dtype=policy_loss.dtype)
+                try:
+                    import torch.mps
+                    torch.mps.empty_cache()
+                except Exception:
+                    pass
+                ssl_loss = 0.0
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
@@ -1138,7 +1181,9 @@ def train_comprehensive(
                 use_wdl=bool(cfg.model().get('wdl', False)),
                 wdl_weight=float(tr_cfg.get('wdl_weight', 0.0)),
                 wdl_margin=float(tr_cfg.get('wdl_margin', 0.25)),
-                precision=tr_cfg.get("precision", "fp16")
+                precision=tr_cfg.get("precision", "fp16"),
+                ssl_every_n=int(tr_cfg.get('ssl_every_n', 1)),
+                ssl_chunk_size=int(tr_cfg.get('ssl_chunk_size', 0))
                 )
                 
                 # Check if train_step returned None (indicating invalid batch)

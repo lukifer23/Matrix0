@@ -1,0 +1,67 @@
+description: Test Matrix0 against LC0 with Apple Silicon optimizations
+name: Matrix0 LC0 Integration Test
+output_dir: benchmarks/results
+performance_config:
+  log_system_load: true
+  sample_interval: 0.1
+  track_cpu: true
+  track_gpu: true
+  track_memory: true
+scenarios:
+- concurrency: 1
+  engine_config:
+    command: /opt/homebrew/bin/lc0
+    name: lc0
+    options:
+      Backend: metal
+      Blas: 'true'
+      CPuct: '1.745000'
+      MaxPrefetch: '32'
+      MinibatchSize: '32'
+      MoveOverheadMs: '200'
+      MultiPV: '1'
+      NNCacheSize: '2000000'
+      NodesPerSecondLimit: '0.000000'
+      RamLimitMb: '0'
+      Threads: '4'
+      TimeManager: legacy
+    working_dir: null
+  max_moves: 100
+  model_checkpoint: checkpoints/v2_base.pt
+  name: LC0_Fast_Test
+  num_games: 5
+  opening_book: null
+  opening_plies: 6
+  random_openings: true
+  time_control: 10+0.1
+- concurrency: 1
+  engine_config:
+    command: /opt/homebrew/bin/lc0
+    name: lc0
+    options:
+      Backend: metal
+      Blas: 'true'
+      CPuct: '1.745000'
+      MaxPrefetch: '32'
+      MinibatchSize: '32'
+      MoveOverheadMs: '200'
+      MultiPV: '1'
+      NNCacheSize: '2000000'
+      NodesPerSecondLimit: '0.000000'
+      RamLimitMb: '0'
+      Threads: '4'
+      TimeManager: legacy
+    working_dir: null
+  max_moves: 150
+  model_checkpoint: checkpoints/v2_base.pt
+  name: LC0_Medium_Test
+  num_games: 10
+  opening_book: null
+  opening_plies: 8
+  random_openings: true
+  time_control: 30+0.3
+statistical_config:
+  calculate_elo: true
+  confidence_level: 0.95
+  elo_k_factor: 32
+  min_games_for_stats: 5

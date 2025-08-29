@@ -8,6 +8,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - [Web UI Guide](webui.md)
 - [Model V2 Design](model_v2.md)
 - [External Engine Integration](EXTERNAL_ENGINES.md)
+- [Benchmark System Guide](BENCHMARK_SYSTEM.md)
 
 ## Current Project Status
 
@@ -16,21 +17,24 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 ### ✅ What's Working
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle
 - **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
-- **SSL Foundation**: Basic piece recognition working, advanced algorithms integrated
-- **External Engines**: Stockfish and LC0 integration fully functional
-- **Apple Silicon**: MPS optimization with 14GB memory management
+- **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection)
+- **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, Apple Silicon optimization
+- **External Engines**: Stockfish and LC0 integration with automatic discovery and optimization
+- **Apple Silicon**: MPS optimization with 14GB memory management and Metal backend support
 - **Web Interface**: FastAPI-based evaluation and analysis interface
 
 ### 🔄 Active Development
-- **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
+- **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
+- **Tournament System Enhancement**: Multi-engine tournament analysis and ranking improvements
 - **Performance Optimization**: Memory usage and training throughput improvements
-- **Enhanced Evaluation**: Multi-engine tournament and strength estimation systems
+- **Model Strength Improvement**: Continue training to close gap with top engines
 
 ### 📚 Documentation Status
 - **Configuration Guide**: ✅ Current and accurate
 - **Model V2 Design**: ✅ Current and accurate
 - **Web UI Guide**: ✅ Current and accurate
 - **External Engines**: ✅ Current and accurate
+- **Benchmark System**: ✅ New comprehensive guide added
 - **Status & Roadmap**: ✅ Current and accurate
 
 ## Open Issues

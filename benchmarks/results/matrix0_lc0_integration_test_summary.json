@@ -1,0 +1,39 @@
+{
+  "total_games": 15,
+  "total_moves": 311,
+  "total_duration": 373.8562958240509,
+  "avg_game_duration": 24.92375305493673,
+  "avg_moves_per_game": 20.733333333333334,
+  "results": {
+    "white_wins": 7,
+    "black_wins": 8,
+    "draws": 0,
+    "win_rate": 0.4666666666666667,
+    "draw_rate": 0.0
+  },
+  "by_engine": {
+    "lc0": {
+      "wins": 15,
+      "losses": 0,
+      "draws": 0,
+      "win_rate": 1.0
+    },
+    "Matrix0": {
+      "wins": 0,
+      "losses": 15,
+      "draws": 0,
+      "win_rate": 0.0
+    }
+  },
+  "timing": {
+    "avg_time_per_move": 1.1981386180092668,
+    "min_time_per_move": 0.02194809913635254,
+    "max_time_per_move": 2.7278220653533936,
+    "time_variance": 0.4133836819378764
+  },
+  "resources": {
+    "avg_cpu_usage": 37.92298465829852,
+    "avg_memory_usage": 73.11905160390506,
+    "peak_memory_gb": 12.32281494140625
+  }
+}

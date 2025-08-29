@@ -332,5 +332,49 @@ class EngineManager:
         self.engines.clear()
 
 
+# Enhanced engine manager integration
+try:
+    from benchmarks.engine_manager import EnhancedEngineManager, EngineConfig
+
+    class EnhancedUCIManager:
+        """Enhanced UCI manager with automatic engine discovery and optimization."""
+
+        def __init__(self):
+            self.basic_manager = EngineManager()
+            self.enhanced_manager = EnhancedEngineManager()
+            self.discovered_configs = {}
+
+        async def discover_and_setup_engines(self):
+            """Discover engines and create optimized configurations."""
+            logger.info("Discovering and setting up engines...")
+
+            # Discover engines
+            discovered = await self.enhanced_manager.discover_engines()
+
+            # Validate engines
+            validation_results = await self.enhanced_manager.validate_all_engines()
+
+            # Create optimized configurations
+            self.discovered_configs = await self.enhanced_manager.create_engine_configs()
+
+            logger.info(f"Discovered and configured {len(self.discovered_configs)} engines")
+
+            return self.discovered_configs, validation_results
+
+        def get_optimized_config(self, engine_name: str):
+            """Get optimized configuration for an engine."""
+            return self.enhanced_manager.get_engine_config(engine_name)
+
+        def get_available_engines(self):
+            """Get list of available engines."""
+            return self.enhanced_manager.get_available_engines()
+
+    # Global enhanced manager instance
+    enhanced_uci_manager = EnhancedUCIManager()
+
+except ImportError:
+    logger.warning("Enhanced engine manager not available")
+    enhanced_uci_manager = None
+
 # Global engine manager instance
 engine_manager = EngineManager()
