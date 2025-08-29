@@ -1,17 +1,17 @@
 # Matrix0 Current Status Summary
 
-**Date**: August 27, 2025
+**Date**: August 29, 2025
 **Version**: v2.1 - Advanced SSL Integration
 **Status**: Production training pipeline operational with full SSL integration, enhanced WebUI monitoring
 
 ## 🎯 Executive Summary
 
-Matrix0 has achieved **complete SSL integration** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning. The system includes **threat detection, pin detection, fork detection, control detection, and pawn structure analysis** - all fully integrated with the training pipeline. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
+Matrix0 has achieved **complete SSL integration** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning. The system includes **7 SSL tasks: piece recognition, threat detection, pin detection, fork detection, control detection, pawn structure analysis, and king safety** - all fully integrated with the training pipeline. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
 
 ## ✅ What's Actually Working (Current Reality)
 
 ### Core Training Pipeline
-- **Self-Play Generation**: ✅ 4 workers generating training data with enhanced memory management
+- **Self-Play Generation**: ✅ 3 workers generating training data with enhanced memory management
 - **Training Loop**: ✅ 53M parameter model with **full advanced SSL integration** and chunked processing
 - **Model Evaluation**: ✅ Tournament system with external engine comparison
 - **Checkpoint Management**: ✅ Advanced checkpoint creation with complete SSL architecture preservation
@@ -19,15 +19,18 @@ Matrix0 has achieved **complete SSL integration** with a sophisticated 53M param
 ### Model Architecture
 - **Model Size**: ✅ 53,206,724 parameters (53.2M) - ResNet-24 with complete architecture
 - **Architecture**: ✅ 320 channels, 24 blocks, 20 attention heads, full attention features
-- **SSL Integration**: ✅ **COMPLETE** - All 5 SSL tasks: piece, threat, pin, fork, control detection
+- **SSL Integration**: ✅ **COMPLETE** - All 7 SSL tasks: piece, threat, pin, fork, control, pawn_structure, king_safety detection
 - **Training Stability**: ✅ **RESOLVED** - Scheduler stepping fixed, gradient management optimized
 
 ### Advanced SSL Capabilities
 - **Multi-Task SSL Learning**: ✅ Simultaneous training of all SSL objectives
+- **Piece Recognition**: ✅ Identifies all piece types and empty squares
 - **Threat Detection**: ✅ Identifies threatened pieces and squares
 - **Pin Detection**: ✅ Recognizes pinned pieces and constraints
 - **Fork Detection**: ✅ Identifies forking opportunities and threats
 - **Control Detection**: ✅ Analyzes square control and influence
+- **Pawn Structure**: ✅ Recognizes pawn chains, isolated pawns, passed pawns
+- **King Safety**: ✅ Identifies safe vs exposed king positions
 - **SSL Loss Integration**: ✅ Weighted SSL loss with policy/value learning
 
 ### Apple Silicon Optimization
@@ -75,14 +78,14 @@ Matrix0 has achieved **complete SSL integration** with a sophisticated 53M param
 
 ### Current Training Status
 - **Stability**: ✅ **100% stable** - No NaN/Inf issues, proper loss progression
-- **SSL Integration**: ✅ **Fully operational** - All 5 SSL tasks training simultaneously
-- **Performance**: ✅ **Optimized** - 4 workers, 750 games/cycle, efficient memory usage
+- **SSL Integration**: ✅ **Fully operational** - All 7 SSL tasks training simultaneously
+- **Performance**: ✅ **Optimized** - 3 workers, 300 MCTS sims/move, efficient memory usage
 - **Monitoring**: ✅ **Comprehensive** - Real-time WebUI monitoring and logging
 
-## 🎉 Major Achievements (August 27, 2025)
+## 🎉 Major Achievements (August 29, 2025)
 
 ### SSL Integration Milestone
-- ✅ **Complete SSL Integration** - All 5 SSL tasks (piece, threat, pin, fork, control) fully operational
+- ✅ **Complete SSL Integration** - All 7 SSL tasks (piece, threat, pin, fork, control, pawn_structure, king_safety) fully operational
 - ✅ **Multi-Task Learning** - Simultaneous training of policy, value, and SSL objectives
 - ✅ **SSL Curriculum** - Progressive difficulty with weighted loss functions
 - ✅ **Training Stability** - SSL integration without compromising training stability
@@ -98,11 +101,12 @@ Matrix0 has achieved **complete SSL integration** with a sophisticated 53M param
 - ✅ **Memory Optimization** - Robust MPS memory management with 14GB limit
 - ✅ **Performance Monitoring** - Enhanced logging and real-time metrics tracking
 - ✅ **Checkpoint Management** - Advanced checkpoint creation preserving SSL architecture
+- ✅ **Worker Optimization** - 3 workers for optimal MPS utilization
 
 ## 🎯 Current Development Priorities
 
 ### Priority 1: SSL Performance Validation (1-2 weeks)
-1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 5 objectives
+1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 7 objectives
 2. **SSL Contribution Analysis**: Quantify SSL impact on policy/value learning
 3. **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
 4. **SSL Curriculum Tuning**: Fine-tune progressive difficulty parameters
@@ -129,15 +133,15 @@ Matrix0 has achieved **complete SSL integration** with a sophisticated 53M param
 - **Multi-Task Learning**: ✅ Simultaneous policy, value, and SSL optimization
 
 ### Model Quality
-- **Parameter Count**: 53,206,724 (53.2M) - production model with SSL
+- **Parameter Count**: 53M+ - production model with SSL
 - **Architecture**: ResNet-24 with attention and **complete SSL integration**
-- **SSL Heads**: 5 dedicated SSL heads (piece, threat, pin, fork, control)
+- **SSL Heads**: 7 dedicated SSL heads (piece, threat, pin, fork, control, pawn_structure, king_safety)
 - **Checkpoint Integrity**: Complete model checkpoints with SSL preservation
 - **Memory Efficiency**: 14GB MPS limit enables full SSL training
 
 ### SSL Performance
-- **SSL Tasks**: 5 concurrent SSL objectives
-- **SSL Parameters**: 260,320 dedicated SSL parameters
+- **SSL Tasks**: 7 concurrent SSL objectives
+- **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **SSL Loss Weight**: 0.04 (balanced with policy/value learning)
 - **SSL Learning**: Active contribution to training with measurable impact
 
@@ -259,12 +263,12 @@ Matrix0 has achieved **complete SSL integration** with a sophisticated 53M param
 
 ## 🏁 Conclusion
 
-Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning. The system now includes **full threat detection, pin detection, fork detection, control detection, and pawn structure analysis** - all fully integrated with the training pipeline. **Training stability has been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
+Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning. The system now includes **7 SSL tasks: piece recognition, threat detection, pin detection, fork detection, control detection, pawn structure analysis, and king safety** - all fully integrated with the training pipeline. **Training stability has been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
 
-### Major Achievements (August 27, 2025)
-- ✅ **Complete SSL Integration**: All 5 SSL algorithms fully operational with training pipeline
+### Major Achievements (August 29, 2025)
+- ✅ **Complete SSL Integration**: All 7 SSL algorithms fully operational with training pipeline
 - ✅ **Multi-Task Learning**: Simultaneous training of policy, value, and SSL objectives
-- ✅ **Advanced SSL Tasks**: Threat, pin, fork, control, and pawn structure detection working
+- ✅ **Advanced SSL Tasks**: Piece, threat, pin, fork, control, pawn_structure, and king_safety detection working
 - ✅ **Training Stability**: 100% stable training with SSL integration (scheduler/gradient issues resolved)
 - ✅ **Enhanced WebUI**: Comprehensive monitoring with SSL dashboard, training analytics, and model analysis
 - ✅ **Production Pipeline**: Complete self-play → training → evaluation cycle with SSL

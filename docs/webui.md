@@ -75,9 +75,9 @@ Once running, access the enhanced WebUI at:
   "stockfish": true,
   "model_params": 53206724,
   "device": "cpu",
-  "ssl_enabled": true,
-  "ssl_tasks": ["piece", "threat", "pin", "fork", "control"],
-  "training_status": "operational"
+      "ssl_enabled": true,
+    "ssl_tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"],
+    "training_status": "operational"
 }
 ```
 
@@ -86,17 +86,19 @@ Once running, access the enhanced WebUI at:
 - **Returns**: Complete SSL integration status
 ```json
 {
-  "enabled": true,
-  "tasks": ["piece", "threat", "pin", "fork", "control"],
-  "ssl_head_count": 5,
-  "total_ssl_params": 260320,
-  "head_parameters": {
-    "piece": 53600,
-    "threat": 51680,
-    "pin": 51680,
-    "fork": 51680,
-    "control": 51680
-  }
+      "enabled": true,
+    "tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"],
+    "ssl_head_count": 7,
+    "total_ssl_params": "dedicated",
+    "head_parameters": {
+      "piece": "dedicated",
+      "threat": "dedicated",
+      "pin": "dedicated",
+      "fork": "dedicated",
+      "control": "dedicated",
+      "pawn_structure": "dedicated",
+      "king_safety": "dedicated"
+    }
 }
 ```
 
@@ -132,20 +134,22 @@ Once running, access the enhanced WebUI at:
     "ReLU": 0,
     "Linear": 260320
   },
-  "ssl_heads": {
-    "piece": {"parameters": 53600, "structure": "..."},
-    "threat": {"parameters": 51680, "structure": "..."},
-    "pin": {"parameters": 51680, "structure": "..."},
-    "fork": {"parameters": 51680, "structure": "..."},
-    "control": {"parameters": 51680, "structure": "..."}
-  },
-  "architecture": {
-    "channels": 320,
-    "blocks": 24,
-    "attention_heads": 20,
-    "ssl_enabled": true,
-    "ssl_tasks": ["piece", "threat", "pin", "fork", "control"]
-  }
+      "ssl_heads": {
+      "piece": {"parameters": "dedicated", "structure": "..."},
+      "threat": {"parameters": "dedicated", "structure": "..."},
+      "pin": {"parameters": "dedicated", "structure": "..."},
+      "fork": {"parameters": "dedicated", "structure": "..."},
+      "control": {"parameters": "dedicated", "structure": "..."},
+      "pawn_structure": {"parameters": "dedicated", "structure": "..."},
+      "king_safety": {"parameters": "dedicated", "structure": "..."}
+    },
+    "architecture": {
+      "channels": 320,
+      "blocks": 24,
+      "attention_heads": 20,
+      "ssl_enabled": true,
+      "ssl_tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
+    }
 }
 ```
 
@@ -244,12 +248,14 @@ The enhanced WebUI features four specialized views accessible via the top naviga
 
 #### 🔬 SSL View - Advanced SSL Monitoring
 1. **SSL Configuration**: View current SSL settings and task status
-2. **SSL Heads Analysis**: Examine all 5 SSL heads:
-   - **Piece Detection**: 53,600 parameters
-   - **Threat Detection**: 51,680 parameters
-   - **Pin Detection**: 51,680 parameters
-   - **Fork Detection**: 51,680 parameters
-   - **Control Detection**: 51,680 parameters
+2. **SSL Heads Analysis**: Examine all 7 SSL heads:
+   - **Piece Detection**: Dedicated SSL parameters
+   - **Threat Detection**: Dedicated SSL parameters
+   - **Pin Detection**: Dedicated SSL parameters
+   - **Fork Detection**: Dedicated SSL parameters
+   - **Control Detection**: Dedicated SSL parameters
+   - **Pawn Structure**: Dedicated SSL parameters
+   - **King Safety**: Dedicated SSL parameters
 3. **Parameter Tracking**: Monitor SSL learning effectiveness
 4. **SSL Performance**: Track task balancing and contribution
 
@@ -378,14 +384,14 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 
 ### Training Pipeline
 - **Status**: ✅ **FULLY OPERATIONAL** with complete SSL integration
-- **SSL Integration**: ✅ **COMPLETE** - All 5 SSL tasks working simultaneously
+- **SSL Integration**: ✅ **COMPLETE** - All 7 SSL tasks working simultaneously
 - **Multi-Task Learning**: ✅ **ACTIVE** - Policy, value, and SSL training combined
 - **Real-time Monitoring**: ✅ **ENHANCED** - WebUI provides comprehensive monitoring
 
 ### Model Architecture
-- **Parameters**: 53.2M (ResNet-24 with complete SSL integration)
-- **SSL Heads**: **5 specialized SSL heads** (piece, threat, pin, fork, control)
-- **SSL Parameters**: 260,320 dedicated SSL parameters
+- **Parameters**: 53M+ (ResNet-24 with complete SSL integration)
+- **SSL Heads**: **7 specialized SSL heads** (piece, threat, pin, fork, control, pawn_structure, king_safety)
+- **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **Memory Usage**: 14GB MPS limit with SSL processing optimization
 - **Performance**: ~3-4 seconds per training step with SSL
 

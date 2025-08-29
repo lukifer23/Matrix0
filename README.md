@@ -26,9 +26,9 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 ## ✨ Key Features
 
 ### 🔥 SSL Integration (COMPLETE)
-- **5 Specialized SSL Heads**: Threat detection, pin detection, fork detection, control detection, piece recognition
+- **7 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection, pawn structure, king safety
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
-- **260K SSL Parameters**: Dedicated SSL capacity with weighted loss functions
+- **Dedicated SSL Parameters**: SSL capacity with weighted loss functions
 - **Real-Time SSL Monitoring**: WebUI dashboard with SSL head performance tracking
 
 ### 🧠 Advanced Architecture
@@ -84,15 +84,15 @@ Matrix0/
 │   ├── data_manager.py        # SQLite metadata and backup system
 │   ├── orchestrator.py        # Main training coordinator
 │   └── config.py              # Configuration management
-├── config.yaml                 # Main configuration (SSL enabled, 5 SSL tasks, 4 workers, 750 games/cycle)
+├── config.yaml                 # Main configuration (SSL enabled, 7 SSL tasks, 3 workers)
 ├── data/                       # Training data and replays
 │   ├── backups/               # Automatic backup system
 │   ├── selfplay/              # SSL-enhanced self-play game data
 │   └── data_metadata.db       # SQLite database for data integrity
 ├── checkpoints/                # Model checkpoints with SSL architecture
-│   ├── v2_base.pt             # Fresh SSL-integrated baseline
-│   ├── v2_merged.pt           # Merged checkpoint (old weights + new SSL)
-│   └── v2_fresh_clean.pt      # Alternative SSL baseline
+│   ├── best.pt                # Current best checkpoint
+│   ├── model_step_1000.pt     # Step 1000 checkpoint
+│   └── v2_base.pt             # V2 base checkpoint
 ├── webui/                      # Enhanced FastAPI monitoring platform
 │   ├── server.py              # Backend with SSL/training endpoints
 │   └── static/                # Multi-view frontend interface
@@ -127,7 +127,7 @@ python create_v2_checkpoint.py  # Creates optimized 53M parameter model
 ### 3. Start Training (Current Session)
 ```bash
 source .venv/bin/activate
-python -m azchess.orchestrator --workers 4 --sims 160 --lr 0.001 --batch-size 128 --epochs 1 --eval-games 12 --device mps
+python -m azchess.orchestrator --workers 3 --sims 300 --lr 0.001 --batch-size 96 --epochs 1 --eval-games 10 --device mps
 ```
 
 ### 3b. Generate Stockfish Data (Optional)
@@ -212,16 +212,16 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 
 ## 🔧 Current Training Status
 
-**Latest Update**: August 27, 2025
+**Latest Update**: August 29, 2025
 - **🚀 Training Progress**: **FULLY OPERATIONAL** with complete SSL integration
 - **🏃 Training Speed**: ~3-4 seconds per step (optimized for SSL processing)
-- **🧠 Model Size**: 53,206,724 parameters (53.2M with SSL heads)
-- **🏗️ Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **5 SSL heads**
-- **🔥 SSL Status**: **COMPLETE INTEGRATION** - All 5 SSL tasks operational (threat, pin, fork, control, piece)
-- **📊 SSL Parameters**: 260,320 dedicated SSL parameters with weighted loss functions
+- **🧠 Model Size**: 53M parameter ResNet-24 with SSL heads
+- **🏗️ Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **7 SSL heads**
+- **🔥 SSL Status**: **COMPLETE INTEGRATION** - All 7 SSL tasks operational (piece, threat, pin, fork, control, pawn_structure, king_safety)
+- **📊 SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **🛡️ Training Stability**: 100% stable with proper gradient accumulation and scheduler stepping
 - **💾 Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
-- **⚡ Recent Enhancements**: Complete SSL integration, enhanced WebUI monitoring, advanced checkpoint management
+- **⚡ Recent Enhancements**: Complete SSL integration, enhanced WebUI monitoring, advanced benchmark system
 
 ## 🔧 Development
 
@@ -287,13 +287,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📈 Current Achievements & Next Steps
 
-### ✅ Major Milestones Completed (August 27, 2025)
-- **🔥 Complete SSL Integration**: All 5 SSL tasks (threat, pin, fork, control, piece) fully operational
+### ✅ Major Milestones Completed (August 29, 2025)
+- **🔥 Complete SSL Integration**: All 7 SSL tasks (piece, threat, pin, fork, control, pawn_structure, king_safety) fully operational
 - **🧠 Multi-Task Learning**: Simultaneous policy, value, and SSL optimization working perfectly
 - **📊 Enhanced WebUI**: Complete monitoring platform with real-time SSL and training analytics
 - **🛡️ Training Stability**: 100% stable training with proper scheduler stepping and gradient management
 - **💾 Advanced Checkpoint Management**: SSL-preserving checkpoint creation and merging tools
-- **🏗️ Production Architecture**: 53.2M parameter ResNet-24 with complete SSL foundation
+- **🏗️ Production Architecture**: 53M parameter ResNet-24 with complete SSL foundation
 - **🍎 Apple Silicon Optimization**: 14GB MPS limit with SSL processing optimization
 - **📈 Real-Time Monitoring**: Live training status, SSL performance, and model analysis
 

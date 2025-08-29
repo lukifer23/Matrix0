@@ -42,12 +42,12 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Branch Normalization**: Independent LayerNorm before combination
 - **Stability**: Gradient clipping and NaN/Inf detection
 
-### SSL Implementation (Foundation Established)
-- **SSL Foundation**: Basic piece recognition working and operational
+### SSL Implementation (Complete Integration)
+- **SSL Integration**: All 7 SSL tasks fully operational
 - **SSL Algorithms**: Advanced algorithms implemented and integrated
-- **SSL Architecture**: Dedicated multi-head SSL architecture with 6+ task heads
-- **Current Status**: Basic piece recognition working, advanced algorithms integrated
-- **Training Stability**: SSL foundation established with multi-task functionality
+- **SSL Architecture**: Dedicated multi-head SSL architecture with 7 task heads
+- **Current Status**: Complete SSL integration with multi-task learning
+- **Training Stability**: SSL integration working with stable training
 
 ### Training Stability Features
 - **Branch Normalization**: Prevents magnitude differences between policy branches
@@ -101,12 +101,12 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Output**: Scalar win probability (-1 to 1)
 - **Parameters**: ~200K
 
-### SSL Head (Foundation Established)
-- **Architecture**: 1×1 conv (320→64) → 13×8×8 output
-- **SSL Foundation**: Basic piece recognition working (13-class prediction per-square)
-- **Current Status**: Ready for advanced SSL task integration
-- **Training**: Basic piece recognition operational, advanced algorithms ready
-- **Parameters**: ~500K
+### SSL Head (Complete Integration)
+- **Architecture**: Dedicated SSL heads for each task
+- **SSL Integration**: All 7 SSL tasks fully operational
+- **Current Status**: Complete SSL integration with multi-task learning
+- **Training**: All SSL tasks training simultaneously
+- **Parameters**: Dedicated SSL parameters
 
 ### Outputs (Production Interface)
 - **Policy**: (B, 4672) - move logits (from-square × to-square)
@@ -174,7 +174,7 @@ model:
   cross_modal_attention: true     # enable cross-modal attention
   
   # Enhanced SSL/SSRL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
   ssl_curriculum: true            # enable progressive difficulty
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
   
@@ -188,6 +188,12 @@ training:
   ssl_label_smoothing: 0.05
   ssl_task_weights:              # weights for supported SSL tasks
     piece: 1.0
+    threat: 1.0
+    pin: 1.0
+    fork: 1.0
+    control: 1.0
+    pawn_structure: 1.0
+    king_safety: 1.0
   
   # SSRL configuration
   ssrl_loss_weight: 0.3
@@ -279,8 +285,10 @@ llm_tutor:
 ### Enhanced SSL/SSRL System
 **Multi-Task SSL Tasks:**
 - **Piece Recognition**: Basic piece identification (✅ WORKING)
-- **Piece Relationships**: Which pieces control which squares (✅ IMPLEMENTED)
 - **Threat Detection**: Identify pieces under attack/defense (✅ IMPLEMENTED)
+- **Pin Detection**: Identify pinned pieces and constraints (✅ IMPLEMENTED)
+- **Fork Detection**: Identify forking opportunities and threats (✅ IMPLEMENTED)
+- **Control Detection**: Analyze square control and influence (✅ IMPLEMENTED)
 - **Pawn Structure**: Pawn chains, isolated pawns, passed pawns (✅ IMPLEMENTED)
 - **King Safety**: Recognize safe vs exposed king positions (✅ IMPLEMENTED)
 
@@ -292,10 +300,12 @@ llm_tutor:
 
 **SSL Curriculum Progression:**
 1. **Level 1**: Basic piece recognition and board state (✅ WORKING)
-2. **Level 2**: Piece relationships and basic threats (✅ READY)
-3. **Level 3**: Pawn structure and king safety (✅ READY)
-4. **Level 4**: Complex tactical patterns (✅ READY)
-5. **Level 5**: Strategic concepts and long-term planning (✅ READY)
+2. **Level 2**: Threat detection and piece relationships (✅ WORKING)
+3. **Level 3**: Pin detection and fork opportunities (✅ WORKING)
+4. **Level 4**: Control analysis and pawn structure (✅ WORKING)
+5. **Level 5**: King safety and complex tactical patterns (✅ WORKING)
+6. **Level 6**: Strategic concepts and long-term planning (✅ READY)
+7. **Level 7**: Advanced positional understanding (✅ READY)
 
 ### LLM Chess Tutor Integration
 **Fine-tuning Strategy:**
@@ -383,7 +393,7 @@ model:
   policy_factor_rank: 0
   enable_visual: false
   enable_llm_tutor: false
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
 ```
 
 ### Gradual Fallback Options
@@ -430,10 +440,10 @@ model:
 ### Enhanced SSL/SSRL
 - [x] Basic SSL task implementation (piece recognition)
 - [x] Advanced SSL algorithms implemented in ssl_algorithms.py
-- [ ] SSL task integration with training pipeline
-- [ ] SSL curriculum progression system
-- [ ] Multi-task loss weighting and combination
-- [ ] SSL validation and testing framework
+- [x] SSL task integration with training pipeline (all 7 tasks)
+- [x] SSL curriculum progression system
+- [x] Multi-task loss weighting and combination
+- [x] SSL validation and testing framework
 
 ### Multi-Modal Learning
 - [ ] Visual board encoder implementation
@@ -482,7 +492,7 @@ model:
   aux_policy_move_type: true
   enable_visual: true
   enable_llm_tutor: true
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # All 5 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
   ssl_curriculum: true
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
 
