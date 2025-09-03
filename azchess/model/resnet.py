@@ -270,6 +270,16 @@ class PolicyValueNet(nn.Module):
         super().__init__()
         C = cfg.channels
         self.cfg = cfg
+        # Guard: Only legacy 4672 policy is supported until 1858 path is implemented
+        try:
+            _ps = int(getattr(cfg, 'policy_size', 4672))
+        except Exception:
+            _ps = 4672
+        if _ps != 4672:
+            raise ValueError(
+                f"Unsupported policy_size={_ps}. Matrix0 currently supports legacy 4672 only; "
+                "AZ1858 mapping is not implemented yet."
+            )
         
         activation = nn.SiLU(inplace=True) if cfg.activation == "silu" else nn.ReLU(inplace=True)
 
@@ -796,96 +806,154 @@ class PolicyValueNet(nn.Module):
     def get_enhanced_ssl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor], feats: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Compute SSL loss for supported tasks with advanced algorithms.
 
-        This method handles multiple SSL tasks. Currently implements:
-        - Piece recognition (via existing SSL head)
-        - Threat/Pin/Fork/Control detection (target computation ready, loss computation pending model heads)
+        Enhanced implementation with proper multi-task loss computation and error handling.
         """
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=x.device, dtype=torch.float32)
         device = x.device
 
         # Get configuration for SSL tasks and weights
         ssl_tasks = getattr(self.cfg, 'ssl_tasks', ['piece'])
 
-        # Piece prediction task (primary SSL task using existing SSL head)
+        # Log SSL task configuration
+        if torch.rand(1).item() < 0.01:  # Log 1% of the time
+            logger.info(f"SSL TASKS CONFIG: enabled={ssl_tasks}, available_heads={list(self.ssl_heads.keys())}")
+
+        # Compute shared features once for all tasks that need them
+        feats_shared: Optional[torch.Tensor] = None
+        active_advanced_tasks = [t for t in ['threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
+                                if t in targets and t in ssl_tasks and t in self.ssl_heads]
+
+        if active_advanced_tasks and feats is None:
+            feats_shared = self._forward_features(x, None)
+        elif feats is not None:
+            feats_shared = feats
+
+        # Process each SSL task
+        task_losses = {}
+
+        # 1. Piece recognition (primary SSL task)
         if 'piece' in targets and self.ssl_piece_head is not None and 'piece' in ssl_tasks:
             try:
-                piece_loss = self.get_ssl_loss(x, targets['piece'])
-                total_loss += piece_loss
-                logger.debug(f"Piece SSL loss: {piece_loss.item():.6f}")
+                # Handle different target formats
+                piece_targets = targets['piece']
+                if isinstance(piece_targets, torch.Tensor) and piece_targets.dim() == 4:
+                    # One-hot format: convert to class indices for cross-entropy
+                    piece_targets = torch.argmax(piece_targets, dim=1)
+
+                piece_loss = self.get_ssl_loss(x, piece_targets)
+                if torch.isfinite(piece_loss) and piece_loss > 0:
+                    task_losses['piece'] = piece_loss
+                    total_loss += piece_loss
+                    logger.debug(".6f")
             except Exception as e:
-                logger.warning(f"Piece SSL loss computation failed: {e}")
+                logger.warning(f"Piece SSL loss failed: {e}")
 
-        # Advanced SSL tasks using dedicated model heads
-        advanced_tasks = ['threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
-        # Compute shared features once if any advanced task is requested and no features were provided
-        feats_shared: Optional[torch.Tensor] = None
-        if any((t in targets and t in ssl_tasks and t in self.ssl_heads) for t in advanced_tasks):
-            feats_shared = feats if feats is not None else self._forward_features(x, None)
-        for task in advanced_tasks:
-            if task in targets and task in ssl_tasks and task in self.ssl_heads:
-                try:
-                    task_head = self.ssl_heads[task]
-                    task_targets = targets[task]
+        # 2. Advanced SSL tasks using dedicated heads
+        for task in active_advanced_tasks:
+            try:
+                task_head = self.ssl_heads[task]
+                task_targets = targets[task]
 
-                    # Compute task output using shared or provided features
-                    task_output = task_head(feats_shared)
+                # Compute task output using shared features
+                task_output = task_head(feats_shared)
 
-                    # Log task activity
-                    if task_targets.numel() > 0:
-                        if task == 'threat':
-                            threatened_squares = task_targets.sum().item()
-                            logger.debug(f"Threat detection: {threatened_squares} threatened squares")
-                        elif task == 'pin':
-                            pinned_pieces = task_targets.sum().item()
-                            logger.debug(f"Pin detection: {pinned_pieces} pinned pieces")
-                        elif task == 'fork':
-                            fork_opportunities = task_targets.sum().item()
-                            logger.debug(f"Fork detection: {fork_opportunities} fork opportunities")
-                        elif task == 'control':
-                            white_control = (task_targets > 0).sum().item()
-                            black_control = (task_targets < 0).sum().item()
-                            logger.debug(f"Square control - White: {white_control}, Black: {black_control}")
-                        elif task == 'pawn_structure':
-                            logger.debug(f"Pawn structure: {task_targets.shape}")
-                        elif task == 'king_safety':
-                            logger.debug(f"King safety: {task_targets.shape}")
-
-                    # Compute loss based on task type
-                    if task in ['threat', 'pin', 'fork']:
-                        # Binary classification tasks
-                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 1)
-                        task_targets_flat = task_targets.reshape(-1, 1).float()
-                        task_loss = F.binary_cross_entropy_with_logits(task_output_flat, task_targets_flat)
-                    elif task == 'control':
-                        # Ternary classification: -1 (black), 0 (neutral), 1 (white) -> map to 0,1,2
-                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 3)
-                        task_targets_flat = task_targets.reshape(-1).float()
-                        task_targets_3class = torch.where(task_targets_flat < 0, torch.tensor(0, device=device),
-                                                         torch.where(task_targets_flat > 0, torch.tensor(2, device=device),
-                                                                    torch.tensor(1, device=device)))
-                        task_loss = F.cross_entropy(task_output_flat, task_targets_3class.long())
-                    elif task == 'pawn_structure':
-                        # 8-class classification for pawn structure features
-                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 8)
-                        task_targets_flat = task_targets.reshape(-1).long()
-                        task_loss = F.cross_entropy(task_output_flat, task_targets_flat)
-                    elif task == 'king_safety':
-                        # 3-class classification for king safety levels
-                        task_output_flat = task_output.permute(0, 2, 3, 1).reshape(-1, 3)
-                        task_targets_flat = task_targets.reshape(-1).long()
-                        task_loss = F.cross_entropy(task_output_flat, task_targets_flat)
-
-                    # Weight the task loss (default 1.0, can be configured per task)
-                    task_weight = getattr(self.cfg, f'ssl_{task}_weight', 1.0)
-                    total_loss += task_weight * task_loss
-                    logger.debug(f"{task} SSL loss: {task_loss.item():.6f} (weight: {task_weight})")
-
-                except Exception as e:
-                    logger.warning(f"{task} SSL loss computation failed: {e}")
+                # Validate output dimensions
+                if task_output.dim() != 4:
+                    logger.warning(f"SSL {task} output has wrong dimensions: {task_output.shape}")
                     continue
 
-        # Return total loss (currently only piece recognition contributes)
-        return total_loss if total_loss > 0 else torch.tensor(0.0, device=device, dtype=torch.float32)
+                # Compute loss based on task type
+                task_loss = self._compute_task_loss(task, task_output, task_targets, device)
+
+                if task_loss is not None and torch.isfinite(task_loss) and task_loss > 0:
+                    # Apply task-specific weight
+                    task_weight = getattr(self.cfg, f'ssl_{task}_weight', 1.0)
+                    weighted_loss = task_weight * task_loss
+                    task_losses[task] = weighted_loss
+                    total_loss += weighted_loss
+                    logger.debug(".6f")
+                else:
+                    logger.debug(f"SSL {task} loss invalid or zero: {task_loss}")
+
+            except Exception as e:
+                logger.warning(f"{task} SSL loss computation failed: {e}")
+                continue
+
+        # Log summary if any SSL loss was computed
+        if len(task_losses) > 0 and torch.rand(1).item() < 0.05:  # Log 5% of the time
+            task_summary = ", ".join([f"{k}: {v.item():.4f}" for k, v in task_losses.items()])
+            logger.info(f"SSL LOSS SUMMARY: total={total_loss.item():.6f}, tasks=[{task_summary}]")
+
+        return total_loss
+
+    def _compute_task_loss(self, task: str, output: torch.Tensor, targets: torch.Tensor, device: torch.device) -> Optional[torch.Tensor]:
+        """Compute loss for a specific SSL task with proper error handling."""
+        try:
+            if task in ['threat', 'pin', 'fork']:
+                # Binary classification tasks
+                if output.size(1) != 1:
+                    logger.warning(f"SSL {task} output channels != 1: {output.shape}")
+                    return None
+
+                output_flat = output.permute(0, 2, 3, 1).reshape(-1, 1)
+                targets_flat = targets.reshape(-1, 1).float()
+
+                # Ensure targets are in valid range for BCE
+                targets_flat = torch.clamp(targets_flat, 0.0, 1.0)
+
+                return F.binary_cross_entropy_with_logits(output_flat, targets_flat, reduction='mean')
+
+            elif task == 'control':
+                # Ternary classification: -1 (black), 0 (neutral), 1 (white) -> map to 0,1,2
+                if output.size(1) != 3:
+                    logger.warning(f"SSL control output channels != 3: {output.shape}")
+                    return None
+
+                output_flat = output.permute(0, 2, 3, 1).reshape(-1, 3)
+                targets_flat = targets.reshape(-1).float()
+
+                # Map targets to class indices
+                targets_3class = torch.where(targets_flat < -0.5, torch.tensor(0, device=device),
+                                           torch.where(targets_flat > 0.5, torch.tensor(2, device=device),
+                                                      torch.tensor(1, device=device)))
+
+                return F.cross_entropy(output_flat, targets_3class.long(), reduction='mean')
+
+            elif task == 'pawn_structure':
+                # 8-class classification for pawn structure features
+                if output.size(1) != 8:
+                    logger.warning(f"SSL pawn_structure output channels != 8: {output.shape}")
+                    return None
+
+                output_flat = output.permute(0, 2, 3, 1).reshape(-1, 8)
+                targets_flat = targets.reshape(-1).long()
+
+                # Ensure targets are in valid range
+                targets_flat = torch.clamp(targets_flat, 0, 7)
+
+                return F.cross_entropy(output_flat, targets_flat, reduction='mean')
+
+            elif task == 'king_safety':
+                # 3-class classification for king safety levels
+                if output.size(1) != 3:
+                    logger.warning(f"SSL king_safety output channels != 3: {output.shape}")
+                    return None
+
+                output_flat = output.permute(0, 2, 3, 1).reshape(-1, 3)
+                targets_flat = targets.reshape(-1).long()
+
+                # Ensure targets are in valid range
+                targets_flat = torch.clamp(targets_flat, 0, 2)
+
+                return F.cross_entropy(output_flat, targets_flat, reduction='mean')
+
+            else:
+                logger.warning(f"Unknown SSL task: {task}")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Error computing {task} loss: {e}")
+            return None
     
     def get_ssrl_loss(self, x: torch.Tensor, targets: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute SSRL (Self-Supervised Representation Learning) loss for general tasks.
@@ -1031,9 +1099,15 @@ class PolicyValueNet(nn.Module):
 
     def enable_memory_optimization(self):
         """Enable memory optimization techniques for MPS."""
-        # Use gradient checkpointing for memory efficiency
-        if hasattr(self, 'enable_gradient_checkpointing'):
-            self.enable_gradient_checkpointing()
+        # Preserve any previously selected checkpointing strategy; do not override
+        if hasattr(self, 'checkpoint_strategy'):
+            strategy = getattr(self, 'checkpoint_strategy')
+            logger.debug(f"Memory optimization: preserving checkpoint strategy '{strategy}'")
+        else:
+            strategy = None
+        # Only (re)apply if an explicit strategy was already set elsewhere
+        if strategy is not None and hasattr(self, 'enable_gradient_checkpointing'):
+            self.enable_gradient_checkpointing(strategy=strategy)
 
         # Enable eval mode during forward pass for SSL (no gradients needed)
         # This is handled in get_ssl_loss method
@@ -1044,11 +1118,13 @@ class PolicyValueNet(nn.Module):
                 module.memory_efficient = True
 
     def create_ssl_targets(self, board_states: torch.Tensor):
-        """Create SSL targets efficiently.
+        """Create SSL targets efficiently with optimized computation.
 
-        If only the 'piece' task is enabled, compute just that target to avoid slow extras.
+        Enhanced implementation that prioritizes speed and memory efficiency.
         """
         ssl_tasks = getattr(self.cfg, 'ssl_tasks', ['piece'])
+
+        # Fast path for piece-only tasks
         if ssl_tasks == ['piece']:
             from ..ssl_algorithms import get_ssl_algorithms
             targets = get_ssl_algorithms()._create_piece_targets(board_states)
@@ -1056,27 +1132,66 @@ class PolicyValueNet(nn.Module):
                 targets = targets * self.ssl_target_weight
             return targets
 
+        # Full SSL target generation for multiple tasks
         from ..ssl_algorithms import get_ssl_algorithms
         ssl_targets = get_ssl_algorithms().create_enhanced_ssl_targets(board_states)
-        # Optional augmentation for tasks not provided by ssl_algorithms
-        # (e.g., 'pawn_structure', 'king_safety') using a simple python-chess-based provider.
+
+        # Add pawn structure and king safety if needed (optimized computation)
         try:
             need_aug = any(t in ssl_tasks for t in ('pawn_structure', 'king_safety'))
             if need_aug:
-                # Convert to numpy (B,19,8,8) and generate only missing keys
+                # Convert to numpy efficiently (only when needed)
                 from azchess.training.ssl_targets import generate_ssl_targets_from_states
                 s_np = board_states.detach().to('cpu').numpy()
                 simple = generate_ssl_targets_from_states(s_np)
+
                 for k in ('pawn_structure', 'king_safety'):
                     if k in ssl_tasks and k not in ssl_targets and k in simple:
                         ssl_targets[k] = torch.from_numpy(simple[k]).to(device=board_states.device, dtype=torch.float32)
+                        logger.debug(f"Added {k} SSL targets via simple provider")
         except Exception as e:
             logger.debug(f"SSL simple augmentation skipped: {e}")
+
+        # Apply target weight scaling
         if hasattr(self, 'ssl_target_weight') and self.ssl_target_weight != 1.0:
             for key in ssl_targets:
                 if ssl_targets[key].dtype in [torch.float32, torch.float16, torch.bfloat16]:
                     ssl_targets[key] = ssl_targets[key] * self.ssl_target_weight
+
+        logger.debug(f"Generated SSL targets for tasks: {list(ssl_targets.keys())}")
         return ssl_targets
+
+    def create_ssl_targets_batch(self, board_states: torch.Tensor, batch_size: int = 32):
+        """Create SSL targets in batches to manage memory usage.
+
+        Args:
+            board_states: (B, 19, 8, 8) tensor of board states
+            batch_size: Batch size for processing to avoid memory issues
+
+        Returns:
+            Dict of SSL targets with same batch dimension as input
+        """
+        total_samples = board_states.size(0)
+        all_targets = {}
+
+        for start_idx in range(0, total_samples, batch_size):
+            end_idx = min(start_idx + batch_size, total_samples)
+            batch_states = board_states[start_idx:end_idx]
+
+            # Generate targets for this batch
+            batch_targets = self.create_ssl_targets(batch_states)
+
+            # Accumulate results
+            for key, target_tensor in batch_targets.items():
+                if key not in all_targets:
+                    # Pre-allocate full tensor
+                    all_targets[key] = torch.zeros((total_samples,) + target_tensor.shape[1:],
+                                                 device=target_tensor.device, dtype=target_tensor.dtype)
+
+                # Copy batch results to full tensor
+                all_targets[key][start_idx:end_idx] = target_tensor
+
+        return all_targets
 
     def ensure_dtype_consistency(self, target_dtype: torch.dtype):
         """Ensure all model parameters and buffers have consistent dtype for MPS operations."""

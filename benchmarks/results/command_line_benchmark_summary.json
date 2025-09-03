@@ -1,39 +1,39 @@
 {
-  "total_games": 10,
-  "total_moves": 387,
-  "total_duration": 627.9916346073151,
-  "avg_game_duration": 62.799163460731506,
-  "avg_moves_per_game": 38.7,
+  "total_games": 6,
+  "total_moves": 283,
+  "total_duration": 91.30437779426575,
+  "avg_game_duration": 15.21739629904429,
+  "avg_moves_per_game": 47.166666666666664,
   "results": {
-    "white_wins": 5,
-    "black_wins": 5,
+    "white_wins": 3,
+    "black_wins": 3,
     "draws": 0,
     "win_rate": 0.5,
     "draw_rate": 0.0
   },
   "by_engine": {
+    "Matrix0": {
+      "wins": 0,
+      "losses": 6,
+      "draws": 0,
+      "win_rate": 0.0
+    },
     "stockfish": {
-      "wins": 10,
+      "wins": 6,
       "losses": 0,
       "draws": 0,
       "win_rate": 1.0
-    },
-    "Matrix0": {
-      "wins": 0,
-      "losses": 10,
-      "draws": 0,
-      "win_rate": 0.0
     }
   },
   "timing": {
-    "avg_time_per_move": 1.619999271954677,
-    "min_time_per_move": 0.40483713150024414,
-    "max_time_per_move": 9.951988220214844,
-    "time_variance": 1.5996510559469967
+    "avg_time_per_move": 0.32191088848316207,
+    "min_time_per_move": 0.05620622634887695,
+    "max_time_per_move": 1.5078179836273193,
+    "time_variance": 0.04321322071942366
   },
   "resources": {
-    "avg_cpu_usage": 20.969025522041672,
-    "avg_memory_usage": 75.5827311899237,
-    "peak_memory_gb": 8.086044311523438
+    "avg_cpu_usage": 23.40666666666669,
+    "avg_memory_usage": 81.42620689655183,
+    "peak_memory_gb": 14.237991333007812
   }
 }

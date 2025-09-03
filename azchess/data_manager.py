@@ -246,13 +246,13 @@ class DataManager:
         Returns tuples (s, pi, z, legal_mask) where legal_mask may be None if not present.
         """
         shard_paths = self._get_valid_shard_paths()
-        
+
         if not shard_paths:
             raise RuntimeError("No valid training data available")
-        
+
         # Randomly sample from shards
         np.random.shuffle(shard_paths)
-        
+
         for shard_path in shard_paths:
             try:
                 # Memory-map to reduce RSS and speed IO
@@ -261,6 +261,12 @@ class DataManager:
                     policies = data['pi']
                     values = data['z']
                     legal_mask_all = data.get('legal_mask', None)
+
+                    # Extract SSL targets if present
+                    ssl_targets = {}
+                    for key in data.keys():
+                        if key.startswith('ssl_'):
+                            ssl_targets[key] = data[key]
 
                     # Normalize common shape variants proactively
                     # values can be (N,) or (N,1); normalize to (N,)
@@ -290,6 +296,10 @@ class DataManager:
                     if legal_mask_all is not None:
                         legal_mask_all = legal_mask_all[indices]
 
+                    # Shuffle SSL targets with same indices
+                    for key in ssl_targets:
+                        ssl_targets[key] = ssl_targets[key][indices]
+
                     # Yield batches
                     for i in range(0, len(states), batch_size):
                         batch_states = states[i:i+batch_size]
@@ -298,16 +308,9 @@ class DataManager:
                         batch_legal = None
                         if legal_mask_all is not None:
                             batch_legal = legal_mask_all[i:i+batch_size]
-                            # Ensure target move is never masked out for one-hot labels
-                            try:
-                                target_mask = (batch_policies > 0)
-                                if batch_legal.shape == target_mask.shape:
-                                    batch_legal = np.logical_or(batch_legal.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
-                            except Exception:
-                                pass
 
-                        # Ensure batch arrays are standard C-contiguous float32
-                        if not batch_states.flags['C_CONTIGUOUS']:
+                        # Ensure contiguous memory and dtypes before yielding
+                        if not isinstance(batch_states, np.ndarray) or not batch_states.flags['C_CONTIGUOUS']:
                             batch_states = np.ascontiguousarray(batch_states)
                         if not batch_policies.flags['C_CONTIGUOUS']:
                             batch_policies = np.ascontiguousarray(batch_policies)
@@ -321,8 +324,8 @@ class DataManager:
                         if batch_values.dtype != np.float32:
                             batch_values = batch_values.astype(np.float32, copy=False)
 
-                        if len(batch_states) == batch_size:
-                            yield batch_states, batch_policies, batch_values, batch_legal
+                        # Only yield tuples expected by train_step: (s, pi, z[, legal_mask])
+                        yield (batch_states, batch_policies, batch_values, batch_legal) if batch_legal is not None else (batch_states, batch_policies, batch_values)
                             
             except Exception as e:
                 logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)

@@ -6,6 +6,7 @@ import random
 import threading
 import time
 from collections import OrderedDict
+import copy
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -257,7 +258,8 @@ class MCTS:
             cfg = cfg_or_model
 
         self.cfg = cfg
-        self.device = device
+        # Convert device string to torch.device object for proper type checking
+        self.device = torch.device(device) if isinstance(device, str) else device
         self.model = model
         self.inference_backend = inference_backend
         self._enc = MoveEncoder()
@@ -265,6 +267,8 @@ class MCTS:
         self._tt_lock = threading.Lock()
         self._tt_cleanup_counter = 0
         self._last_cleanup_time = time.time()
+        # Optional CPU model clone for safe inference fallback
+        self._cpu_model = None
 
         # Initialize threading based on provided configuration
         self.num_threads = num_threads if num_threads is not None else getattr(cfg, 'num_threads', 1)
@@ -787,6 +791,10 @@ class MCTS:
             max_retries = 2
             for attempt in range(max_retries + 1):
                 try:
+                    # Optional environment-controlled CPU inference fallback for MPS stability
+                    _force_infer_dev = str(_os.environ.get("MATRIX0_INFER_DEVICE", "")).lower()
+                    _cpu_on_mps = str(_os.environ.get("MATRIX0_INFER_CPU_ON_MPS", "")).lower() in ("1", "true", "yes")
+
                     if hasattr(self, 'inference_backend') and self.inference_backend is not None:
                         # Use inference client for multi-threaded MCTS
                         policy, value = self.inference_backend.infer_np(encoded)
@@ -799,25 +807,52 @@ class MCTS:
                     else:
                         # Direct inference for single-threaded (original implementation)
                         with torch.no_grad():
-                            # Ensure tensor is properly moved to model device
-                            input_tensor = torch.from_numpy(encoded)
-                            if input_tensor.device != self.device:
-                                input_tensor = input_tensor.to(self.device)
+                            # Decide inference device
+                            use_cpu_infer = (_force_infer_dev == "cpu") or (self.device.type == "mps" and _cpu_on_mps)
 
-                            try:
-                                policy_logits, value_tensor = self.model(input_tensor)
+                            if use_cpu_infer:
+                                # Lazily clone model to CPU once for safe inference
+                                if self._cpu_model is None:
+                                    try:
+                                        self._cpu_model = copy.deepcopy(self.model).to("cpu")
+                                        self._cpu_model.eval()
+                                        logger.info("Initialized CPU inference clone for MCTS")
+                                    except Exception as clone_err:
+                                        logger.warning(f"Failed to create CPU model clone; falling back to live model on CPU: {clone_err}")
+                                        self._cpu_model = self.model.to("cpu")
+                                        self._cpu_model.eval()
+
+                                input_tensor = torch.from_numpy(encoded).to("cpu")
+                                policy_logits, value_tensor = self._cpu_model(input_tensor)
                                 policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
                                 value = value_tensor.cpu().numpy().flatten()
-                            except RuntimeError as e:
-                                if "device" in str(e) and self.device.type == "mps":
-                                    logger.warning(f"MPS device error, falling back to CPU: {e}")
-                                    # Fallback to CPU if MPS fails
-                                    cpu_tensor = input_tensor.to("cpu")
-                                    policy_logits, value_tensor = self.model(cpu_tensor)
+                            else:
+                                # Ensure tensor is properly moved to model device
+                                input_tensor = torch.from_numpy(encoded)
+                                if input_tensor.device != self.device:
+                                    input_tensor = input_tensor.to(self.device)
+
+                                try:
+                                    policy_logits, value_tensor = self.model(input_tensor)
                                     policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
                                     value = value_tensor.cpu().numpy().flatten()
-                                else:
-                                    raise
+                                except RuntimeError as e:
+                                    if "device" in str(e) and self.device.type == "mps":
+                                        logger.warning(f"MPS device error, falling back to CPU: {e}")
+                                        # Fallback to CPU if MPS fails at runtime
+                                        if self._cpu_model is None:
+                                            try:
+                                                self._cpu_model = copy.deepcopy(self.model).to("cpu")
+                                                self._cpu_model.eval()
+                                            except Exception:
+                                                self._cpu_model = self.model.to("cpu")
+                                                self._cpu_model.eval()
+                                        cpu_tensor = input_tensor.to("cpu")
+                                        policy_logits, value_tensor = self._cpu_model(cpu_tensor)
+                                        policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+                                        value = value_tensor.cpu().numpy().flatten()
+                                    else:
+                                        raise
                     
                     # Comprehensive output validation
                     policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))

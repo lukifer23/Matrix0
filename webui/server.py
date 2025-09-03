@@ -138,10 +138,38 @@ def _load_stockfish() -> Optional["chess.engine.SimpleEngine"]:
         return None
     if _stockfish is not None:
         return _stockfish
-    if not _stockfish_path.exists():
+    # Resolve path preference order: config -> env -> PATH -> local default
+    cfg_path = None
+    try:
+        cfg_local = _cfg or Config.load("config.yaml")
+        cfg_eng = cfg_local.engines() if cfg_local else {}
+        cfg_sf = cfg_eng.get("stockfish", {}) if isinstance(cfg_eng, dict) else {}
+        cfg_path = cfg_sf.get("path")
+    except Exception:
+        cfg_path = None
+
+    env_path = os.environ.get("MATRIX0_STOCKFISH_PATH") or os.environ.get("STOCKFISH_PATH")
+    resolved = None
+    # Prefer config path if it exists
+    for cand in (cfg_path, env_path):
+        if cand and Path(cand).exists():
+            resolved = cand
+            break
+
+    if resolved is None:
+        # Try system PATH
+        import shutil
+        which = shutil.which("stockfish")
+        if which:
+            resolved = which
+
+    if resolved is None and _stockfish_path.exists():
+        resolved = str(_stockfish_path)
+
+    if resolved is None:
         return None
     try:
-        _stockfish = chess.engine.SimpleEngine.popen_uci(str(_stockfish_path))
+        _stockfish = chess.engine.SimpleEngine.popen_uci(str(resolved))
         return _stockfish
     except Exception:
         return None

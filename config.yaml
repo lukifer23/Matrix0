@@ -24,7 +24,7 @@ model:
 selfplay:
   num_workers: 3                   # Next pass: 3 workers
   batch_size: 256                  # Increased from 128 for better efficiency
-  max_games: 20                    # TEST RUN: 20 games total
+  max_games: 420                    # TEST RUN: 20 games total
   max_game_len: 180                # Encourage decisive results
   min_resign_plies: 50             # Avoid premature resignations
   resign_threshold: -0.80          # Slightly earlier resigns to end lost games
@@ -37,26 +37,35 @@ selfplay:
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
-  batch_size: 96                   # Further reduced for MPS headroom
+  batch_size: 96                   # Stable baseline
   epochs: 1                        # Single epoch per cycle; repeat cycles
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
-  checkpoint: "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/v2_base.pt"   # Start fresh from base
-  gradient_accumulation_steps: 2   # Keep effective batch ~256
+  checkpoint: "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_1000.pt"   # Use step-1000 checkpoint for this cycle
+  gradient_accumulation_steps: 2   # Effective batch 192
+  progress_interval: 100           # Reduce per-step logging overhead
   grad_clip_norm: 0.5              # Stable
-  ssl_weight: 0.04                 # Slightly reduced to decouple policy/value
-  ssl_warmup_steps: 1500           # Longer warmup for smoother coupling
-  ssl_every_n: 4                   # Compute SSL every 4th step (reduces MPS spikes)
-  ssl_chunk_size: 32               # Chunk SSL loss over 32-sample slices
+  ssl_weight: 0.15                 # Increased for better SSL learning contribution
+  ssl_warmup_steps: 1000           # Faster warmup for SSL integration
+  ssl_every_n: 1                   # Compute SSL every step for consistent learning
+  ssl_chunk_size: 128              # Larger chunks for better efficiency
   ssl_target_weight: 1.0           # Normalize SSL magnitude
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All SSL tasks enabled
+  ssl_piece_weight: 1.0            # Weight for piece recognition
+  ssl_threat_weight: 0.8           # Weight for threat detection
+  ssl_pin_weight: 0.7              # Weight for pin detection
+  ssl_fork_weight: 0.6             # Weight for fork detection
+  ssl_control_weight: 0.5          # Weight for square control
+  ssl_pawn_structure_weight: 0.4   # Weight for pawn structure
+  ssl_king_safety_weight: 0.4      # Weight for king safety
   # removed duplicate ssl_chunk_size key
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps
   memory_limit_gb: 14              # MPS limit
-  gradient_checkpointing_strategy: "tower_only"  # Lower memory
-  steps_per_epoch: 8000            # Extended training per cycle
+  gradient_checkpointing_strategy: "adaptive"    # Enable only if memory is high
+  steps_per_epoch: 8000            # Shorter training for quick validation cycle
   use_curriculum: true
   curriculum_phases:
     - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
@@ -71,13 +80,13 @@ training:
 
 orchestrator:
   initial_games: 105               # 3 workers × 35 games
-  subsequent_games: 105            # Keep same scale on subsequent runs
-  games_per_cycle: 105             # Total games per cycle
+  subsequent_games: 210            # Increase to 3 workers × 70 games for better data
+  games_per_cycle: 210             # Total games per cycle
   train_epochs_per_cycle: 1        # One epoch per cycle
   eval_games_per_cycle: 10         # Enable per-cycle model-vs-best eval
   keep_top_k: 1                    # Keep only best model
   continuous_mode: false           # Single run mode
-  checkpoint_override: "v2_base.pt" # Use new attention-enabled checkpoint
+  checkpoint_override: "model_step_1000.pt" # Use step-1000 as current starter
   tui: "table"                     # Use table display mode
   ui:
     compact: true                  # Child processes log to files; console stays clean

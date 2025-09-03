@@ -256,36 +256,50 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
 
-    # Generate self-supervised learning targets
+    # Generate or load self-supervised learning targets
     ssl_targets = None
     if enable_ssl:
-        use_simple = (str(ssl_targets_provider).lower() == 'simple')
-        if hasattr(model, 'create_ssl_targets') and not use_simple:
-            try:
-                ssl_targets = model.create_ssl_targets(s)
-            except Exception as e:
-                logger.warning(f"SSL target creation failed via model API: {e}; will try simple provider if available")
-                ssl_targets = None
-        # Optional simple provider (reconstruct board from planes)
-        if ssl_targets is None and use_simple:
-            try:
-                from azchess.training.ssl_targets import generate_ssl_targets_from_states
-                # s is (B,19,8,8) torch; convert to numpy on CPU for target gen
-                s_np = s.detach().to('cpu').numpy()
-                simple = generate_ssl_targets_from_states(s_np)
-                # Convert to torch tensors on current device
-                ssl_targets = {k: torch.from_numpy(v).to(device=s.device, dtype=torch.float32) for k, v in simple.items()}
-                # Apply target weight scaling if requested
-                if ssl_target_weight != 1.0:
-                    for k in list(ssl_targets.keys()):
-                        ssl_targets[k] = ssl_targets[k] * float(ssl_target_weight)
-            except Exception as e:
-                logger.warning(f"Simple SSL target provider failed: {e}; disabling SSL for this batch")
-                ssl_targets = None
+        # Try to load pre-computed SSL targets from batch data first
+        if isinstance(batch, dict) and any(k.startswith('ssl_') for k in batch.keys()):
+            # Load pre-computed SSL targets from data files
+            ssl_targets = {}
+            for key, value in batch.items():
+                if key.startswith('ssl_'):
+                    task_name = key[4:]  # Remove 'ssl_' prefix
+                    ssl_targets[task_name] = torch.from_numpy(value).to(device=device, dtype=torch.float32)
+            logger.debug(f"Loaded pre-computed SSL targets: {list(ssl_targets.keys())}")
+        else:
+            # Fallback: generate SSL targets during training
+            use_simple = (str(ssl_targets_provider).lower() == 'simple')
+            if hasattr(model, 'create_ssl_targets') and not use_simple:
+                try:
+                    ssl_targets = model.create_ssl_targets(s)
+                    logger.debug("Generated SSL targets via model API")
+                except Exception as e:
+                    logger.warning(f"SSL target creation failed via model API: {e}; will try simple provider if available")
+                    ssl_targets = None
+            # Optional simple provider (reconstruct board from planes)
+            if ssl_targets is None and use_simple:
+                try:
+                    from azchess.training.ssl_targets import generate_ssl_targets_from_states
+                    # s is (B,19,8,8) torch; convert to numpy on CPU for target gen
+                    s_np = s.detach().to('cpu').numpy()
+                    simple = generate_ssl_targets_from_states(s_np)
+                    # Convert to torch tensors on current device
+                    ssl_targets = {k: torch.from_numpy(v).to(device=s.device, dtype=torch.float32) for k, v in simple.items()}
+                    logger.debug("Generated SSL targets via simple provider")
+                except Exception as e:
+                    logger.warning(f"Simple SSL target provider failed: {e}; disabling SSL for this batch")
+                    ssl_targets = None
+                    enable_ssl = False
+            elif ssl_targets is None and not hasattr(model, 'create_ssl_targets'):
+                logger.warning("Model does not provide create_ssl_targets; no SSL targets available for this batch")
                 enable_ssl = False
-        elif ssl_targets is None and not hasattr(model, 'create_ssl_targets'):
-            logger.warning("Model does not provide create_ssl_targets; no SSL targets available for this batch")
-            enable_ssl = False
+
+        # Apply target weight scaling if requested
+        if ssl_targets is not None and ssl_target_weight != 1.0:
+            for k in list(ssl_targets.keys()):
+                ssl_targets[k] = ssl_targets[k] * float(ssl_target_weight)
 
     # PERFORMANCE PROFILING: SSL target creation complete
     ssl_target_time = time.time() - ssl_target_start
@@ -532,7 +546,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                                 torch.mps.empty_cache()
                             except Exception:
                                 pass
-                            ssl_loss = 0.0
+                            ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
                 # Fallback to basic piece SSL (tensor) path for backward compatibility
                 elif isinstance(ssl_targets, torch.Tensor) and ssl_out is not None:
                     # Accept dict or tensor for ssl_out; pick 'piece' logits when dict
@@ -568,7 +582,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     torch.mps.empty_cache()
                 except Exception:
                     pass
-                ssl_loss = 0.0
+                ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
@@ -1202,8 +1216,21 @@ def train_comprehensive(
                 post_proc_start = time.time()
 
                 # Validate loss values (they are Python floats from .item() calls)
-                if not (np.isfinite(loss) and np.isfinite(policy_loss) and
-                       np.isfinite(value_loss) and np.isfinite(ssl_loss)):
+                def _finite(x):
+                    try:
+                        import torch
+                        if isinstance(x, torch.Tensor):
+                            return torch.isfinite(x).all().item()
+                    except Exception:
+                        pass
+                    try:
+                        import numpy as _np
+                        return bool(_np.isfinite(x))
+                    except Exception:
+                        # Fallback: assume not finite if unknown type
+                        return False
+
+                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss)):
                     logger.warning(f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}")
                     # Skip this batch and continue training
                     continue

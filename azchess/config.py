@@ -84,27 +84,14 @@ class Config:
 
 
 def select_device(cfg_device: str = "auto") -> str:
-    """Select best available device string: cuda|mps|cpu.
+    """Select best available device string via unified DeviceManager.
 
-    - "auto": prefer CUDA, then MPS, else CPU
-    - explicit "cuda"/"mps"/"cpu" honored when available
+    Delegates to ``azchess.utils.device.select_device`` to keep a single source
+    of truth for device policy across the codebase.
     """
     try:
-        import torch
-
-        # Honor explicit request if possible
-        if cfg_device == "cuda" and torch.cuda.is_available():
-            return "cuda"
-        if cfg_device == "mps" and torch.backends.mps.is_available():
-            return "mps"
-        if cfg_device == "cpu":
-            return "cpu"
-        # Auto selection
-        if cfg_device == "auto":
-            if torch.cuda.is_available():
-                return "cuda"
-            if torch.backends.mps.is_available():
-                return "mps"
+        from azchess.utils.device import select_device as _select_device  # local import to avoid cycles
+        return _select_device(cfg_device)
     except Exception:
-        pass
-    return "cpu"
+        # Conservative fallback
+        return "cpu"

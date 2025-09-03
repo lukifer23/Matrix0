@@ -111,7 +111,15 @@ def _collect_position(board: chess.Board,
         return None
     s = torch.from_numpy(enc[None, ...]).to(model.device)
     with torch.no_grad():
-        p_logits, v, _ = model(s, return_ssl=False)
+        out = model(s, return_ssl=False)
+        # Handle both (p,v) and (p,v,ssl_out)
+        if isinstance(out, (list, tuple)):
+            if len(out) >= 2:
+                p_logits, v = out[0], out[1]
+            else:
+                raise RuntimeError("Model forward returned unexpected shape")
+        else:
+            raise RuntimeError("Model forward returned non-tuple result")
         p = p_logits[0].float().cpu().numpy()
         value = float(v[0].item())
 
@@ -273,8 +281,12 @@ def run(cfg: TeacherConfig):
                 if enc is None:
                     break
                 with torch.no_grad():
-                    p_logits, _, _ = model(torch.from_numpy(enc[None, ...]).to(model.device), return_ssl=False)
-                p = p_logits[0].float().cpu().numpy()
+                    out2 = model(torch.from_numpy(enc[None, ...]).to(model.device), return_ssl=False)
+                    if isinstance(out2, (list, tuple)):
+                        p_logits2 = out2[0]
+                    else:
+                        raise RuntimeError("Model forward returned non-tuple result")
+                p = p_logits2[0].float().cpu().numpy()
                 legals: List[Tuple[chess.Move, int, float]] = []
                 for mv in board.legal_moves:
                     try:

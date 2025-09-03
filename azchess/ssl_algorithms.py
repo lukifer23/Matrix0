@@ -50,83 +50,95 @@ class ChessSSLAlgorithms:
 
     def detect_threats_batch(self, board_states: torch.Tensor) -> torch.Tensor:
         """
-        Detect piece threats using simplified vectorized operations.
+        Detect opponent threats with full ray-cast attacks and proper blocking.
+
+        Returns a binary map for the side-to-move indicating if a square is
+        attacked by the opponent. This uses vectorized shifts and blocking-aware
+        ray accumulation similar to square control, but keeps both sides'
+        attack maps separate and then selects the opponent’s.
 
         Args:
-            board_states: (B, 19, 8, 8) tensor of board states
-
+            board_states: (B, 19, 8, 8)
         Returns:
-            threat_targets: (B, 8, 8) tensor where 1.0 = square under threat
+            (B, 8, 8) float32 in {0.0, 1.0}
         """
-        batch_size = board_states.size(0)
         device = board_states.device
+        B = board_states.size(0)
+        pieces = board_states[:, :12, :, :].to(torch.float32)  # (B,12,8,8)
+        occ = (pieces.sum(dim=1) > 0)
 
-        # Initialize threat map
-        threat_map = torch.zeros(batch_size, 8, 8, device=device, dtype=torch.float32)
+        def _shift(mask: torch.Tensor, dr: int, dc: int) -> torch.Tensor:
+            s = torch.roll(mask, shifts=(dr, dc), dims=(1, 2))
+            if dr > 0:
+                s[:, :dr, :] = 0
+            elif dr < 0:
+                s[:, dr:, :] = 0
+            if dc > 0:
+                s[:, :, :dc] = 0
+            elif dc < 0:
+                s[:, :, dc:] = 0
+            return s
 
-        # Extract piece positions (planes 0-11)
-        pieces = board_states[:, :12, :, :]  # (B, 12, 8, 8)
+        def _accumulate_rays(src: torch.Tensor, directions) -> torch.Tensor:
+            attacks = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
+            frontier = None
+            for dr, dc in directions:
+                frontier = src.clone().to(torch.float32)
+                for _ in range(1, 8):
+                    frontier = _shift(frontier, dr, dc)
+                    attacks += frontier
+                    # Stop beyond any occupied square (block further propagation)
+                    frontier = frontier * (~occ).to(torch.float32)
+            return attacks
 
-        # For now, implement a simplified threat detection
-        # This focuses on basic patterns that can be detected with simple operations
+        # White pieces
+        wp = pieces[:, 0]
+        wn = pieces[:, 1]
+        wb = pieces[:, 2]
+        wr = pieces[:, 3]
+        wq = pieces[:, 4]
+        wk = pieces[:, 5]
 
-        # 1. Detect knight threats (L-shapes) - simplified
-        knights = torch.zeros_like(threat_map)
-        knights += pieces[:, 1, :, :]  # White knights
-        knights += pieces[:, 7, :, :]  # Black knights
+        # Black pieces
+        bp = pieces[:, 6]
+        bn = pieces[:, 7]
+        bb = pieces[:, 8]
+        br = pieces[:, 9]
+        bq = pieces[:, 10]
+        bk = pieces[:, 11]
 
-        # Simple knight threat detection - just mark squares near knights
-        for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
-            if abs(dr) < 8 and abs(dc) < 8:
-                shifted = torch.roll(knights, shifts=(dr, dc), dims=(1, 2))
-                if dr > 0:
-                    shifted[:, :dr, :] = 0
-                elif dr < 0:
-                    shifted[:, dr:, :] = 0
-                if dc > 0:
-                    shifted[:, :, :dc] = 0
-                elif dc < 0:
-                    shifted[:, :, dc:] = 0
-                threat_map += shifted
+        # Directions
+        knight_moves = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+        king_moves = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        diag_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        ortho_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-        # 2. Detect sliding piece threats (rooks, bishops, queens) - very simplified
-        sliding_pieces = torch.zeros_like(threat_map)
-        sliding_pieces += pieces[:, 3, :, :] + pieces[:, 4, :, :]  # White rooks and queens
-        sliding_pieces += pieces[:, 9, :, :] + pieces[:, 10, :, :]  # Black rooks and queens
+        # White attacks
+        white_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
+        white_att += _shift(wp, +1, -1)
+        white_att += _shift(wp, +1, +1)
+        for dr, dc in knight_moves:
+            white_att += _shift(wn, dr, dc)
+        for dr, dc in king_moves:
+            white_att += _shift(wk, dr, dc)
+        white_att += _accumulate_rays(wb + wq, diag_dirs)
+        white_att += _accumulate_rays(wr + wq, ortho_dirs)
 
-        # Simple sliding piece detection - mark adjacent squares
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-            if abs(dr) < 8 and abs(dc) < 8:
-                shifted = torch.roll(sliding_pieces, shifts=(dr, dc), dims=(1, 2))
-                if dr > 0:
-                    shifted[:, :dr, :] = 0
-                elif dr < 0:
-                    shifted[:, dr:, :] = 0
-                if dc > 0:
-                    shifted[:, :, :dc] = 0
-                elif dc < 0:
-                    shifted[:, :, dc:] = 0
-                threat_map += shifted
+        # Black attacks
+        black_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
+        black_att += _shift(bp, -1, -1)
+        black_att += _shift(bp, -1, +1)
+        for dr, dc in knight_moves:
+            black_att += _shift(bn, dr, dc)
+        for dr, dc in king_moves:
+            black_att += _shift(bk, dr, dc)
+        black_att += _accumulate_rays(bb + bq, diag_dirs)
+        black_att += _accumulate_rays(br + bq, ortho_dirs)
 
-        # 3. Detect king threats (adjacent squares)
-        kings = torch.zeros_like(threat_map)
-        kings += pieces[:, 5, :, :]  # White king
-        kings += pieces[:, 11, :, :]  # Black king
-
-        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
-            if abs(dr) < 8 and abs(dc) < 8:
-                shifted = torch.roll(kings, shifts=(dr, dc), dims=(1, 2))
-                if dr > 0:
-                    shifted[:, :dr, :] = 0
-                elif dr < 0:
-                    shifted[:, dr:, :] = 0
-                if dc > 0:
-                    shifted[:, :, :dc] = 0
-                elif dc < 0:
-                    shifted[:, :, dc:] = 0
-                threat_map += shifted
-
-        return torch.clamp(threat_map, 0.0, 1.0)  # Ensure values are 0 or 1
+        # Pick opponent threats based on side to move
+        stm_white = (board_states[:, 12, 0, 0] > 0.5).to(torch.float32).view(B, 1, 1)
+        threat_map = white_att * (1.0 - stm_white) + black_att * stm_white
+        return torch.clamp(threat_map, 0.0, 1.0)
 
     def _calculate_piece_threats(self, piece_positions: torch.Tensor, piece_type: str,
                                 is_white: bool, device: torch.device) -> torch.Tensor:
@@ -241,181 +253,150 @@ class ChessSSLAlgorithms:
 
     def detect_pins_batch(self, board_states: torch.Tensor) -> torch.Tensor:
         """
-        Detect pinned pieces using vectorized operations.
+        Vectorized pin detection using first-two-blockers logic along rays.
 
-        A pinned piece is one that cannot move because doing so would expose
-        the king to check.
-
-        Args:
-            board_states: (B, 19, 8, 8) tensor of board states
-
-        Returns:
-            pin_targets: (B, 8, 8) tensor where 1.0 = pinned piece
+        A piece is pinned if it is the first blocker from the king along a ray
+        and the next blocker beyond it is an enemy slider aligned to that ray.
+        Evaluated for the side-to-move.
         """
-        batch_size = board_states.size(0)
         device = board_states.device
+        B = board_states.size(0)
+        pieces = board_states[:, :12, :, :].to(torch.float32)
+        occ = (pieces.sum(dim=1) > 0)
 
-        pin_map = torch.zeros(batch_size, 8, 8, device=device, dtype=torch.float32)
+        stm_white = (board_states[:, 12, 0, 0] > 0.5).to(torch.float32).view(B, 1, 1)
+        own_any = (pieces[:, :6].sum(dim=1) * stm_white + pieces[:, 6:12].sum(dim=1) * (1.0 - stm_white)) > 0
+        king_plane = pieces[:, 5] * stm_white + pieces[:, 11] * (1.0 - stm_white)
+        enemy_rook = pieces[:, 9] * stm_white + pieces[:, 3] * (1.0 - stm_white)
+        enemy_bishop = pieces[:, 8] * stm_white + pieces[:, 2] * (1.0 - stm_white)
+        enemy_queen = pieces[:, 10] * stm_white + pieces[:, 4] * (1.0 - stm_white)
 
-        # Extract relevant planes
-        pieces = board_states[:, :12, :, :]  # All pieces
-        side_to_move = board_states[:, 12:13, 0, 0]  # Side to move (plane 12)
+        def _shift(mask: torch.Tensor, dr: int, dc: int) -> torch.Tensor:
+            s = torch.roll(mask, shifts=(dr, dc), dims=(1, 2))
+            if dr > 0:
+                s[:, :dr, :] = 0
+            elif dr < 0:
+                s[:, dr:, :] = 0
+            if dc > 0:
+                s[:, :, :dc] = 0
+            elif dc < 0:
+                s[:, :, dc:] = 0
+            return s
 
-        # This is a simplified pin detection that identifies potential pins
-        # In a full implementation, this would require more complex analysis
+        def _ray_stack(origin: torch.Tensor, dr: int, dc: int) -> torch.Tensor:
+            rays = []
+            frontier = origin
+            for _ in range(1, 8):
+                frontier = _shift(frontier, dr, dc)
+                rays.append(frontier)
+            return torch.stack(rays, dim=1)  # (B,7,8,8)
 
-        # For now, implement a basic heuristic:
-        # Pieces on the same line as the king and an enemy sliding piece
-        white_kings = pieces[:, 5, :, :]  # White king
-        black_kings = pieces[:, 11, :, :]  # Black king
+        diag_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        ortho_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-        # Identify potential pinning situations (simplified)
-        for b in range(batch_size):
-            stm = side_to_move[b].item()
+        pin_map = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
 
-            # Get king position
-            if stm > 0:  # White to move
-                king_pos = white_kings[b].nonzero(as_tuple=True)
-                if len(king_pos[0]) == 0:
-                    continue
-                kr, kc = king_pos[0][0].item(), king_pos[1][0].item()
-                own_pieces = pieces[b, :6, :, :]  # White pieces
-                enemy_pieces = pieces[b, 6:12, :, :]  # Black pieces
-            else:  # Black to move
-                king_pos = black_kings[b].nonzero(as_tuple=True)
-                if len(king_pos[0]) == 0:
-                    continue
-                kr, kc = king_pos[0][0].item(), king_pos[1][0].item()
-                own_pieces = pieces[b, 6:12, :, :]  # Black pieces
-                enemy_pieces = pieces[b, :6, :, :]  # White pieces
+        for dirs, slider_mask in [
+            (diag_dirs, (enemy_bishop + enemy_queen) > 0),
+            (ortho_dirs, (enemy_rook + enemy_queen) > 0),
+        ]:
+            for dr, dc in dirs:
+                ray = _ray_stack(king_plane, dr, dc)  # (B,7,8,8)
+                occ_steps = (ray * occ.unsqueeze(1)).flatten(2).sum(dim=2) > 0
+                own_steps = (ray * own_any.unsqueeze(1)).flatten(2).sum(dim=2) > 0
+                slider_steps = (ray * slider_mask.unsqueeze(1)).flatten(2).sum(dim=2) > 0
 
-            # Check each direction from the king for potential pins
-            directions = [(-1, 0), (1, 0), (0, -1), (0, 1),
-                         (-1, -1), (-1, 1), (1, -1), (1, 1)]
+                occ_cum = torch.cumsum(occ_steps.int(), dim=1)
+                first_occ = occ_steps & (occ_cum == 1)
+                own_first = first_occ & own_steps
 
-            # Precompute enemy sliders map once (bishops, rooks, queens)
-            enemy_sliders = enemy_pieces[2:5, :, :].sum(dim=0)  # (8,8)
+                after_first = (torch.cumsum(first_occ.int(), dim=1) > 0) & (~first_occ)
+                occ_after = occ_steps & after_first
+                occ_after_cum = torch.cumsum(occ_after.int(), dim=1)
+                second_occ = occ_after & (occ_after_cum == 1)
 
-            for dr, dc in directions:
-                
-                # Check if there's an enemy slider in this direction
-                found_slider = False
-                slider_pos = None
+                valid_slider_after = (second_occ & slider_steps).any(dim=1, keepdim=True)
+                has_own_first = own_first.any(dim=1, keepdim=True)
+                gate = (valid_slider_after & has_own_first).to(torch.float32).view(B, 1, 1)
 
-                r, c = kr + dr, kc + dc
-                while 0 <= r < 8 and 0 <= c < 8:
-                    if enemy_sliders[r, c] > 0:
-                        found_slider = True
-                        slider_pos = (r, c)
-                        break
-                    elif own_pieces[:, r, c].sum() > 0:
-                        # Hit own piece, no pin possible in this direction
-                        break
-                    r += dr
-                    c += dc
+                own_first_board = (ray * own_first.view(B, 7, 1, 1).to(ray.dtype)).sum(dim=1)
+                pin_map = pin_map + (own_first_board * gate)
 
-                if found_slider:
-                    # Check for own piece between king and slider
-                    r, c = kr + dr, kc + dc
-                    pinned_piece_pos = None
-
-                    while (r, c) != slider_pos:
-                        if own_pieces[:, r, c].sum() > 0:
-                            if pinned_piece_pos is not None:
-                                # Multiple pieces between king and slider
-                                break
-                            pinned_piece_pos = (r, c)
-                        r += dr
-                        c += dc
-
-                    if pinned_piece_pos:
-                        pin_map[b, pinned_piece_pos[0], pinned_piece_pos[1]] = 1.0
-
-        return pin_map
+        return torch.clamp(pin_map, 0.0, 1.0)
 
     def detect_forks_batch(self, board_states: torch.Tensor) -> torch.Tensor:
         """
-        Detect fork opportunities using improved vectorized operations.
+        Vectorized fork detection for the side-to-move.
 
-        A fork is when one piece attacks multiple enemy pieces simultaneously.
-        This implementation focuses on tactical patterns that commonly lead to forks.
-
-        Args:
-            board_states: (B, 19, 8, 8) tensor of board states
-
-        Returns:
-            fork_targets: (B, 8, 8) tensor where 1.0 = square with fork opportunity
+        Marks own tactical piece squares that attack two or more enemy pieces,
+        respecting blockers for sliding pieces.
         """
-        batch_size = board_states.size(0)
         device = board_states.device
+        B = board_states.size(0)
+        pieces = board_states[:, :12, :, :].to(torch.float32)
+        occ = (pieces.sum(dim=1) > 0)
+        stm_white = (board_states[:, 12, 0, 0] > 0.5).to(torch.float32).view(B, 1, 1)
 
-        fork_map = torch.zeros(batch_size, 8, 8, device=device, dtype=torch.float32)
+        own_knights = pieces[:, 1] * stm_white + pieces[:, 7] * (1.0 - stm_white)
+        own_bishops = pieces[:, 2] * stm_white + pieces[:, 8] * (1.0 - stm_white)
+        own_rooks = pieces[:, 3] * stm_white + pieces[:, 9] * (1.0 - stm_white)
+        own_queens = pieces[:, 4] * stm_white + pieces[:, 10] * (1.0 - stm_white)
+        own_kings = pieces[:, 5] * stm_white + pieces[:, 11] * (1.0 - stm_white)
+        own_tactical = (own_knights + own_bishops + own_rooks + own_queens + own_kings) > 0
 
-        # Extract piece positions
-        pieces = board_states[:, :12, :, :]
-        side_to_move = board_states[:, 12:13, 0, 0]
+        enemy_any = (pieces[:, 6:12].sum(dim=1) * stm_white + pieces[:, :6].sum(dim=1) * (1.0 - stm_white)) > 0
 
-        for b in range(min(batch_size, 32)):  # Increased limit for better detection
-            stm = side_to_move[b].item()
+        def _shift(mask: torch.Tensor, dr: int, dc: int) -> torch.Tensor:
+            s = torch.roll(mask, shifts=(dr, dc), dims=(1, 2))
+            if dr > 0:
+                s[:, :dr, :] = 0
+            elif dr < 0:
+                s[:, dr:, :] = 0
+            if dc > 0:
+                s[:, :, :dc] = 0
+            elif dc < 0:
+                s[:, :, dc:] = 0
+            return s
 
-            # Determine which pieces belong to current player and enemy
-            if stm > 0:  # White to move
-                own_pieces = pieces[b, :6, :, :]
-                enemy_pieces = pieces[b, 6:12, :, :]
-                own_knights = pieces[b, 1, :, :]  # White knights
-                own_bishops = pieces[b, 2, :, :]  # White bishops
-                own_rooks = pieces[b, 3, :, :]    # White rooks
-                own_queens = pieces[b, 4, :, :]   # White queens
-            else:  # Black to move
-                own_pieces = pieces[b, 6:12, :, :]
-                enemy_pieces = pieces[b, :6, :, :]
-                own_knights = pieces[b, 7, :, :]  # Black knights
-                own_bishops = pieces[b, 8, :, :]  # Black bishops
-                own_rooks = pieces[b, 9, :, :]    # Black rooks
-                own_queens = pieces[b, 10, :, :]  # Black queens
+        count_map = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
 
-            # Focus on tactical pieces that commonly create forks: knights, bishops, rooks, queens
-            tactical_pieces = torch.zeros_like(own_knights)
-            tactical_pieces += own_knights + own_bishops + own_rooks + own_queens
+        # Knights
+        for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]:
+            enemy_back = _shift(enemy_any.to(torch.float32), -dr, -dc) > 0
+            hits = (own_knights > 0) & enemy_back
+            count_map += hits.to(torch.float32)
 
-            # Check each square for fork potential
-            for r in range(8):
-                for c in range(8):
-                    if tactical_pieces[r, c] > 0:  # Own tactical piece at this square
-                        # Count enemy pieces that would be attacked from this position
-                        attacked_count = 0
+        # Kings
+        for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+            enemy_back = _shift(enemy_any.to(torch.float32), -dr, -dc) > 0
+            hits = (own_kings > 0) & enemy_back
+            count_map += hits.to(torch.float32)
 
-                        # Check knight attacks (L-shapes)
-                        if own_knights[r, c] > 0:
-                            for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
-                                         (1, -2), (1, 2), (2, -1), (2, 1)]:
-                                nr, nc = r + dr, c + dc
-                                if 0 <= nr < 8 and 0 <= nc < 8:
-                                    if enemy_pieces[:, nr, nc].sum() > 0:
-                                        attacked_count += 1
+        # Sliding pieces
+        diag_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        ortho_dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-                        # Check sliding piece attacks
-                        elif own_bishops[r, c] > 0 or own_rooks[r, c] > 0 or own_queens[r, c] > 0:
-                            # Check all 8 directions for sliding pieces
-                            directions = [(-1, 0), (1, 0), (0, -1), (0, 1),
-                                        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        def _accumulate_sliding_hits(origins: torch.Tensor, directions) -> None:
+            nonlocal count_map
+            origins_b = origins > 0
+            for dr, dc in directions:
+                for s in range(1, 8):
+                    enemy_back = _shift(enemy_any.to(torch.float32), -dr * s, -dc * s) > 0
+                    if s == 1:
+                        blocked = torch.zeros_like(enemy_back)
+                    else:
+                        blocked = torch.zeros_like(enemy_back)
+                        for t in range(1, s):
+                            blocked |= _shift(occ.to(torch.float32), -dr * t, -dc * t) > 0
+                    hits = origins_b & enemy_back & (~blocked)
+                    count_map += hits.to(torch.float32)
 
-                            for dr, dc in directions:
-                                for step in range(1, 8):
-                                    nr, nc = r + dr * step, c + dc * step
-                                    if not (0 <= nr < 8 and 0 <= nc < 8):
-                                        break
+        _accumulate_sliding_hits(own_bishops, diag_dirs)
+        _accumulate_sliding_hits(own_rooks, ortho_dirs)
+        _accumulate_sliding_hits(own_queens, diag_dirs)
+        _accumulate_sliding_hits(own_queens, ortho_dirs)
 
-                                    if enemy_pieces[:, nr, nc].sum() > 0:
-                                        attacked_count += 1
-                                        break  # Can only attack one piece per direction
-                                    elif own_pieces[:, nr, nc].sum() > 0:
-                                        break  # Blocked by own piece
-
-                        # If this piece attacks 2 or more enemy pieces, it's a fork
-                        if attacked_count >= 2:
-                            fork_map[b, r, c] = 1.0
-
+        fork_map = ((count_map >= 2.0) & own_tactical).to(torch.float32)
         return fork_map
 
     def calculate_square_control_batch(self, board_states: torch.Tensor) -> torch.Tensor:

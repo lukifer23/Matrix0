@@ -330,27 +330,7 @@ def log_system_info() -> None:
             print(f"Could not log system info: {e}")
 
 
-# Global instance
-logger_manager = Matrix0Logger()
-
-
-def setup_logging(log_dir: Optional[str] = None, level: int = logging.INFO,
-                 format_string: Optional[str] = None, console: bool = True,
-                 file_logging: bool = True) -> logging.Logger:
-    """Setup logging with unified configuration."""
-    return logger_manager.setup_logging(log_dir, level, format_string, console, file_logging)
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a consistently configured logger."""
-    return logger_manager.get_logger(name)
-
-
-def set_logging_level(level: int) -> None:
-    """Set logging level for all loggers."""
-    logger_manager.set_level(level)
-
-
-def log_system_info() -> None:
-    """Log system information."""
-    logger_manager.log_system_info()
+## NOTE: The block below duplicated definitions above and referenced non-existent
+## logger_manager methods (set_level, log_system_info). It caused API conflicts
+## and has been removed to keep a single, correct implementation. The canonical
+## functions are defined once earlier in this module.

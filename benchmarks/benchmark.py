@@ -13,6 +13,8 @@ import json
 import logging
 import sys
 import time
+from multiprocessing import Event as MPEvent, Process
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,6 +47,11 @@ from azchess.encoding import move_to_index
 from rich.table import Table
 from rich.live import Live
 from rich import box
+from azchess.selfplay.inference import (
+    InferenceClient,
+    run_inference_server,
+    setup_shared_memory_for_worker,
+)
 
 if TORCH_AVAILABLE:
     from azchess.config import Config
@@ -56,7 +63,7 @@ if TORCH_AVAILABLE:
 class BenchmarkRunner:
     """Main benchmark execution engine."""
 
-    def __init__(self, config: BenchmarkConfig, live_enabled: bool = False, pgn_dir: Optional[str] = None, hb_interval: float = 5.0, mcts_sims: Optional[int] = None):
+    def __init__(self, config: BenchmarkConfig, live_enabled: bool = False, pgn_dir: Optional[str] = None, hb_interval: float = 5.0, mcts_sims: Optional[int] = None, shared_infer: bool = False):
         self.config = config
         self.engine_manager = EngineManager()
         self.metrics_collector = MetricsCollector(
@@ -68,12 +75,23 @@ class BenchmarkRunner:
         self.live: Optional[Live] = None
         # Optional CLI override for Matrix0 MCTS simulations
         self.cli_sims: Optional[int] = int(mcts_sims) if mcts_sims is not None else None
+        # Optional shared inference backend to isolate MPS work in a separate process (stability on macOS)
+        self.shared_infer_enabled: bool = bool(shared_infer)
+        self._infer_proc: Optional[Process] = None
+        self._infer_stop = None  # type: ignore[assignment]
+        self._infer_ready = None  # type: ignore[assignment]
+        self._infer_client: Optional[InferenceClient] = None
+        self._shared_res = None
 
         # Load Matrix0 model
         self.model = None
         self.mcts = None
         if TORCH_AVAILABLE:
-            if torch.mps.is_available():
+            forced_device = os.environ.get("MATRIX0_DEVICE", "").lower().strip()
+            if forced_device in ("cpu", "mps"):
+                self.device = torch.device(forced_device)
+                logger.info(f"Using forced device via MATRIX0_DEVICE={forced_device}")
+            elif torch.mps.is_available():
                 self.device = torch.device("mps")
                 logger.info("Using MPS (Apple Silicon) device")
             else:
@@ -188,7 +206,7 @@ class BenchmarkRunner:
             logger.info(f"Successfully loaded Matrix0 model ({sum(p.numel() for p in self.model.parameters()):,} parameters)")
 
             # Initialize MCTS with benchmark-appropriate settings
-            mcts_config = MCTSConfig(
+            mcts_kwargs = dict(
                 num_simulations=(self.cli_sims if self.cli_sims is not None else 800),
                 cpuct=2.2,
                 dirichlet_alpha=0.3,
@@ -198,7 +216,73 @@ class BenchmarkRunner:
                 enable_entropy_noise=False  # No entropy noise during benchmark eval
             )
 
-            self.mcts = MCTS(mcts_config, self.model, self.device)
+            # Safety: avoid multi-threaded MPS in-process inference; will override if shared inference is enabled
+            if str(self.device) == "mps":
+                mcts_kwargs.update(num_threads=1, parallel_simulations=False)
+                logger.info("MPS detected — forcing single-threaded MCTS for stability (will enable batching if shared inference)")
+
+            # Optional shared inference server (mirrors orchestrator stability path)
+            inference_backend = None
+            if self.shared_infer_enabled and str(self.device) != "cpu":
+                try:
+                    import os as _os
+                    _os.environ.setdefault("MATRIX0_COMPACT_LOG", "1")
+                    # Derive planes/policy_size robustly
+                    planes = 19
+                    policy_size = 4672
+                    try:
+                        planes = int(getattr(getattr(self.model, 'cfg', None), 'planes', planes))
+                        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', policy_size))
+                    except Exception:
+                        pass
+                    if isinstance(model_config_obj, dict):
+                        planes = int(model_config_obj.get('planes', planes))
+                        policy_size = int(model_config_obj.get('policy_size', policy_size))
+
+                    self._shared_res = setup_shared_memory_for_worker(worker_id=0, planes=planes, policy_size=policy_size, max_batch_size=32)
+                    self._infer_stop = MPEvent()
+                    self._infer_ready = MPEvent()
+
+                    # Capture the exact state dict we loaded and ensure CPU tensors for interprocess transfer
+                    state_for_server = checkpoint.get('model_state_dict', checkpoint)
+                    try:
+                        if isinstance(state_for_server, dict):
+                            state_for_server_cpu = {}
+                            for k, v in state_for_server.items():
+                                try:
+                                    import torch as _torch
+                                    if _torch.is_tensor(v):
+                                        state_for_server_cpu[k] = v.detach().to('cpu')
+                                    else:
+                                        state_for_server_cpu[k] = v
+                                except Exception:
+                                    state_for_server_cpu[k] = v
+                        else:
+                            state_for_server_cpu = state_for_server
+                    except Exception:
+                        state_for_server_cpu = state_for_server
+
+                    self._infer_proc = Process(target=run_inference_server, args=(str(self.device), model_config_obj if isinstance(model_config_obj, dict) else model_config_obj, state_for_server_cpu, self._infer_stop, self._infer_ready, [self._shared_res]))
+                    self._infer_proc.start()
+                    if not self._infer_ready.wait(timeout=60):
+                        logger.error("Inference server failed to start in time; continuing without shared backend")
+                    else:
+                        self._infer_client = InferenceClient(self._shared_res)
+                        inference_backend = self._infer_client
+                        logger.info("Shared inference server initialized for benchmark")
+                        # With shared inference, enable batched parallel simulations to reduce per-infer overhead
+                        try:
+                            mcts_kwargs.update(num_threads=4, parallel_simulations=True, simulation_batch_size=16)
+                            logger.info("Enabled parallel MCTS simulations with batching (threads=4, batch=16)")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.error(f"Failed to initialize shared inference backend: {e}")
+                    inference_backend = None
+
+            # Finalize MCTS config (after possible shared-infer overrides)
+            mcts_config = MCTSConfig(**mcts_kwargs)
+            self.mcts = MCTS(mcts_config, self.model, self.device, inference_backend=inference_backend)
             logger.info(f"MCTS initialized with {mcts_config.num_simulations} simulations per move on device: {self.device}")
             return True
 
@@ -262,6 +346,17 @@ class BenchmarkRunner:
         logger.info("✅ Benchmark completed!")
         logger.info(f"⏱️  Total duration: {benchmark_metrics.duration:.1f} seconds")
         logger.info(f"📊 Total games played: {benchmark_metrics.total_games}")
+        # Shutdown shared inference server if running
+        try:
+            if self._infer_proc is not None:
+                if self._infer_stop is not None:
+                    self._infer_stop.set()
+                self._infer_proc.join(timeout=5)
+                self._infer_proc = None
+                self._infer_client = None
+                self._shared_res = None
+        except Exception:
+            pass
         return benchmark_metrics
 
     def _run_scenario(self, scenario: TestScenario) -> List[GameMetrics]:
@@ -815,6 +910,7 @@ def main():
     parser.add_argument("--live", action="store_true", help="Enable live TUI updates per game")
     parser.add_argument("--export-pgns", type=str, default=None, help="Directory to export PGN files per game")
     parser.add_argument("--hb-interval", type=float, default=5.0, help="Heartbeat interval in seconds for live TUI")
+    parser.add_argument("--shared-infer", action="store_true", help="Run Matrix0 inference in a separate process (MPS stability)")
 
     args = parser.parse_args()
 
@@ -865,7 +961,7 @@ def main():
             config = ConfigManager.load_config(config_path)
 
         # Run benchmark
-        runner = BenchmarkRunner(config, live_enabled=bool(args.live), pgn_dir=args.export_pgns, hb_interval=float(args.hb_interval), mcts_sims=args.mcts_sims)
+        runner = BenchmarkRunner(config, live_enabled=bool(args.live), pgn_dir=args.export_pgns, hb_interval=float(args.hb_interval), mcts_sims=args.mcts_sims, shared_infer=bool(args.shared_infer))
         results = runner.run_benchmark()
 
         # Print summary (engine-centric)

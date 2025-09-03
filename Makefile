@@ -41,6 +41,10 @@ orchestrator:
 	@echo "Starting complete training pipeline with orchestrator..."
 	$(PYTHON_EXEC) -m azchess.orchestrator --config config.yaml
 
+quick-orchestrator:
+	@echo "Starting quick orchestrator run (3 games, no eval)..."
+	$(PYTHON_EXEC) -m azchess.orchestrator --config config.yaml --workers 3 --games 3 --sims 300 --eval-games 0 --promotion-threshold 0.55 --device auto --tui table
+
 selfplay:
 	@echo "Starting self-play data generation..."
 	$(PYTHON_EXEC) -m azchess.selfplay --config config.yaml --games 16
