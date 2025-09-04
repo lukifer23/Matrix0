@@ -10,6 +10,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+import yaml
 from time import perf_counter, sleep
 from typing import Dict, List
 
@@ -736,7 +737,17 @@ def orchestrate(
         # Train phase
         logger.info("Starting training phase")
         try:
-            train_main(cfg_path)
+            # Write merged config (with CLI overrides) to a temp YAML for training
+            try:
+                ts = int(time.time())
+                merged_cfg_path = Path(log_dir) / f"run_config_{ts}.yaml"
+                with merged_cfg_path.open('w') as f:
+                    yaml.safe_dump(sp_cfg, f, sort_keys=False)
+                logger.info(f"Wrote merged training config: {merged_cfg_path}")
+                train_main(str(merged_cfg_path))
+            except Exception as e:
+                logger.warning(f"Failed to write merged config; falling back to original: {e}")
+                train_main(cfg_path)
         except Exception as e:
             logger.error(f"Training failed: {e}")
             raise
