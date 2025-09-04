@@ -4,13 +4,23 @@
 source /Users/admin/Downloads/VSCode/Matrix0/.venv/bin/activate
 cd /Users/admin/Downloads/VSCode/Matrix0
 
-# Full run: 3 workers × 70 games = 210 total, 300 sims, 20 eval games
-python -m azchess.orchestrator \
-  --config /Users/admin/Downloads/VSCode/Matrix0/config.yaml \
-  --workers 3 \
-  --games 100 \
-  --sims 300 \
-  --eval-games 20 \
-  --promotion-threshold 0.52 \
-  --device auto \
-  --tui table
+# Continuous run: cycles with increased self-play and deeper training
+CONFIG=/Users/admin/Downloads/VSCode/Matrix0/config.yaml
+WORKERS=3
+SIMS=300
+EVAL_GAMES=20
+PROMOTE=0.55
+DEVICE=auto
+
+while true; do
+  python -m azchess.orchestrator \
+    --config "$CONFIG" \
+    --workers "$WORKERS" \
+    --sims "$SIMS" \
+    --eval-games "$EVAL_GAMES" \
+    --promotion-threshold "$PROMOTE" \
+    --device "$DEVICE" \
+    --tui table
+  # brief pause between cycles to free resources
+  sleep 10
+done

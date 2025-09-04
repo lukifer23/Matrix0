@@ -1,11 +1,11 @@
 [Event "Matrix0 Enhanced Evaluation Game 1"]
 [Site "Matrix0 Arena"]
-[Date "2025.08.29"]
+[Date "2025.09.04"]
 [Round "Decisive - Game 1"]
-[White "enhanced_best"]
-[Black "pretrain_after_fill_3k"]
+[White "Trained"]
+[Black "Baseline"]
 [Result "1/2-1/2"]
 [TimeControl "unlimited"]
 [Termination "unknown"]
 
-1. f3 a5 2. e3 f6 3. Ba6 h5 4. Bb5 Ra6 5. Bxd7+ Kf7 6. Nc3 Kg6 7. Nb1 Re6 8. Na3 h4 9. Bxe6 Na6 10. Bxg8 Rxg8 11. g4 Nc5 12. Nb5 Rh8 13. Na3 Rh6 14. Nb5 Qe8 15. Nd4 e6 16. Nxe6 Be7 17. h3 Nxe6 18. Rh2 Qh8 19. b3 Bf8 20. Rg2 Qg8 21. e4 Qf7 22. Rg3 Be7 23. Rg2 Bd8 24. Rg3 Be7 25. Rg2 Bd8 26. Re2 Be7 1/2-1/2
+1. a3 c6 2. f4 h5 3. b3 d6 4. f5 Qd7 5. g4 Rh7 6. e4 Qc7 7. Bh3 Qb6 8. Bf1 Qc7 9. Ba6 Qd7 10. Bxb7 Nh6 11. Kf2 e5 12. Bxc8 Be7 13. Qf1 Nxg4+ 14. Kg3 Kf8 15. Nf3 Qe8 16. Bd7 Kg8 17. Qc4 Qxd7 18. Qxf7+ Kh8 19. d3 h4+ 20. Kxg4 Na6 21. c3 Bf6 22. Qg8+ Kxg8 23. Bf4 Rh8 24. Kh3 Rh7 25. Kg4 Rh8 26. Kh3 Rh6 27. Nxh4 Kh8 28. Bxh6 Kh7 29. d4 Rh8 30. Bxg7 Qb7 31. Kg2 Rg8 32. Ng6 Bh4 33. Kf3 Rh8 34. Bxh8 Qc7 35. Nf4 Kxh8 36. Ng6+ Kh7 37. Ke3 Kg8 38. Nh8 Bg5+ 39. Ke2 Kxh8 40. Kf3 Qf7 41. b4 Qg8 42. Rc1 Kh7 43. Kg4 Be7+ 44. Kh3 Qh8 45. Kg4 exd4 46. f6 Qg8+ 47. Kh5 Bd8 48. f7 Qh8 49. Kg4 Nb8 50. Rh1 Qg8+ 51. Kh5 d5 52. f8=Q Qh8 53. Qxh8+ Kxh8 54. Kg6 Kg8 55. Kh6 d3 56. Ra2 Kh8 57. Kg6 Ba5 58. Rd1 Kg8 59. Kh6 Kf8 60. Rc2 Kg8 61. Kg6 dxe4 62. Kg5 Kh8 63. Kh6 c5 64. c4 Kg8 65. Kg6 Bb6 66. Rcc1 Kh8 67. Kf7 e3 68. Kg6 Kg8 69. Kh6 cxb4 70. Kg5 Kh8 71. Kh6 d2 72. Kh5 Kg8 73. Kh6 Nc6 74. Kh5 Kh8 75. Kh6 Nd4 76. Re1 Kg8 77. Kg6 Kf8 78. Rh1 Kg8 79. Kh6 Kf8 80. Kh5 Kg8 81. Kh6 Kf8 82. Kh5 Nf3 83. Kh6 1/2-1/2

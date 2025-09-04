@@ -142,22 +142,29 @@ class EnhancedEvaluator:
         """Create unified MCTS config with specified parameters."""
         self.logger.info(f"Creating MCTS config: {num_simulations} sims, temp {temperature}")
         mcfg_dict = dict(self.cfg.mcts())
+        # Baseline decisive settings
         mcfg_dict.update({
-            "num_simulations": num_simulations,
+            "num_simulations": int(num_simulations),
             "selection_jitter": 0.0,
             "batch_size": 1,
-            # Stronger decisive defaults; can be overridden by attributes
-            "cpuct": float(getattr(self, 'cpuct', 1.0)),
-            "fpu": float(getattr(self, 'fpu', 0.1)),
             "parent_q_init": bool(self.cfg.mcts().get("parent_q_init", True)),
             "tt_cleanup_frequency": int(self.cfg.mcts().get("tt_cleanup_frequency", 500)),
-            "draw_penalty": float(getattr(self, 'draw_penalty', -2.0)),
-            # Ensure MCTS uses side-to-move value (flip from white when needed)
-            "value_from_white": True,
             # Disable Dirichlet noise during evaluation for decisiveness
             "dirichlet_frac": 0.0,
             "dirichlet_plies": 0,
         })
+        # Respect config defaults unless explicit overrides are set on the evaluator
+        if hasattr(self, 'cpuct'):
+            mcfg_dict["cpuct"] = float(getattr(self, 'cpuct'))
+        if hasattr(self, 'fpu'):
+            mcfg_dict["fpu"] = float(getattr(self, 'fpu'))
+        if hasattr(self, 'draw_penalty'):
+            mcfg_dict["draw_penalty"] = float(getattr(self, 'draw_penalty'))
+        # Value orientation: default to config, allow explicit override via attribute
+        if hasattr(self, 'value_from_white'):
+            mcfg_dict["value_from_white"] = bool(getattr(self, 'value_from_white'))
+        else:
+            mcfg_dict["value_from_white"] = bool(self.cfg.mcts().get("value_from_white", True))
         
         mcfg = MCTSConfig.from_dict(mcfg_dict)
         self.logger.info(f"MCTS config created: {mcfg}")
@@ -447,8 +454,9 @@ class EnhancedEvaluator:
         game.headers["Site"] = "Matrix0 Arena"
         game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
         game.headers["Round"] = f"{sim_level} - Game {game_num}"
-        game.headers["White"] = self.label_a
-        game.headers["Black"] = self.label_b
+        labels = game_meta.get("labels", {"white": self.label_a, "black": self.label_b})
+        game.headers["White"] = labels.get("white", self.label_a)
+        game.headers["Black"] = labels.get("black", self.label_b)
         game.headers["Result"] = game_meta["result_str"]
         game.headers["TimeControl"] = "unlimited"
         game.headers["Termination"] = game_meta["game_over_reason"]
@@ -675,10 +683,9 @@ class EnhancedEvaluator:
             # mcts_b = MCTS(self.model_b, mcfg, self.device) # This line is removed
             self.logger.info(f"MCTS instances created for {config['name']} config")
             
-            # For each opening FEN, play a color-swapped pair
-            for fen in opening_fens:
-                if self.current_game >= self.total_games:
-                    break
+            # Play color-swapped pairs until reaching total_games, cycling openings
+            while self.current_game < self.total_games:
+                fen = opening_fens[(self.current_game // 2) % len(opening_fens)]
                 # Game 1: A as White, B as Black
                 self.current_game += 1
                 self.logger.info(f"Starting game {self.current_game} ({config['name']} | A=White, B=Black)")
@@ -704,6 +711,7 @@ class EnhancedEvaluator:
                     
                     # Update ELO ratings
                     self.logger.info(f"Game {self.current_game}: Updating ELO ratings")
+                    # First game: A plays White; 'result' is from White's perspective (A)
                     elo_a, elo_b = self._update_elo_ratings(result)
                     
                     # Debug: Log the actual ELO values being used
@@ -712,6 +720,8 @@ class EnhancedEvaluator:
                     
                     # Save game
                     self.logger.info(f"Game {self.current_game}: Saving game")
+                    # Annotate labels for PGN
+                    game_meta.setdefault('labels', {"white": self.label_a, "black": self.label_b})
                     pgn_path = self._save_game_pgn(game_meta, self.current_game, config["name"])
                     
                     # Store results
@@ -783,11 +793,14 @@ class EnhancedEvaluator:
                     variance_score = variance_metrics.get("style_difference", 0)
                     # Update ELO ratings
                     self.logger.info(f"Game {self.current_game}: Updating ELO ratings")
-                    elo_a, elo_b = self._update_elo_ratings(result)
+                    # Second game: A plays Black; flip to A's perspective
+                    elo_a, elo_b = self._update_elo_ratings(1.0 - result)
                     self.logger.info(f"Game {self.current_game}: ELO values after update - A: {elo_a:.1f}, B: {elo_b:.1f}")
                     self.logger.info(f"Game {self.current_game}: Current elo_data state: {self.elo_data}")
                     # Save game
                     self.logger.info(f"Game {self.current_game}: Saving game")
+                    # Annotate swapped labels for PGN (B as White, A as Black)
+                    game_meta.setdefault('labels', {"white": self.label_b, "black": self.label_a})
                     pgn_path = self._save_game_pgn(game_meta, self.current_game, config["name"])
                     # Store results
                     game_result = {

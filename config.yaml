@@ -38,11 +38,11 @@ selfplay:
 
 training:
   batch_size: 96                   # Stable baseline
-  epochs: 1                        # Single epoch per cycle; repeat cycles
+  epochs: 2                        # Two epochs per cycle for deeper passes
   learning_rate: 0.001
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
-  checkpoint: "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_1000.pt"   # Use step-1000 checkpoint for this cycle
+  checkpoint: "checkpoints/best.pt"   # Always initialize from current best per cycle
   gradient_accumulation_steps: 2   # Effective batch 192
   progress_interval: 100           # Reduce per-step logging overhead
   grad_clip_norm: 0.5              # Stable
@@ -65,7 +65,9 @@ training:
   warmup_steps: 500                # Longer warmup for extended steps
   memory_limit_gb: 14              # MPS limit
   gradient_checkpointing_strategy: "adaptive"    # Enable only if memory is high
-  steps_per_epoch: 8000            # Shorter training for quick validation cycle
+  steps_per_epoch: 12000           # Train over more samples per cycle
+  dataloader_workers: 2            # Improve IO throughput
+  prefetch_factor: 2               # Prefetch for DataLoader workers
   use_curriculum: true
   curriculum_phases:
     - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
@@ -79,14 +81,15 @@ training:
     - data/stockfish_games
 
 orchestrator:
-  initial_games: 105               # 3 workers × 35 games
-  subsequent_games: 210            # Increase to 3 workers × 70 games for better data
-  games_per_cycle: 210             # Total games per cycle
+  initial_games: 210               # 3 workers × 70 games (more self-play data per cycle)
+  subsequent_games: 420            # 3 workers × 140 games for stronger data growth
+  games_per_cycle: 420             # Total games per cycle
   train_epochs_per_cycle: 1        # One epoch per cycle
-  eval_games_per_cycle: 10         # Enable per-cycle model-vs-best eval
+  eval_games_per_cycle: 20         # More games per cycle for robust eval
   keep_top_k: 1                    # Keep only best model
-  continuous_mode: false           # Single run mode
-  checkpoint_override: "model_step_1000.pt" # Use step-1000 as current starter
+  continuous_mode: true            # Continuous cycles enabled
+  # Use latest best checkpoint automatically (no override)
+  # checkpoint_override: best.pt
   tui: "table"                     # Use table display mode
   ui:
     compact: true                  # Child processes log to files; console stays clean

@@ -1,0 +1,1556 @@
+{
+  "domain": "endgames",
+  "subcategory": "minor_piece",
+  "num_positions": 10000,
+  "ssl_tasks": [
+    "piece",
+    "threat",
+    "pin",
+    "fork",
+    "control"
+  ],
+  "stockfish_depth": 12,
+  "created_at": 1757006046.1686091,
+  "positions": [
+    {
+      "fen": "8/8/6k1/2K5/8/8/8/5N2 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f1d2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K1k2/8/8/8/4B3 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d5d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/1k6/3K4/8/8/8/8/6B1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b7a6",
+      "depth": 12
+    },
+    {
+      "fen": "8/5k2/2N5/8/8/7K/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c6d4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/2K5/8/2N5/6k1/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c5c6",
+      "depth": 12
+    },
+    {
+      "fen": "4N2k/8/8/8/8/8/6K1/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g2h3",
+      "depth": 12
+    },
+    {
+      "fen": "8/2N5/8/8/1K2k3/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b4b5",
+      "depth": 12
+    },
+    {
+      "fen": "8/3Bk3/8/8/8/8/7K/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/7K/5k2/8/8/8/3N4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K4/8/4k3/N7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2c3",
+      "depth": 12
+    },
+    {
+      "fen": "3B4/5k2/8/4K3/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d8h4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/7K/8/8/7N/3k4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1d2",
+      "depth": 12
+    },
+    {
+      "fen": "K7/8/8/8/4k3/4B3/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e4e3",
+      "depth": 12
+    },
+    {
+      "fen": "1k6/8/5B2/3K4/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8b7",
+      "depth": 12
+    },
+    {
+      "fen": "8/2N5/5k2/8/1K6/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b4c5",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/2B5/8/8/8/6K1/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K4/8/2B5/2k5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2c3",
+      "depth": 12
+    },
+    {
+      "fen": "4K2k/6N1/8/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e8f7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/k7/8/2N4K/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5K2/8/7k/8/8/B7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/2k5/8/4K1N1/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c5d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6kN/8/8/8/6K1/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g6h6",
+      "depth": 12
+    },
+    {
+      "fen": "7K/8/8/8/4k3/8/8/4N3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e4e3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/k7/8/1B6/8/5K2/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b4d2",
+      "depth": 12
+    },
+    {
+      "fen": "8/4N3/8/4K3/8/8/2k5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7g6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/4N3/8/8/8/3k1K2 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/2K5/8/5k2/N7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1c2",
+      "depth": 12
+    },
+    {
+      "fen": "4K3/1k6/8/2B5/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e8d7",
+      "depth": 12
+    },
+    {
+      "fen": "8/3N4/8/8/8/K2k4/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d3e4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1k6/8/6K1/8/4N3/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g4g5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/B6k/8/8/4K3/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/8/1K4k1/3N4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/4BK2/8/8/1k6 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/4k3/8/2K5/8/6N1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5d6",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/8/3KN3/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h8g7",
+      "depth": 12
+    },
+    {
+      "fen": "8/6K1/8/k4B2/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g7f7",
+      "depth": 12
+    },
+    {
+      "fen": "8/5K2/8/8/8/k7/N7/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a3a2",
+      "depth": 12
+    },
+    {
+      "fen": "8/5K2/8/2k5/8/8/5N2/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f2d1",
+      "depth": 12
+    },
+    {
+      "fen": "8/2k5/8/8/6K1/8/8/6N1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4N3/8/3k4/5K2/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d4e5",
+      "depth": 12
+    },
+    {
+      "fen": "1k4N1/8/8/8/8/6K1/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4B3/2K5/8/8/8/k7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c5b4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5K2/8/1B6/6k1/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/3k4/5N2/3K4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d3c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/3K4/1B6/8/8/8/8/1k6 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b6e3",
+      "depth": 12
+    },
+    {
+      "fen": "8/1K1k4/8/8/8/8/8/B7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K4/8/N7/8/7k w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d5d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1N6/7k/5K2/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b6a8",
+      "depth": 12
+    },
+    {
+      "fen": "7K/8/8/8/7k/8/8/6N1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1e2",
+      "depth": 12
+    },
+    {
+      "fen": "6k1/8/K7/B7/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a6b5",
+      "depth": 12
+    },
+    {
+      "fen": "8/5k2/8/8/K7/4N3/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/1K6/8/1k2N3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1c1",
+      "depth": 12
+    },
+    {
+      "fen": "1k6/1B6/8/8/8/8/8/5K2 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f1e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/4K3/8/3k4/2B5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d3c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/3K4/8/2B3k1/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d7c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4N3/8/8/8/4k2K/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h2g3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2K5/6N1/2k5/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5e4",
+      "depth": 12
+    },
+    {
+      "fen": "8/4k1K1/8/8/8/B7/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7e6",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/2N5/6K1/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5f6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/3N4/4K3/8/2k5/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d6e4",
+      "depth": 12
+    },
+    {
+      "fen": "8/3K4/8/8/8/4k3/8/2N5 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c1b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/6K1/8/2k1N3/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5f6",
+      "depth": 12
+    },
+    {
+      "fen": "8/4K3/8/8/8/8/2B2k2/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2e4",
+      "depth": 12
+    },
+    {
+      "fen": "K7/8/8/3k4/8/8/8/2N5 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d5c4",
+      "depth": 12
+    },
+    {
+      "fen": "6K1/8/8/8/2B3k1/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g4f3",
+      "depth": 12
+    },
+    {
+      "fen": "3N4/2K5/8/8/8/8/8/4k3 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d8c6",
+      "depth": 12
+    },
+    {
+      "fen": "6B1/4K3/8/8/8/8/2k5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g8h7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/k7/8/8/3K2B1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3N4/8/K4k2/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f3e4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/K5k1/8/8/8/8/3B4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1h5",
+      "depth": 12
+    },
+    {
+      "fen": "8/6k1/8/8/8/8/8/3KN3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g7f6",
+      "depth": 12
+    },
+    {
+      "fen": "1k6/8/5K2/8/8/8/8/4B3 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f6e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2k5/8/4K3/6B1/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3f2",
+      "depth": 12
+    },
+    {
+      "fen": "1N6/k7/8/8/8/8/1K6/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8a6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6B1/8/5K2/8/2k5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2d2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6B1/8/8/k4K2/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a3a4",
+      "depth": 12
+    },
+    {
+      "fen": "2B2K2/8/1k6/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c8d7",
+      "depth": 12
+    },
+    {
+      "fen": "3K4/8/8/1N6/4k3/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e4e3",
+      "depth": 12
+    },
+    {
+      "fen": "8/6K1/8/6N1/8/8/2k5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2d3",
+      "depth": 12
+    },
+    {
+      "fen": "8/K7/8/B7/8/8/8/6k1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a7b7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4B3/8/4K3/8/3k4/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/K7/8/5B2/k7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/2K5/8/k7/8/8/2N5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c7c6",
+      "depth": 12
+    },
+    {
+      "fen": "5K2/8/8/1N6/8/4k3/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b5c7",
+      "depth": 12
+    },
+    {
+      "fen": "k7/8/K7/8/8/8/3N4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/2K5/8/8/8/8/2k4N/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2d2",
+      "depth": 12
+    },
+    {
+      "fen": "4K3/8/8/8/8/2k5/8/5N2 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e8d8",
+      "depth": 12
+    },
+    {
+      "fen": "8/7B/8/8/8/8/8/1k2K3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "N7/8/8/8/8/8/K7/3k4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a8c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/2K5/4k3/8/8/8/3B4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c7c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/5K2/N7/8/8/8/8/3k4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1c1",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/2N5/8/5K2/3k4/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/6k1/8/8/2KB4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g4f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/k7/8/7N/8/8/3K4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a6b7",
+      "depth": 12
+    },
+    {
+      "fen": "8/2K5/8/3N4/8/8/8/k7 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1b2",
+      "depth": 12
+    },
+    {
+      "fen": "2K5/8/8/7B/8/8/8/6k1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1f1",
+      "depth": 12
+    },
+    {
+      "fen": "3N4/8/8/8/8/3K4/k7/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2b2",
+      "depth": 12
+    },
+    {
+      "fen": "B4K2/8/8/7k/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h5g4",
+      "depth": 12
+    },
+    {
+      "fen": "8/4k3/2K5/8/8/6N1/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3h1",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/7K/8/8/3k4/8/6N1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h6g7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4K3/7B/8/8/1k6/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b2c2",
+      "depth": 12
+    },
+    {
+      "fen": "3K4/8/8/k7/8/8/8/4N3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b6",
+      "depth": 12
+    },
+    {
+      "fen": "2K5/5k2/4N3/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e6f4",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/8/8/8/1K6/8/3N4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f8f7",
+      "depth": 12
+    },
+    {
+      "fen": "8/k7/7K/8/8/1B6/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h6g7",
+      "depth": 12
+    },
+    {
+      "fen": "6K1/8/7B/8/1k6/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h6d2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5N2/8/6K1/3k4/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f6d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2K5/4k3/N7/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5e6",
+      "depth": 12
+    },
+    {
+      "fen": "7K/8/8/8/2k5/B7/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h8g7",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/8/8/8/8/3BK3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f8e7",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/8/8/7K/8/8/7N w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h1f2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/N5k1/8/1K6 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1Nk5/8/8/8/8/4K3 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e1e2",
+      "depth": 12
+    },
+    {
+      "fen": "3N4/8/7K/8/8/8/1k6/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b2c2",
+      "depth": 12
+    },
+    {
+      "fen": "2K5/8/5N2/8/8/8/7k/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h2g3",
+      "depth": 12
+    },
+    {
+      "fen": "1k2N3/8/8/8/3K4/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d4d5",
+      "depth": 12
+    },
+    {
+      "fen": "3K1k2/8/8/3N4/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d5f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2K5/N7/k7/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2K5/8/3N4/8/8/1k6 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "2B5/K7/8/8/3k4/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c8d7",
+      "depth": 12
+    },
+    {
+      "fen": "B7/8/8/8/8/6K1/4k3/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/4N3/8/8/K2k4/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5k2/8/8/8/8/1K1B4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "1k1N4/8/8/8/8/8/4K3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8c7",
+      "depth": 12
+    },
+    {
+      "fen": "1k6/8/8/7B/8/8/4K3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8b7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/6B1/8/8/1K4k1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1N1K4/8/8/8/8/1k6 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1c2",
+      "depth": 12
+    },
+    {
+      "fen": "1B6/8/8/8/8/4K3/2k5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/6B1/8/8/8/k7/4K3/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e2e3",
+      "depth": 12
+    },
+    {
+      "fen": "6K1/8/8/2k5/8/5N2/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g8f7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1k2N3/6K1/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b6c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6B1/3K4/8/8/8/7k w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d5d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/K2k4/2B5/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d4d3",
+      "depth": 12
+    },
+    {
+      "fen": "2N5/8/8/8/8/3K4/k7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d3c3",
+      "depth": 12
+    },
+    {
+      "fen": "6K1/1k6/8/8/8/8/N7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g8h7",
+      "depth": 12
+    },
+    {
+      "fen": "8/1B1k4/5K2/8/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d7d6",
+      "depth": 12
+    },
+    {
+      "fen": "4k3/8/8/8/8/8/1N6/2K5 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e8f7",
+      "depth": 12
+    },
+    {
+      "fen": "2k5/8/8/1KB5/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b5c6",
+      "depth": 12
+    },
+    {
+      "fen": "1k6/8/1N6/8/8/8/K7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/3k4/8/6K1/8/1B6/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b3d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/1K6/5N2/8/5k2/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b5c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2N5/K5k1/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/1K6/3N4/3k4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d3c5",
+      "depth": 12
+    },
+    {
+      "fen": "1N6/8/7k/8/8/8/8/2K5 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8d7",
+      "depth": 12
+    },
+    {
+      "fen": "6B1/8/8/5k2/3K4/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f5f4",
+      "depth": 12
+    },
+    {
+      "fen": "k7/8/8/B7/8/8/K7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2b3",
+      "depth": 12
+    },
+    {
+      "fen": "K6N/8/8/8/8/8/1k6/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b2c1",
+      "depth": 12
+    },
+    {
+      "fen": "8/6k1/8/3B4/8/8/8/6K1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1f2",
+      "depth": 12
+    },
+    {
+      "fen": "k7/8/8/4B3/8/8/2K5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2d3",
+      "depth": 12
+    },
+    {
+      "fen": "1K6/8/2N5/8/8/8/k7/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2a3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/4B3/8/8/K3k3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e1e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/1k6/8/8/8/8/6NK/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b7c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/7K/1k6/8/8/8/4B3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b5c4",
+      "depth": 12
+    },
+    {
+      "fen": "3k2B1/8/8/8/8/8/8/K7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1b2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/6K1/8/4B3/8/5k2 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5f5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K4/4N3/2k5/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c3b3",
+      "depth": 12
+    },
+    {
+      "fen": "6B1/8/8/5K2/8/8/8/6k1 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g8d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6K1/8/8/2B5/k7/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g6f5",
+      "depth": 12
+    },
+    {
+      "fen": "4K2k/5B2/8/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e8e7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/7K/N7/k7/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/3K4/8/1k6/8/3N4/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b4c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/2k5/5N2/8/8/4K3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c5d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/B7/8/8/6k1/8/3K4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2e3",
+      "depth": 12
+    },
+    {
+      "fen": "7K/k7/8/8/8/8/3N4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2c4",
+      "depth": 12
+    },
+    {
+      "fen": "8/4N3/k3K3/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/1K6/8/8/8/k7/8/N7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1c2",
+      "depth": 12
+    },
+    {
+      "fen": "6N1/8/3K1k2/8/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f6f5",
+      "depth": 12
+    },
+    {
+      "fen": "8/7N/8/8/1K6/8/3k4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h7g5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4k3/8/8/8/3K4/2N5 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e6d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/4N3/K7/8/8/8/2k5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/7B/8/6K1/8/2k5/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c3c4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/6B1/2K5/8/5k2/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/5K2/8/3kN3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2e2",
+      "depth": 12
+    },
+    {
+      "fen": "N7/8/8/8/4k3/K7/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a3a4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/3K4/8/8/8/N7/3k4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1d2",
+      "depth": 12
+    },
+    {
+      "fen": "6B1/8/8/8/8/8/k7/7K b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2b2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/1K6/8/8/5k2/4B3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f2f3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4N3/8/8/8/7K/5k2 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f1f2",
+      "depth": 12
+    },
+    {
+      "fen": "2B5/8/3k4/8/4K3/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e4d4",
+      "depth": 12
+    },
+    {
+      "fen": "6k1/8/8/8/N7/3K4/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g8f7",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/8/5B2/8/7K/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f8e7",
+      "depth": 12
+    },
+    {
+      "fen": "8/3K4/3B4/8/4k3/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d7e6",
+      "depth": 12
+    },
+    {
+      "fen": "8/7k/8/7N/2K5/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h5g7",
+      "depth": 12
+    },
+    {
+      "fen": "6k1/8/8/8/8/3N4/8/K7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a1b1",
+      "depth": 12
+    },
+    {
+      "fen": "B7/8/6k1/K7/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a8c6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/6k1/3B4/8/8/3K4 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5f4",
+      "depth": 12
+    },
+    {
+      "fen": "2k5/8/8/8/8/8/K7/3N4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a2b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/K7/8/2k5/8/3B4/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c4c5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/1K6/8/1k6/8/7N w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h1f2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/B4K2/8/8/2k5/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/7K/4k3/8/7B/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h6g7",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/8/8/8/4N3/3K4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e3g4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/5B1K/8/8/k7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f4e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/4k3/8/8/N7/8/5K2/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7e6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/7k/3K4/7N/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h4g5",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/8/8/8/8/8/1K2N3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h8g7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/6B1/1k4K1/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b3c4",
+      "depth": 12
+    },
+    {
+      "fen": "8/K3k3/8/8/8/4N3/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e3g4",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/8/6K1/8/8/8/1B6 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g5f6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2k5/8/6B1/8/8/5K2 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c6d5",
+      "depth": 12
+    },
+    {
+      "fen": "3k4/7B/7K/8/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d8d7",
+      "depth": 12
+    },
+    {
+      "fen": "K6B/8/8/5k2/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f5f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/1B6/8/8/2K2k2 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f1e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4k3/8/2B5/3K4/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e6d7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/5K2/4N3/1k6 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1b2",
+      "depth": 12
+    },
+    {
+      "fen": "8/1k6/8/8/8/8/3K4/2N5 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d2d3",
+      "depth": 12
+    },
+    {
+      "fen": "5B2/8/8/8/8/5K2/8/7k b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h1g1",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/8/1k2K3/7N w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e2d3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4KB2/8/k7/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/2K5/7N/8/k7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c4b3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/4B2k/8/7K w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e3f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/1kB2K2/8/8/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c7b6",
+      "depth": 12
+    },
+    {
+      "fen": "3N4/8/8/8/8/7k/4K3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h3g4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/k7/8/2K5/7N w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c2c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/4K3/1k2B3/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "e6d5",
+      "depth": 12
+    },
+    {
+      "fen": "2B5/8/8/8/K7/2k5/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a4b5",
+      "depth": 12
+    },
+    {
+      "fen": "8/1K6/8/3N4/8/8/8/1k6 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b7c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/k2BK3/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5a4",
+      "depth": 12
+    },
+    {
+      "fen": "7K/8/7k/8/6B1/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g4f5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/2N5/8/8/1K6/8/6k1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1f2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/1B6/8/1K2k3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e2d3",
+      "depth": 12
+    },
+    {
+      "fen": "3k4/8/8/N6K/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "h5g6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/2N2k2/8/3K4 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5k2/8/8/8/2K5/4B3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f6e5",
+      "depth": 12
+    },
+    {
+      "fen": "8/6K1/3N4/8/8/5k2/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f3e3",
+      "depth": 12
+    },
+    {
+      "fen": "5k2/8/6N1/8/8/8/8/K7 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f8e8",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/6N1/8/8/8/8/1k2K3 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/2K5/5N2/6k1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1f2",
+      "depth": 12
+    },
+    {
+      "fen": "8/3N4/2K5/8/8/8/8/6k1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g1f1",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/B7/8/k7/8/1K6 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b1c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/5B2/8/5k1K/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f5e4",
+      "depth": 12
+    },
+    {
+      "fen": "4K3/8/8/8/1k6/8/7B/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b4c3",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/K7/4kB2/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5d6",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/7K/4k3/1N6/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e3d4",
+      "depth": 12
+    },
+    {
+      "fen": "8/5K2/8/4k3/3N4/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5d4",
+      "depth": 12
+    },
+    {
+      "fen": "4K3/N7/8/8/2k5/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "c4c3",
+      "depth": 12
+    },
+    {
+      "fen": "6B1/8/8/k5K1/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/3B2k1/K7/8/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "a5b4",
+      "depth": 12
+    },
+    {
+      "fen": "1k3K2/2N5/8/8/8/8/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b8c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/4k2B/8/8/8/8/8/K7 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e7f6",
+      "depth": 12
+    },
+    {
+      "fen": "7k/8/4B3/8/8/8/2K5/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h8g7",
+      "depth": 12
+    },
+    {
+      "fen": "8/6k1/8/8/6K1/8/7B/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "g4f5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/5K2/3B4/8/3k4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f5e4",
+      "depth": 12
+    },
+    {
+      "fen": "3k4/8/B7/8/2K5/8/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c4d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/B3k3/8/8/4K3/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5d5",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/5N2/3K4/8/8/3k4/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "f6g4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/8/4K3/8/3k2B1 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "d1c2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/2K5/8/3N4/5k2 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "f1e2",
+      "depth": 12
+    },
+    {
+      "fen": "8/2B1K3/8/8/8/8/8/k7 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c7e5",
+      "depth": 12
+    },
+    {
+      "fen": "B7/8/8/4k3/8/8/7K/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "e5f4",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/1k6/8/8/4N3/8/7K b - - 0 1",
+      "evaluation": 0,
+      "best_move": "b6c5",
+      "depth": 12
+    },
+    {
+      "fen": "N7/7k/8/8/8/1K6/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "b3c4",
+      "depth": 12
+    },
+    {
+      "fen": "2K5/8/8/6B1/8/7k/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h3g2",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/8/1B6/4K2k/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "h3g4",
+      "depth": 12
+    },
+    {
+      "fen": "2K5/k7/8/8/8/3B4/8/8 w - - 0 1",
+      "evaluation": 0,
+      "best_move": "c8c7",
+      "depth": 12
+    },
+    {
+      "fen": "8/8/8/3K4/8/5Bk1/8/8 b - - 0 1",
+      "evaluation": 0,
+      "best_move": "g3f3",
+      "depth": 12
+    }
+  ],
+  "actual_positions": 256,
+  "unique": true,
+  "augment_plies": 4,
+  "augment_policy": "stockfish"
+}
