@@ -65,11 +65,12 @@ def threat_targets(board: chess.Board) -> np.ndarray:
     side = board.turn
     opp = not side
     tgt = _plane()
-    for sq in board.occupied_co[side]:
-        if board.is_attacked_by(opp, sq):
-            r = 7 - chess.square_rank(sq)
-            c = chess.square_file(sq)
-            tgt[r, c] = 1.0
+    for sq in chess.SQUARES:
+        if board.piece_at(sq) is not None and board.piece_at(sq).color == side:
+            if board.is_attacked_by(opp, sq):
+                r = 7 - chess.square_rank(sq)
+                c = chess.square_file(sq)
+                tgt[r, c] = 1.0
     return tgt[np.newaxis, ...]
 
 
@@ -81,16 +82,13 @@ def pin_targets(board: chess.Board) -> np.ndarray:
     if king_sq is None:
         return tgt[np.newaxis, ...]
     # A piece is pinned if moving it would expose king to attack
-    for sq in board.occupied_co[side]:
+    for sq in chess.SQUARES:
         piece = board.piece_at(sq)
-        if piece is None or piece.piece_type == chess.KING:
-            continue
-        # Try one pseudo move off-board (hacky but cheap): move to itself is illegal; try checking pin via legal moves mask
-        # More robust: detect if sq is in board.pinned mask via python-chess ray logic
-        if board.is_pinned(side, sq):
-            r = 7 - chess.square_rank(sq)
-            c = chess.square_file(sq)
-            tgt[r, c] = 1.0
+        if piece is not None and piece.color == side and piece.piece_type != chess.KING:
+            if board.is_pinned(side, sq):
+                r = 7 - chess.square_rank(sq)
+                c = chess.square_file(sq)
+                tgt[r, c] = 1.0
     return tgt[np.newaxis, ...]
 
 
@@ -106,11 +104,13 @@ def fork_targets(board: chess.Board) -> np.ndarray:
             r = 7 - chess.square_rank(sq)
             c = chess.square_file(sq)
             attack_counts[r, c] += 1
-    for sq in board.occupied_co[side]:
-        r = 7 - chess.square_rank(sq)
-        c = chess.square_file(sq)
-        if attack_counts[r, c] >= 2:
-            tgt[r, c] = 1.0
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece is not None and piece.color == side:
+            r = 7 - chess.square_rank(sq)
+            c = chess.square_file(sq)
+            if attack_counts[r, c] >= 2:
+                tgt[r, c] = 1.0
     return tgt[np.newaxis, ...]
 
 

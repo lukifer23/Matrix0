@@ -33,7 +33,7 @@ from azchess.config import Config, select_device
 from azchess.data_manager import DataManager
 from azchess.model import PolicyValueNet
 from azchess.training.train import get_lr_scheduler, save_checkpoint, train_step as core_train_step, EMA
-from azchess.utils import clear_memory_cache, get_memory_usage, setup_logging
+from azchess.utils import clear_memory_cache, get_memory_usage, setup_logging, start_memory_monitoring, add_memory_alert_callback
 
 logger = setup_logging(level=logging.INFO)
 
@@ -170,33 +170,42 @@ def _evaluate_quick_stockfish(model: PolicyValueNet, dm: DataManager, device: st
 def main():
     ap = argparse.ArgumentParser(description="Matrix0 External Pretraining")
     ap.add_argument("--config", type=str, default="config.yaml")
-    ap.add_argument("--steps", type=int, default=2000)
-    ap.add_argument("--batch-size", type=int, default=128)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--steps", type=int, default=100000)
+    ap.add_argument("--batch-size", type=int, default=96)
+    ap.add_argument("--lr", type=float, default=0.001)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--device", type=str, default="auto")
-    ap.add_argument("--checkpoint-in", type=str, default="checkpoints/v2_base.pt")
-    ap.add_argument("--checkpoint-out", type=str, default="checkpoints/pretrain_external.pt")
+    ap.add_argument("--checkpoint-in", type=str, default="checkpoints/enhanced_best.pt")
+    ap.add_argument("--checkpoint-out", type=str, default="checkpoints/pretrained_100k.pt")
     ap.add_argument("--eval-batches", type=int, default=20)
     ap.add_argument("--source", type=str, default="mixed", choices=["mixed", "tactical", "openings"], help="Deprecated: legacy external data selector")
     ap.add_argument("--stockfish-root", type=str, default="data/stockfish_games", help="Root directory of Stockfish-generated datasets")
     ap.add_argument("--curriculum", type=str, default="stockfish", choices=["stockfish", "legacy"], help="Training data curriculum: stockfish (from stockfish_root) or legacy (tactical/openings)")
     ap.add_argument("--phase-workers", type=int, default=0, help="Internal dataloader workers for stockfish sampling (0 = none)")
     ap.add_argument("--phase-prefetch", type=int, default=2, help="Prefetch factor when using workers > 0")
-    ap.add_argument("--save-every", type=int, default=500, help="Save intermediate checkpoints every N steps (0 to disable)")
-    ap.add_argument("--checkpoint-prefix", type=str, default="pretrain_external", help="Prefix for saved checkpoints")
+    ap.add_argument("--save-every", type=int, default=5000, help="Save intermediate checkpoints every N steps (0 to disable)")
+    ap.add_argument("--checkpoint-prefix", type=str, default="pretrained_100k", help="Prefix for saved checkpoints")
     ap.add_argument("--resume-from", type=str, default="", help="Resume from a specific checkpoint path")
     ap.add_argument("--auto-resume", action="store_true", help="Auto resume from latest step checkpoint in output dir")
     ap.add_argument("--use-amp", action="store_true", help="Enable autocast mixed precision during forward")
-    ap.add_argument("--progress-interval", type=int, default=20, help="Update progress/memory every N steps")
-    ap.add_argument("--clip-every", type=int, default=5, help="Apply gradient clipping every N steps (1 = every step)")
+    ap.add_argument("--progress-interval", type=int, default=100, help="Update progress/memory every N steps")
+    ap.add_argument("--clip-every", type=int, default=1, help="Apply gradient clipping every N steps (1 = every step)")
+    ap.add_argument("--grad-clip-norm", type=float, default=0.5, help="Gradient clipping norm")
     # Fine-grained loss/SSL controls
-    ap.add_argument("--ssl-weight", type=float, default=0.2, help="Weight for SSL loss component")
-    ap.add_argument("--ssl-warmup-steps", type=int, default=1000, help="Linear SSL weight warmup steps")
-    ap.add_argument("--label-smoothing", type=float, default=0.03, help="Policy label smoothing for external data")
+    ap.add_argument("--ssl-weight", type=float, default=0.15, help="Weight for SSL loss component")
+    ap.add_argument("--ssl-warmup-steps", type=int, default=500, help="Linear SSL weight warmup steps")
+    ap.add_argument("--label-smoothing", type=float, default=0.05, help="Policy label smoothing for external data")
     ap.add_argument("--value-loss", type=str, choices=["mse", "huber"], default="huber", help="Value loss type")
     ap.add_argument("--huber-delta", type=float, default=1.0, help="Huber delta (beta)")
-    ap.add_argument("--lr-warmup-steps", type=int, default=400, help="Learning rate warmup steps for scheduler")
+    ap.add_argument("--lr-warmup-steps", type=int, default=500, help="Learning rate warmup steps for scheduler")
+    # Individual SSL task weights (matching current config.yaml)
+    ap.add_argument("--ssl-piece-weight", type=float, default=1.0, help="Weight for piece recognition SSL task")
+    ap.add_argument("--ssl-threat-weight", type=float, default=0.8, help="Weight for threat detection SSL task")
+    ap.add_argument("--ssl-pin-weight", type=float, default=0.7, help="Weight for pin detection SSL task")
+    ap.add_argument("--ssl-fork-weight", type=float, default=0.6, help="Weight for fork detection SSL task")
+    ap.add_argument("--ssl-control-weight", type=float, default=0.5, help="Weight for square control SSL task")
+    ap.add_argument("--ssl-pawn-structure-weight", type=float, default=0.4, help="Weight for pawn structure SSL task")
+    ap.add_argument("--ssl-king-safety-weight", type=float, default=0.4, help="Weight for king safety SSL task")
     # EMA controls
     ap.add_argument("--ema-decay", type=float, default=0.999, help="EMA decay for shadow weights (higher = smoother)")
     ap.add_argument("--no-ema", action="store_true", help="Disable EMA maintenance and saving")
@@ -205,6 +214,26 @@ def main():
     cfg = Config.load(args.config)
     device = select_device(args.device)
     dm = DataManager(base_dir=cfg.get("data_dir", "data"))
+    
+    # Initialize memory monitoring for long training runs
+    try:
+        start_memory_monitoring(
+            device=device,
+            warning_threshold=0.85,
+            critical_threshold=0.95,
+            check_interval=30.0
+        )
+        logger.info("Memory monitoring system started")
+        
+        def training_memory_alert_callback(alert):
+            if alert.alert_type == 'critical':
+                logger.critical(f"CRITICAL MEMORY: Training may become unstable. Memory: {alert.memory_usage_gb:.2f}GB")
+            elif alert.alert_type == 'warning':
+                logger.warning(f"HIGH MEMORY: Monitor training stability. Memory: {alert.memory_usage_gb:.2f}GB")
+        
+        add_memory_alert_callback(training_memory_alert_callback)
+    except Exception as e:
+        logger.warning(f"Could not start memory monitoring: {e}")
 
     # Always attempt to import stockfish tree so shards are registered with source tags
     try:
@@ -303,11 +332,24 @@ def main():
 
     # Train on stockfish curriculum or legacy external data
     model.train()
+    
+    # Memory cleanup at start of training
+    logger.info("Performing memory cleanup at start of training")
+    try:
+        clear_memory_cache(device)
+        logger.info("Memory cleanup completed")
+    except Exception as e:
+        logger.warning(f"Memory cleanup failed: {e}")
+    
     start = time.time()
     from tqdm import tqdm
     pbar = tqdm(total=args.steps, desc="Pretraining (external)", unit="step", initial=start_step)
     running_pol, running_val = 0.0, 0.0
     start_global = time.time()
+    
+    # Training heartbeat monitoring for long runs
+    last_heartbeat = time.time()
+    heartbeat_interval = 300  # 5 minutes between heartbeats
 
     # Mixed precision scaler (CUDA only; disable on MPS/CPU)
     scaler = None
@@ -356,7 +398,8 @@ def main():
                     label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                     policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=current_step,
                     ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
-                    precision=("fp16" if scaler is not None else "fp32")
+                    precision=("fp16" if scaler is not None else "fp32"),
+                    ssl_every_n=1, ssl_chunk_size=0
                 )
                 if loss_values is None:
                     continue
@@ -369,12 +412,12 @@ def main():
                     except Exception:
                         pass
                     if args.clip_every > 0 and (current_step + 1) % args.clip_every == 0:
-                        nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
+                        nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, error_if_nonfinite=False)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     if args.clip_every > 0 and (current_step + 1) % args.clip_every == 0:
-                        nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
+                        nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, error_if_nonfinite=False)
                     optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -398,6 +441,24 @@ def main():
                         "mem": f"{mem:.2f}GB",
                         "ETA": f"{int(eta_s)}s"
                     })
+                    
+                    # Periodic memory cleanup every 1000 steps
+                    if (current_step + 1) % 1000 == 0 and current_step > 0:
+                        logger.debug("Performing periodic memory cleanup")
+                        clear_memory_cache(device)
+                
+                # Training heartbeat for long runs
+                current_time = time.time()
+                if current_time - last_heartbeat > heartbeat_interval:
+                    memory_usage = get_memory_usage(device).get("memory_gb", 0.0)
+                    lr_current = scheduler.get_last_lr()[0] if scheduler else 0.0
+                    logger.info(f"TRAINING_HB: Step {current_step}/{args.steps} | "
+                              f"Loss: {float(loss):.4f} | Policy: {running_pol:.4f} | "
+                              f"Value: {running_val:.4f} | SSL: {float(ssl_loss):.4f} | "
+                              f"LR: {lr_current:.6f} | Memory: {memory_usage:.2f}GB | "
+                              f"Device: {device}")
+                    last_heartbeat = current_time
+                
                 pbar.update(1)
                 current_step += 1
 
@@ -426,7 +487,8 @@ def main():
                 label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                 policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=step,
                 ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
-                precision=("fp16" if scaler is not None else "fp32")
+                precision=("fp16" if scaler is not None else "fp32"),
+                ssl_every_n=1, ssl_chunk_size=0
             )
             if loss_values is None:
                 continue
@@ -438,12 +500,12 @@ def main():
                 except Exception:
                     pass
                 if args.clip_every > 0 and (step + 1) % args.clip_every == 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
+                    nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, error_if_nonfinite=False)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 if args.clip_every > 0 and (step + 1) % args.clip_every == 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
+                    nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, error_if_nonfinite=False)
                 optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -465,6 +527,24 @@ def main():
                     "mem": f"{mem:.2f}GB",
                     "ETA": f"{int(eta_s)}s"
                 })
+                
+                # Periodic memory cleanup every 1000 steps
+                if (step + 1) % 1000 == 0 and step > 0:
+                    logger.debug("Performing periodic memory cleanup")
+                    clear_memory_cache(device)
+            
+            # Training heartbeat for long runs
+            current_time = time.time()
+            if current_time - last_heartbeat > heartbeat_interval:
+                memory_usage = get_memory_usage(device).get("memory_gb", 0.0)
+                lr_current = scheduler.get_last_lr()[0] if scheduler else 0.0
+                logger.info(f"TRAINING_HB: Step {step+1}/{args.steps} | "
+                          f"Loss: {float(loss):.4f} | Policy: {running_pol:.4f} | "
+                          f"Value: {running_val:.4f} | SSL: {float(ssl_loss):.4f} | "
+                          f"LR: {lr_current:.6f} | Memory: {memory_usage:.2f}GB | "
+                          f"Device: {device}")
+                last_heartbeat = current_time
+            
             pbar.update(1)
 
             if args.save_every and (step + 1) % args.save_every == 0:
@@ -489,8 +569,14 @@ def main():
         except Exception as e:
             logger.warning(f"Post-train stockfish eval failed: {e}")
 
+    # Training summary
+    total_time = time.time() - start_global
+    logger.info(f"Training completed in {total_time:.2f} seconds ({total_time/3600:.2f} hours)")
+    logger.info(f"Final step: {current_step if 'current_step' in locals() else step+1 if 'step' in locals() else 0}")
+    logger.info(f"Average time per step: {total_time/max(1, current_step if 'current_step' in locals() else step+1 if 'step' in locals() else 1):.3f}s")
+    
     # Optional: compare via enhanced_eval tool if desired
-    logger.info("Compare models with:\n  python -m azchess.tools.enhanced_eval --model-a checkpoints/pretrain_external.pt --model-b checkpoints/best.pt")
+    logger.info("Compare models with:\n  python -m azchess.tools.enhanced_eval --model-a checkpoints/pretrained_100k.pt --model-b checkpoints/enhanced_best.pt")
 
 
 if __name__ == "__main__":
