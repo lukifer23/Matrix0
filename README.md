@@ -215,9 +215,9 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 
 ## 🔧 Current Training Status
 
-**Latest Update**: December 2024 - 100K Step Training in Progress
+**Latest Update**: September 2025 - 100K Step Training in Progress
 - **Training Progress**: **FULLY OPERATIONAL** with SSL architecture integration
-- **Training Speed**: ~3-4 seconds per step (optimized for SSL processing)
+- **Training Speed**: ~1.58-2.5 seconds per step (optimized for SSL processing)
 - **Model Size**: 53M parameter ResNet-24 with SSL heads
 - **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **7 SSL heads**
 - **SSL Status**: **ARCHITECTURE INTEGRATED** - All 7 SSL tasks integrated (piece, threat, pin, fork, control, pawn_structure, king_safety)
@@ -225,7 +225,7 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 - **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **Training Stability**: 100% stable with proper gradient accumulation and scheduler stepping
 - **Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
-- **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, advanced benchmark system
+- **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, advanced benchmark system, tournament system, CoreML export
 
 ## 🔧 Development
 
@@ -291,7 +291,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📈 Current Achievements & Next Steps
 
-### ✅ Major Milestones Completed (August 29, 2025)
+### ✅ Major Milestones Completed (September 2025)
 - **SSL Architecture Integration**: All 7 SSL tasks (piece, threat, pin, fork, control, pawn_structure, king_safety) integrated
 - **Multi-Task Learning**: Simultaneous training of policy, value, and SSL optimization working perfectly
 - **Enhanced WebUI**: Complete monitoring platform with real-time SSL and training analytics
@@ -300,6 +300,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Production Architecture**: 53M parameter ResNet-24 with complete SSL foundation
 - **Apple Silicon Optimization**: 14GB MPS limit with SSL processing optimization
 - **Real-Time Monitoring**: Live training status, SSL performance, and model analysis
+- **Tournament System**: Advanced multi-format tournament system with Glicko-2 ratings
+- **CoreML Export**: Apple Silicon optimization via CoreML for enhanced inference
+- **GitHub Actions CI/CD**: Comprehensive testing with SSL validation and security scanning
+- **Syzygy Tablebase Integration**: Complete 6-piece endgame tablebases for perfect play
 
 ### Active Development Priorities
 - **SSL Performance Validation**: Comprehensive measurement of SSL learning effectiveness
