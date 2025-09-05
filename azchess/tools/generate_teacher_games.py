@@ -236,7 +236,8 @@ def run(cfg: TeacherConfig):
     # Load model
     model = PolicyValueNet.from_config(model_cfg)
     chk = torch.load(cfg.model_path, map_location='cpu', weights_only=False)
-    sd = chk.get('model_state_dict') or chk.get('model')
+    # Prefer EMA if present for smoother targets
+    sd = chk.get('model_ema') or chk.get('model_state_dict') or chk.get('model')
     model.load_state_dict(sd, strict=False)
     model.to(device)
     model.eval()
@@ -384,5 +385,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 

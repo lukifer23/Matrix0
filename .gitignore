@@ -32,5 +32,6 @@ data/external/lichess_db_puzzle.csv.zst
 data/selfplay/*.npz
 data/replays/*.npz
 data/backups/*.npz
+data/data_metadata.db
 artifacts/
 chessData.csv

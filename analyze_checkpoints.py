@@ -203,46 +203,77 @@ def plot_parameter_distributions(checkpoints: Dict[str, Dict], save_path: str = 
 
 def main():
     """Main analysis function."""
-    checkpoint_paths = [
-        "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_4000.pt",
-        "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_18000.pt",
-        "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/best.pt",
-        "/Users/admin/Downloads/VSCode/Matrix0/checkpoints/enhanced_best.pt"
-    ]
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Analyze Matrix0 model checkpoints")
+    parser.add_argument(
+        "--checkpoints",
+        nargs="+",
+        default=[
+            "checkpoints/model_step_4000.pt",
+            "checkpoints/model_step_18000.pt",
+            "checkpoints/best.pt",
+            "checkpoints/enhanced_best.pt"
+        ],
+        help="Paths to checkpoint files to analyze"
+    )
+    parser.add_argument(
+        "--output",
+        default="checkpoint_analysis.png",
+        help="Output path for analysis plots"
+    )
+
+    args = parser.parse_args()
+
+    # Convert relative paths to absolute if needed
+    checkpoint_paths = []
+    for path in args.checkpoints:
+        if not os.path.isabs(path):
+            # Try relative to current directory first, then script directory
+            if os.path.exists(path):
+                checkpoint_paths.append(path)
+            else:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                abs_path = os.path.join(script_dir, path)
+                if os.path.exists(abs_path):
+                    checkpoint_paths.append(abs_path)
+                else:
+                    logger.warning(f"Checkpoint not found: {path}")
+        else:
+            if os.path.exists(path):
+                checkpoint_paths.append(path)
+            else:
+                logger.warning(f"Checkpoint not found: {path}")
 
     checkpoints = {}
     comparisons = {}
 
     # Load and analyze each checkpoint
     for path in checkpoint_paths:
-        if os.path.exists(path):
-            checkpoint = load_checkpoint_safely(path)
-            if checkpoint:
-                name = Path(path).stem
-                analysis = analyze_checkpoint_structure(checkpoint)
-                checkpoints[name] = analysis
+        checkpoint = load_checkpoint_safely(path)
+        if checkpoint:
+            name = Path(path).stem
+            analysis = analyze_checkpoint_structure(checkpoint)
+            checkpoints[name] = analysis
 
-                # Extract model state for comparison
-                model_state = None
-                if 'model' in checkpoint:
-                    model_state = checkpoint['model']
-                elif 'model_state_dict' in checkpoint:
-                    model_state = checkpoint['model_state_dict']
+            # Extract model state for comparison
+            model_state = None
+            if 'model' in checkpoint:
+                model_state = checkpoint['model']
+            elif 'model_state_dict' in checkpoint:
+                model_state = checkpoint['model_state_dict']
 
-                if model_state:
-                    checkpoints[name]['model_state'] = model_state
-                    ssl_info = analyze_ssl_heads(model_state)
-                    checkpoints[name]['ssl_info'] = ssl_info
+            if model_state:
+                checkpoints[name]['model_state'] = model_state
+                ssl_info = analyze_ssl_heads(model_state)
+                checkpoints[name]['ssl_info'] = ssl_info
 
-                    logger.info(f"\n=== {name} Analysis ===")
-                    logger.info(f"Total parameters: {analysis.get('total_params', 'N/A')}")
-                    logger.info(f"SSL parameters: {ssl_info['total_ssl_params']}")
-                    logger.info(f"SSL keys: {ssl_info['ssl_keys']}")
-                    if analysis.get('metadata'):
-                        logger.info(f"Metadata: {analysis['metadata']}")
-
-        else:
-            logger.warning(f"Checkpoint not found: {path}")
+                logger.info(f"\n=== {name} Analysis ===")
+                logger.info(f"Total parameters: {analysis.get('total_params', 'N/A')}")
+                logger.info(f"SSL parameters: {ssl_info['total_ssl_params']}")
+                logger.info(f"SSL keys: {ssl_info['ssl_keys']}")
+                if analysis.get('metadata'):
+                    logger.info(f"Metadata: {analysis['metadata']}")
 
     # Compare checkpoints pairwise
     names = list(checkpoints.keys())
@@ -270,7 +301,7 @@ def main():
 
     # Create plots
     try:
-        plot_parameter_distributions(checkpoints, save_path="checkpoint_analysis.png")
+        plot_parameter_distributions(checkpoints, save_path=args.output)
     except Exception as e:
         logger.warning(f"Plotting failed: {e}")
 
