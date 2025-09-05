@@ -54,7 +54,7 @@ from azchess.selfplay.inference import (
 )
 
 if TORCH_AVAILABLE:
-    from azchess.config import Config
+    from azchess.config import Config, select_device as _select_device
     from azchess.model.resnet import PolicyValueNet
     from azchess.mcts import MCTS, MCTSConfig
 
@@ -63,7 +63,7 @@ if TORCH_AVAILABLE:
 class BenchmarkRunner:
     """Main benchmark execution engine."""
 
-    def __init__(self, config: BenchmarkConfig, live_enabled: bool = False, pgn_dir: Optional[str] = None, hb_interval: float = 5.0, mcts_sims: Optional[int] = None, shared_infer: bool = False):
+    def __init__(self, config: BenchmarkConfig, live_enabled: bool = False, pgn_dir: Optional[str] = None, hb_interval: float = 5.0, mcts_sims: Optional[int] = None, shared_infer: bool = False, quiet: bool = False, seed: Optional[int] = None, device: Optional[str] = None):
         self.config = config
         self.engine_manager = EngineManager()
         self.metrics_collector = MetricsCollector(
@@ -82,21 +82,33 @@ class BenchmarkRunner:
         self._infer_ready = None  # type: ignore[assignment]
         self._infer_client: Optional[InferenceClient] = None
         self._shared_res = None
+        self.quiet: bool = bool(quiet)
+        # Seed if provided
+        if seed is not None:
+            try:
+                import random as _random
+                _random.seed(int(seed))
+                import numpy as _np
+                _np.random.seed(int(seed))
+                if TORCH_AVAILABLE:
+                    torch.manual_seed(int(seed))
+                logger.info(f"Seeding RNGs with {seed}")
+            except Exception:
+                pass
 
         # Load Matrix0 model
         self.model = None
         self.mcts = None
         if TORCH_AVAILABLE:
-            forced_device = os.environ.get("MATRIX0_DEVICE", "").lower().strip()
-            if forced_device in ("cpu", "mps"):
-                self.device = torch.device(forced_device)
-                logger.info(f"Using forced device via MATRIX0_DEVICE={forced_device}")
-            elif torch.mps.is_available():
-                self.device = torch.device("mps")
-                logger.info("Using MPS (Apple Silicon) device")
-            else:
-                self.device = torch.device("cpu")
-                logger.info("Using CPU device (MPS not available)")
+            # Prefer unified device selection for consistency with the rest of the project
+            forced_device = (device or os.environ.get("MATRIX0_DEVICE", "")).lower().strip()
+            dev_req = forced_device if forced_device in ("cpu", "mps", "cuda") else "auto"
+            try:
+                dev_str = _select_device(dev_req)
+            except Exception:
+                dev_str = "mps" if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else "cpu"
+            self.device = torch.device(dev_str)
+            logger.info(f"Using device: {self.device}")
         else:
             self.device = torch.device("cpu")
             logger.warning("PyTorch not available, using CPU")
@@ -196,24 +208,24 @@ class BenchmarkRunner:
             self.model.to(self.device)
             self.model.eval()
 
-            # Load checkpoint
+            # Load checkpoint (prefer EMA, then model, then model_state_dict)
             checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-            if 'model_state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                self.model.load_state_dict(checkpoint)
+            state = checkpoint.get('model_ema') or checkpoint.get('model') or checkpoint.get('model_state_dict') or checkpoint
+            self.model.load_state_dict(state, strict=False)
 
             logger.info(f"Successfully loaded Matrix0 model ({sum(p.numel() for p in self.model.parameters()):,} parameters)")
 
             # Initialize MCTS with benchmark-appropriate settings
+            # Derive MCTS defaults from config.yaml, allow CLI override of sims, and disable noise for eval
+            mcfg = Config.load('config.yaml').mcts() if TORCH_AVAILABLE else {}
             mcts_kwargs = dict(
-                num_simulations=(self.cli_sims if self.cli_sims is not None else 800),
-                cpuct=2.2,
-                dirichlet_alpha=0.3,
-                dirichlet_frac=0.0,
-                tt_capacity=100000,
+                num_simulations=(self.cli_sims if self.cli_sims is not None else int(mcfg.get('num_simulations', 800))),
+                cpuct=float(mcfg.get('cpuct', 2.2)),
+                dirichlet_alpha=float(mcfg.get('dirichlet_alpha', 0.3)),
+                dirichlet_frac=0.0,  # disabled for evaluation
+                tt_capacity=int(mcfg.get('tt_capacity', 100000)),
                 selection_jitter=0.0,
-                enable_entropy_noise=False  # No entropy noise during benchmark eval
+                enable_entropy_noise=False,
             )
 
             # Safety: avoid multi-threaded MPS in-process inference; will override if shared inference is enabled
@@ -243,8 +255,8 @@ class BenchmarkRunner:
                     self._infer_stop = MPEvent()
                     self._infer_ready = MPEvent()
 
-                    # Capture the exact state dict we loaded and ensure CPU tensors for interprocess transfer
-                    state_for_server = checkpoint.get('model_state_dict', checkpoint)
+                    # Capture the exact state dict (prefer EMA) we loaded and ensure CPU tensors for interprocess transfer
+                    state_for_server = checkpoint.get('model_ema') or checkpoint.get('model') or checkpoint.get('model_state_dict') or checkpoint
                     try:
                         if isinstance(state_for_server, dict):
                             state_for_server_cpu = {}
@@ -265,7 +277,8 @@ class BenchmarkRunner:
                     self._infer_proc = Process(target=run_inference_server, args=(str(self.device), model_config_obj if isinstance(model_config_obj, dict) else model_config_obj, state_for_server_cpu, self._infer_stop, self._infer_ready, [self._shared_res]))
                     self._infer_proc.start()
                     if not self._infer_ready.wait(timeout=60):
-                        logger.error("Inference server failed to start in time; continuing without shared backend")
+                        if not self.quiet:
+                            logger.error("Inference server failed to start in time; continuing without shared backend")
                     else:
                         self._infer_client = InferenceClient(self._shared_res)
                         inference_backend = self._infer_client
@@ -472,18 +485,23 @@ class BenchmarkRunner:
                         break
                     if board.is_game_over():
                         termination_reason = "terminal_position"
-                        logger.info("Position is terminal before move; ending game.")
+                if not self.quiet:
+                    logger.info("Position is terminal before move; ending game.")
                         break
                     if is_matrix0_turn:
-                        logger.info("🤖 Matrix0 thinking...")
+                        if not self.quiet:
+                            logger.info("🤖 Matrix0 thinking...")
                         move, move_time, diag = self._get_matrix0_move(current_fen, moves)
-                        logger.info(f"🤖 Matrix0 played: {move}")
+                        if not self.quiet:
+                            logger.info(f"🤖 Matrix0 played: {move}")
                     else:
-                        logger.info("♟️  Stockfish thinking...")
+                        if not self.quiet:
+                            logger.info("♟️  Stockfish thinking...")
                         engine.set_position(current_fen, moves)
                         move, move_time = engine.go(scenario.time_control)
                         diag = None
-                        logger.info(f"♟️  Stockfish played: {move}")
+                        if not self.quiet:
+                            logger.info(f"♟️  Stockfish played: {move}")
 
                     end_time = time.time()
                     actual_time = end_time - start_time
@@ -911,6 +929,9 @@ def main():
     parser.add_argument("--export-pgns", type=str, default=None, help="Directory to export PGN files per game")
     parser.add_argument("--hb-interval", type=float, default=5.0, help="Heartbeat interval in seconds for live TUI")
     parser.add_argument("--shared-infer", action="store_true", help="Run Matrix0 inference in a separate process (MPS stability)")
+    parser.add_argument("--quiet", action="store_true", help="Reduce per-move logging (compact output)")
+    parser.add_argument("--seed", type=int, default=None, help="Seed RNGs for reproducible matches")
+    parser.add_argument("--device", type=str, default=None, help="Device override: cpu|mps|cuda")
 
     args = parser.parse_args()
 
@@ -929,9 +950,27 @@ def main():
                     if '=' in kv:
                         k, v = kv.split('=', 1)
                         options[k.strip()] = v.strip()
+            # Resolve engine binary path from env or global config if available
+            eng = args.engine.lower()
+            cmd = eng
+            try:
+                from azchess.config import Config as _GCfg
+                gcfg = _GCfg.load('config.yaml')
+                geng = gcfg.engines().get(eng, {})
+                path_cfg = geng.get('path') or geng.get('command')
+                if path_cfg:
+                    cmd = str(path_cfg)
+            except Exception:
+                pass
+            # Env overrides
+            env_map = {'stockfish': 'STOCKFISH_PATH', 'lc0': 'LC0_PATH', 'komodo': 'KOMODO_PATH'}
+            env_var = env_map.get(eng)
+            if env_var and os.environ.get(env_var):
+                cmd = os.environ[env_var]
+
             engine_config = UCIEngineConfig(
                 name=args.engine,
-                command=args.engine.lower(),
+                command=cmd,
                 options=options
             )
 
@@ -961,7 +1000,7 @@ def main():
             config = ConfigManager.load_config(config_path)
 
         # Run benchmark
-        runner = BenchmarkRunner(config, live_enabled=bool(args.live), pgn_dir=args.export_pgns, hb_interval=float(args.hb_interval), mcts_sims=args.mcts_sims, shared_infer=bool(args.shared_infer))
+        runner = BenchmarkRunner(config, live_enabled=bool(args.live), pgn_dir=args.export_pgns, hb_interval=float(args.hb_interval), mcts_sims=args.mcts_sims, shared_infer=bool(args.shared_infer), quiet=bool(args.quiet), seed=args.seed, device=args.device)
         results = runner.run_benchmark()
 
         # Print summary (engine-centric)

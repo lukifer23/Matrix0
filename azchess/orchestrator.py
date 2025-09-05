@@ -691,6 +691,33 @@ def orchestrate(
             except Exception as e:
                 logger.warning(f"Doctor fix failed: {e}")
 
+        # Prefer tagged import for Stockfish datasets so curriculum prefixes work
+        try:
+            stockfish_root = Path(cfg.get("data_dir", "data")) / "stockfish_games"
+            if stockfish_root.exists():
+                n_sf = dm.import_stockfish_tree(str(stockfish_root), move_files=False)
+                if n_sf:
+                    logger.info(f"Imported {n_sf} Stockfish shards with source tags")
+        except Exception as e:
+            logger.warning(f"Stockfish tree import failed: {e}")
+
+        # Ensure teacher shards are registered (idempotent; generator usually registers on save)
+        try:
+            teacher_root = Path(cfg.get("data_dir", "data")) / "teacher_games"
+            if teacher_root.exists():
+                imported_teacher = 0
+                for sub in sorted(teacher_root.iterdir()):
+                    if sub.is_dir():
+                        try:
+                            n_t = dm.import_replay_dir(str(sub), source=f"teacher:{sub.name}", move_files=False)
+                            imported_teacher += int(n_t)
+                        except Exception:
+                            continue
+                if imported_teacher:
+                    logger.info(f"Imported {imported_teacher} teacher shards across scenarios")
+        except Exception as e:
+            logger.warning(f"Teacher tree import failed: {e}")
+
         # Import extra replay dirs (e.g., Lichess) into the DB for training
         try:
             extra_dirs = cfg.training().get("extra_replay_dirs", []) or []
@@ -698,6 +725,9 @@ def orchestrate(
                 imported_total = 0
                 for d in extra_dirs:
                     try:
+                        # Skip stockfish/teacher roots here (handled above with tagged imports)
+                        if any(name in str(d) for name in ("stockfish_games", "teacher_games")):
+                            continue
                         n = dm.import_replay_dir(d, source="external", move_files=False)
                         imported_total += int(n)
                     except Exception as e:
@@ -1025,7 +1055,15 @@ def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
     # Remove external training dirs from the import list
     uniq_dirs = [d for d in uniq_dirs if d not in external_training_dirs]
     
+    # Skip stockfish and teacher roots here; they are better handled with tagged imports above
+    skip_roots = {data_root / 'stockfish_games', data_root / 'teacher_games'}
     for d in uniq_dirs:
+        try:
+            if Path(d).resolve() in {p.resolve() for p in skip_roots if p.exists()}:
+                continue
+        except Exception:
+            if str(d).endswith('stockfish_games') or str(d).endswith('teacher_games'):
+                continue
         try:
             n = dm.import_replay_dir(str(d), source='external', move_files=False)
             if n:

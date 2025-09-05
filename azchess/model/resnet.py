@@ -925,6 +925,10 @@ class PolicyValueNet(nn.Module):
                     logger.warning(f"SSL pawn_structure output channels != 8: {output.shape}")
                     return None
 
+                # Accept either class-index targets (B,H,W) or one-hot (B,8,H,W)
+                if torch.is_tensor(targets) and targets.dim() == 4 and targets.size(1) == 8:
+                    targets = torch.argmax(targets, dim=1)
+
                 output_flat = output.permute(0, 2, 3, 1).reshape(-1, 8)
                 targets_flat = targets.reshape(-1).long()
 
@@ -938,6 +942,10 @@ class PolicyValueNet(nn.Module):
                 if output.size(1) != 3:
                     logger.warning(f"SSL king_safety output channels != 3: {output.shape}")
                     return None
+
+                # Accept either class-index targets (B,H,W) or one-hot (B,3,H,W)
+                if torch.is_tensor(targets) and targets.dim() == 4 and targets.size(1) == 3:
+                    targets = torch.argmax(targets, dim=1)
 
                 output_flat = output.permute(0, 2, 3, 1).reshape(-1, 3)
                 targets_flat = targets.reshape(-1).long()

@@ -247,17 +247,15 @@ def decode_board_from_planes(planes: np.ndarray) -> chess.Board:
                         board.set_piece_at(sq, chess.Piece(pt, color))
     # Side to move
     board.turn = bool(planes[12, 0, 0] > 0.5)
-    # Castling rights
-    rights = 0
-    if planes[13, 0, 0] > 0.5:
-        rights |= chess.BB_H1  # WK castling uses rook/king squares bitboard later
-        board.castling_rights |= chess.CASTLING_WHITE_KINGSIDE
-    if planes[14, 0, 0] > 0.5:
-        board.castling_rights |= chess.CASTLING_WHITE_QUEENSIDE
-    if planes[15, 0, 0] > 0.5:
-        board.castling_rights |= chess.CASTLING_BLACK_KINGSIDE
-    if planes[16, 0, 0] > 0.5:
-        board.castling_rights |= chess.CASTLING_BLACK_QUEENSIDE
+    # Castling rights (compatible with python-chess 1.11.2+)
+    if planes[13, 0, 0] > 0.5:  # White kingside
+        board.castling_rights |= chess.BB_H1
+    if planes[14, 0, 0] > 0.5:  # White queenside
+        board.castling_rights |= chess.BB_A1
+    if planes[15, 0, 0] > 0.5:  # Black kingside
+        board.castling_rights |= chess.BB_H8
+    if planes[16, 0, 0] > 0.5:  # Black queenside
+        board.castling_rights |= chess.BB_A8
     # Move counters (approximate from normalized planes)
     try:
         board.halfmove_clock = int(float(planes[17, 0, 0]) * 99)

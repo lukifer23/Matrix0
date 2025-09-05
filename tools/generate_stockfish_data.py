@@ -86,7 +86,16 @@ class StockfishDataGenerator:
         }
 
         # Convert score to centipawns
-        if isinstance(analysis['score'], chess.engine.Cp):
+        if isinstance(analysis['score'], chess.engine.PovScore):
+            # Handle PovScore objects (most common case)
+            score_obj = analysis['score'].relative
+            if isinstance(score_obj, chess.engine.Cp):
+                analysis['score_cp'] = score_obj.cp
+            elif isinstance(score_obj, chess.engine.Mate):
+                analysis['score_cp'] = 9999 if score_obj.mate() > 0 else -9999
+            else:
+                analysis['score_cp'] = 0
+        elif isinstance(analysis['score'], chess.engine.Cp):
             analysis['score_cp'] = analysis['score'].cp
         elif isinstance(analysis['score'], chess.engine.Mate):
             analysis['score_cp'] = 9999 if analysis['score'].mate() > 0 else -9999

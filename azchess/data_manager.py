@@ -241,16 +241,61 @@ class DataManager:
         return str(filepath)
     
     def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
-        """Get training batches from replay buffer.
+        """Get training batches from replay buffer with balanced external data mixing.
 
         Returns tuples (s, pi, z, legal_mask) where legal_mask may be None if not present.
         """
-        shard_paths = self._get_valid_shard_paths()
+        all_shards = self._get_all_shards()
+        valid_shards = [s for s in all_shards if not s.corrupted]
 
-        if not shard_paths:
+        if not valid_shards:
             raise RuntimeError("No valid training data available")
 
-        # Randomly sample from shards
+        # Separate external and self-play shards for balanced sampling
+        external_shards = [s for s in valid_shards if s.source and 'stockfish' in s.source]
+        selfplay_shards = [s for s in valid_shards if s.source == 'selfplay' or not s.source]
+
+        # Calculate balanced proportions (ensure external data gets fair representation)
+        total_external_samples = sum(s.sample_count for s in external_shards)
+        total_selfplay_samples = sum(s.sample_count for s in selfplay_shards)
+
+        # Target 30% external data, 70% self-play for balanced learning
+        target_external_ratio = 0.3
+        target_selfplay_ratio = 0.7
+
+        # Adjust ratios based on available data
+        if total_external_samples == 0:
+            # No external data available, use all self-play
+            external_ratio = 0.0
+            selfplay_ratio = 1.0
+        elif total_selfplay_samples == 0:
+            # No self-play data, use all external
+            external_ratio = 1.0
+            selfplay_ratio = 0.0
+        else:
+            # Balance the ratios
+            external_ratio = min(target_external_ratio, total_external_samples / (total_external_samples + total_selfplay_samples))
+            selfplay_ratio = 1.0 - external_ratio
+
+        # Calculate samples per source
+        external_batch_size = max(1, int(batch_size * external_ratio))
+        selfplay_batch_size = batch_size - external_batch_size
+
+        # Get shard paths with balanced selection
+        external_paths = [s.path for s in external_shards]
+        selfplay_paths = [s.path for s in selfplay_shards]
+
+        # Combine with appropriate weighting
+        if external_paths and selfplay_paths:
+            # Both sources available - create weighted sampling
+            shard_paths = (external_paths * max(1, len(selfplay_paths) // len(external_paths) if external_paths else 1) +
+                          selfplay_paths * max(1, len(external_paths) // len(selfplay_paths) if selfplay_paths else 1))
+        elif external_paths:
+            shard_paths = external_paths
+        else:
+            shard_paths = selfplay_paths
+
+        # Randomly sample from combined list
         np.random.shuffle(shard_paths)
 
         for shard_path in shard_paths:
@@ -582,16 +627,74 @@ class DataManager:
         return combined_batch
     
     def _get_curriculum_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
-        """Get curriculum batch with balanced mix and self-play data."""
-        # Try to get external data first (prefer Stockfish-tagged shards)
-        external_batch = self._get_stockfish_mixed_batch(batch_size // 2)
-        if external_batch is None:
-            external_batch = self._get_mixed_external_batch(batch_size // 2)
+        """Get curriculum batch with balanced mix and self-play + external (Stockfish + Teacher) data.
+
+        Strategy: half batch from external sources, half from self-play.
+        External half prioritizes Teacher (if present) and Stockfish.
+        """
+        ext_half = max(1, batch_size // 2)
+        parts: List[Dict[str, np.ndarray]] = []
+
+        # 1) Teacher portion (up to 60% of external half if available)
+        teacher_take = max(0, int(round(ext_half * 0.6)))
+        if teacher_take > 0:
+            try:
+                gen_t = self.get_training_batch_by_source_prefixes(teacher_take, ["teacher:"])
+                bt = next(gen_t, None)
+                if bt is not None:
+                    s, pi, z, lm = bt if len(bt) == 4 else (*bt, None)
+                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
+                    if lm is not None:
+                        d["legal_mask"] = lm
+                    parts.append(d)
+            except Exception:
+                pass
+
+        # 2) Stockfish portion fills the rest of external half
+        remaining = ext_half - (parts[0]['s'].shape[0] if parts else 0)
+        if remaining > 0:
+            sf = self._get_stockfish_mixed_batch(remaining)
+            if sf is not None:
+                parts.append(sf)
+                remaining -= sf['s'].shape[0]
+        # 2b) DB-tagged 'external' shards (e.g., imported via extra_replay_dirs)
+        if remaining > 0:
+            try:
+                gen_e = self.get_training_batch_by_source_prefixes(remaining, ["external"])
+                be = next(gen_e, None)
+                if be is not None:
+                    s, pi, z, lm = be if len(be) == 4 else (*be, None)
+                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
+                    if lm is not None:
+                        d["legal_mask"] = lm
+                    parts.append(d)
+                    remaining -= s.shape[0]
+            except Exception:
+                pass
         
+        # 3) Fallback to legacy mixed external if still short
+        got = sum(p['s'].shape[0] for p in parts) if parts else 0
+        if got < ext_half:
+            legacy = self._get_mixed_external_batch(ext_half - got)
+            if legacy is not None:
+                parts.append(legacy)
+        
+        # Merge external parts if any
+        external_batch = None
+        if parts:
+            external_batch = {}
+            for key in ['s', 'pi', 'z']:
+                external_batch[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
+            if all('legal_mask' in p for p in parts):
+                try:
+                    external_batch['legal_mask'] = np.concatenate([p['legal_mask'] for p in parts], axis=0)
+                except Exception:
+                    external_batch.pop('legal_mask', None)
+
         # Try to get self-play data for the other half
         try:
             # Get a batch from the regular replay buffer
-            sp_generator = self.get_training_batch(batch_size // 2, "cpu")
+            sp_generator = self.get_training_batch(batch_size - ext_half, "cpu")
             sp_batch = next(sp_generator)
             sp_dict = {
                 's': sp_batch[0],

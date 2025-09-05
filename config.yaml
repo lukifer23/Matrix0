@@ -43,7 +43,7 @@ training:
   weight_decay: 0.0001
   checkpoint_dir: "checkpoints"    # Directory for checkpoints
   checkpoint: "checkpoints/best.pt"   # Always initialize from current best per cycle
-  gradient_accumulation_steps: 2   # Effective batch 192
+  accum_steps: 2                   # Effective batch 192
   progress_interval: 100           # Reduce per-step logging overhead
   grad_clip_norm: 0.5              # Stable
   ssl_weight: 0.15                 # Increased for better SSL learning contribution
@@ -51,6 +51,10 @@ training:
   ssl_every_n: 1                   # Compute SSL every step for consistent learning
   ssl_chunk_size: 128              # Larger chunks for better efficiency
   ssl_target_weight: 1.0           # Normalize SSL magnitude
+  # CRITICAL FIX: Force external data usage
+  data_mode: "mixed"               # Use mixed mode to access external data
+  dataloader_workers: 2            # Maintain parallel loading
+  prefetch_factor: 2               # Maintain prefetching
   ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All SSL tasks enabled
   ssl_piece_weight: 1.0            # Weight for piece recognition
   ssl_threat_weight: 0.8           # Weight for threat detection
@@ -93,6 +97,12 @@ orchestrator:
   tui: "table"                     # Use table display mode
   ui:
     compact: true                  # Child processes log to files; console stays clean
+
+# Endgame tablebases (Syzygy) for self-play adjudication and correctness
+tablebases:
+  enabled: true
+  path: "data/syzygy"            # Place 3-7 man Syzygy tables here (wdl/)
+  max_pieces: 7                   # Probe only at low piece count to minimize overhead
 
 eval:
   games: 4                         # Light orchestrator eval; use enhanced_eval for deep

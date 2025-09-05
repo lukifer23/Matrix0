@@ -33,6 +33,33 @@ The `pretrain_external.py` tool is designed for large-scale pretraining runs usi
 
 ## Usage
 
+### Quick 40K Step Training Run
+```bash
+python -m azchess.tools.pretrain_external \
+  --config config.yaml \
+  --steps 40000 \
+  --batch-size 96 \
+  --lr 0.001 \
+  --weight-decay 1e-4 \
+  --ema-decay 0.999 \
+  --ssl-weight 0.15 \
+  --ssl-warmup-steps 500 \
+  --checkpoint-in checkpoints/enhanced_best.pt \
+  --checkpoint-out checkpoints/pretrained_40k.pt \
+  --checkpoint-prefix pretrained_40k \
+  --save-every 5000 \
+  --use-amp \
+  --curriculum stockfish \
+  --auto-resume \
+  --progress-interval 100 \
+  --grad-clip-norm 0.5 \
+  --accum-steps 1 \
+  --ssl-every-n 1 \
+  --ssl-chunk-size 128
+```
+
+Teacher data is included by default as part of the curriculum phases (40% teacher when available).
+
 ### Basic 100K Step Training Run
 ```bash
 python -m azchess.tools.pretrain_external \
@@ -75,9 +102,14 @@ python -m azchess.tools.pretrain_external \
 - `--grad-clip-norm 0.5`: Gradient clipping norm
 
 #### Monitoring and Saving
-- `--save-every 5000`: Save intermediate checkpoints
+- `--save-every 5000`: Save intermediate checkpoints (now includes EMA)
 - `--progress-interval 100`: Progress update frequency
 - `--checkpoint-prefix pretrained_100k`: Checkpoint naming prefix
+
+#### Advanced Throughput/Memory Controls
+- `--accum-steps`: Gradient accumulation (effective batch size = batch × accum)
+- `--ssl-every-n`: Compute SSL every N steps (e.g., 2 to halve SSL cost)
+- `--ssl-chunk-size`: Chunk SSL computation to reduce peak memory
 
 ## Data Sources
 
@@ -106,8 +138,8 @@ python -m azchess.tools.pretrain_external \
 - **SSL Loss**: Fluctuates 2.2-2.6, shows active learning across all tasks
 
 ### Checkpoint Management
-- **Intermediate Saves**: Every 5000 steps
-- **Final Checkpoint**: `pretrained_100k.pt`
+- **Intermediate Saves**: Every 5000 steps (includes EMA and optimizer/scheduler state)
+- **Final Checkpoint**: `pretrained_100k.pt` (or `pretrained_40k.pt` for shorter runs)
 - **Resume Support**: Automatic detection of latest checkpoint
 
 ## Monitoring

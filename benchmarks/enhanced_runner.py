@@ -34,7 +34,7 @@ from benchmarks.ssl_tracker import SSLTracker
 from benchmarks.tournament import Tournament, TournamentConfig, TournamentFormat, run_tournament
 
 if TORCH_AVAILABLE:
-    from azchess.config import Config as Matrix0Config
+    from azchess.config import Config as Matrix0Config, select_device as _select_device
 
 
 class EnhancedBenchmarkRunner:
@@ -103,23 +103,21 @@ class EnhancedBenchmarkRunner:
             from azchess.model.resnet import PolicyValueNet
             self.matrix0_model = PolicyValueNet.from_config(model_config_obj)
 
-            # Determine device
-            if torch.backends.mps.is_available():
-                device = torch.device("mps")
-                logger.info("Using MPS device for Matrix0")
-            else:
-                device = torch.device("cpu")
-                logger.info("Using CPU device for Matrix0")
+            # Determine device via unified selector
+            try:
+                dev_str = _select_device('auto')
+            except Exception:
+                dev_str = 'mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'
+            device = torch.device(dev_str)
+            logger.info(f"Using device for Matrix0: {device}")
 
             self.matrix0_model.to(device)
             self.matrix0_model.eval()
 
             # Load checkpoint
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            if 'model_state_dict' in checkpoint:
-                self.matrix0_model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                self.matrix0_model.load_state_dict(checkpoint)
+            state = checkpoint.get('model_ema') or checkpoint.get('model') or checkpoint.get('model_state_dict') or checkpoint
+            self.matrix0_model.load_state_dict(state, strict=False)
 
             logger.info(f"Successfully loaded Matrix0 model with SSL support")
             return True

@@ -37,7 +37,7 @@ from ..model import PolicyValueNet
 
 
 class EnhancedEvaluator:
-    def __init__(self, config_path: str, model_a_path: str, model_b_path: str, label_a: Optional[str] = None, label_b: Optional[str] = None):
+    def __init__(self, config_path: str, model_a_path: str, model_b_path: str, label_a: Optional[str] = None, label_b: Optional[str] = None, update_ratings: bool = False, rating_key_a: str = "enhanced_best", rating_key_b: str = "best"):
         self.console = Console()
         
         # Setup logging
@@ -79,6 +79,11 @@ class EnhancedEvaluator:
         
         # Load models
         self._load_models()
+        
+        # Ratings update configuration
+        self.update_ratings = bool(update_ratings)
+        self.rating_key_a = str(rating_key_a)
+        self.rating_key_b = str(rating_key_b)
         
     def _setup_logging(self):
         """Setup comprehensive logging for debugging."""
@@ -919,6 +924,61 @@ class EnhancedEvaluator:
         for result in self.results:
             self.console.print(f"  {result['pgn_path']}")
         
+        # Aggregate results
+        try:
+            total_games = len(self.results)
+            wins_a = sum(1 for r in self.results if r.get('result', {}).get('result_str', '') == '1-0')
+            wins_b = sum(1 for r in self.results if r.get('result', {}).get('result_str', '') == '0-1')
+            draws = sum(1 for r in self.results if r.get('result', {}).get('result_str', '') == '1/2-1/2')
+        except Exception:
+            total_games = 0; wins_a = wins_b = draws = 0
+
+        # Optional final ratings update (Elo + Glicko-2)
+        if self.update_ratings and total_games > 0:
+            try:
+                from ..ratings import Glicko2Rating, update_glicko2_batch
+                # Elo update based on aggregate
+                ra = float(self.elo_data.get(self.rating_key_a, 1500.0))
+                rb = float(self.elo_data.get(self.rating_key_b, 1500.0))
+                sa = (wins_a + 0.5 * draws) / float(total_games)
+                ra_new, rb_new = update_elo(ra, rb, sa)
+                self.elo_data[self.rating_key_a] = ra_new
+                self.elo_data[self.rating_key_b] = rb_new
+
+                # Glicko-2 update
+                g2 = self.elo_data.get('glicko2', {})
+                gA = g2.get(self.rating_key_a, {"rating": ra, "rd": 350.0, "sigma": 0.06})
+                gB = g2.get(self.rating_key_b, {"rating": rb, "rd": 350.0, "sigma": 0.06})
+                A0 = Glicko2Rating(gA.get('rating', ra), gA.get('rd', 350.0), gA.get('sigma', 0.06))
+                B0 = Glicko2Rating(gB.get('rating', rb), gB.get('rd', 350.0), gB.get('sigma', 0.06))
+                A1 = update_glicko2_batch(A0, B0, wins=wins_a, draws=draws, losses=wins_b)
+                B1 = update_glicko2_batch(B0, A0, wins=wins_b, draws=draws, losses=wins_a)
+                g2[self.rating_key_a] = {"rating": A1.rating, "rd": A1.rd, "sigma": A1.sigma}
+                g2[self.rating_key_b] = {"rating": B1.rating, "rd": B1.rd, "sigma": B1.sigma}
+                self.elo_data['glicko2'] = g2
+
+                # Append history record
+                hist = self.elo_data.get('history', [])
+                hist.append({
+                    "ts": int(time.time()),
+                    "event": "enhanced_eval",
+                    "model_a": self.model_a_path.name,
+                    "model_b": self.model_b_path.name,
+                    "rating_key_a": self.rating_key_a,
+                    "rating_key_b": self.rating_key_b,
+                    "games": total_games,
+                    "wins_a": wins_a,
+                    "wins_b": wins_b,
+                    "draws": draws,
+                    "elo": {self.rating_key_a: ra_new, self.rating_key_b: rb_new},
+                    "glicko2": {self.rating_key_a: g2[self.rating_key_a], self.rating_key_b: g2[self.rating_key_b]},
+                })
+                self.elo_data['history'] = hist
+                self.elo_book.save(self.elo_data)
+                self.console.print("[bold cyan]Ratings updated (Elo + Glicko‑2) in data/elo_ratings.json[/bold cyan]")
+            except Exception as e:
+                self.console.print(f"[yellow]Ratings update skipped: {e}[/yellow]")
+
         self.console.print("\n✅ Enhanced evaluation completed!")
         self.logger.info("Enhanced evaluation completed successfully")
 
@@ -944,10 +1004,13 @@ def main():
     parser.add_argument("--tiebreak-resign-threshold", type=float, default=-0.60, help="Resign threshold during tiebreak mode")
     parser.add_argument("--anti-oscillation", action="store_true", help="Avoid immediate back-and-forth moves when greedy")
     
+    parser.add_argument("--update-ratings", action='store_true', help='Update Elo and Glicko‑2 ratings after eval')
+    parser.add_argument("--rating-key-a", type=str, default="enhanced_best", help='Ratings key for Model A (e.g., candidate/enhanced_best)')
+    parser.add_argument("--rating-key-b", type=str, default="best", help='Ratings key for Model B (e.g., baseline/best)')
     args = parser.parse_args()
     
     # Run evaluation
-    evaluator = EnhancedEvaluator(args.config, args.model_a, args.model_b, label_a=args.label_a or None, label_b=args.label_b or None)
+    evaluator = EnhancedEvaluator(args.config, args.model_a, args.model_b, label_a=args.label_a or None, label_b=args.label_b or None, update_ratings=bool(args.update_ratings), rating_key_a=args.rating_key_a, rating_key_b=args.rating_key_b)
     # Attach opening/eval parameters
     if args.opening_fens:
         setattr(evaluator, 'opening_fens_path', args.opening_fens)

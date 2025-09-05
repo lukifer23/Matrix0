@@ -585,7 +585,8 @@ def play_match(
         print(f"📊 Final Score: {score:.1f} / {games} games")
         print(f"🎯 Win Rate: {win_rate:.1%}")
         try:
-            elopath = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+            # Use unified Elo ratings file under data/
+            elopath = Path("data/elo_ratings.json")
             book = EloBook(elopath)
             state = book.load()
             r_cand = float(state.get("candidate", 1500.0))
@@ -894,7 +895,7 @@ def play_match(
     print(f"📊 Final Score: {score:.1f} / {games} games")
     print(f"🎯 Win Rate: {win_rate:.1%}")
     try:
-        elopath = Path(cfg.training().get("checkpoint_dir", "checkpoints")) / "elo.json"
+        elopath = Path("data/elo_ratings.json")
         book = EloBook(elopath)
         state = book.load()
         r_cand = float(state.get("candidate", 1500.0))

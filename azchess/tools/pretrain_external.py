@@ -65,24 +65,25 @@ def evaluate_quick(model: PolicyValueNet, dm: DataManager, device: str, batches:
 
 
 def _scan_stockfish_sources(dm: DataManager) -> dict:
-    """Scan DB for Stockfish-tagged shards and group by domain/subcategory prefixes.
+    """Scan DB for available tagged shards and group by source tag.
 
-    Returns a dict mapping prefix -> count of shards.
+    Note: Intentionally includes both Stockfish ("stockfish:") and Teacher ("teacher:")
+    sources so that curriculum phases can blend them when present.
+    Returns a dict mapping full source tag -> aggregate sample count.
     """
     sources: dict[str, int] = {}
     try:
         for shard in dm._get_all_shards():  # internal enumeration ok within tool
             src = (shard.source or "")
-            if not src.startswith("stockfish:"):
+            if not src:
                 continue
-            # Normalize to prefix 'stockfish:domain/subcategory'
             sources[src] = sources.get(src, 0) + shard.sample_count
     except Exception:
         pass
     return sources
 
 
-def _build_stockfish_phases(dm: DataManager, total_steps: int) -> list[tuple[str, list[str], int]]:
+def _build_stockfish_phases(dm: DataManager, total_steps: int, teacher_weight: float = 0.4, external_weight: float = 0.0) -> list[tuple[str, list[str], int]]:
     """Create phase plan: (name, prefixes, steps). Skips phases with no data."""
     src_counts = _scan_stockfish_sources(dm)
 
@@ -90,14 +91,19 @@ def _build_stockfish_phases(dm: DataManager, total_steps: int) -> list[tuple[str
         return any(k.startswith(pref) for k in src_counts.keys())
 
     plan: list[tuple[str, list[str], float]] = []
-    # Desired weights
+    # Desired weights - Include teacher and external pools; broaden prefixes to catch new subcategories
+    # Teacher weight comes from CLI; external is optional small blend to use large replay imports
+    teacher_w = float(teacher_weight)
+    external_w = float(external_weight)
     desired = [
-        ("openings", ["stockfish:openings/"], 0.22),
-        ("king_safety", ["stockfish:king_safety/"], 0.12),
-        ("weakness_backrank", ["stockfish:weaknesses/back_rank_weakness"], 0.12),
-        ("positional", ["stockfish:positional/"], 0.12),
-        ("endgames", ["stockfish:endgames/"], 0.22),
-        ("tactical", ["stockfish:tactical/"], 0.20),
+        ("teacher", ["teacher:"], teacher_w),
+        ("external", ["external"], external_w),
+        ("openings", ["stockfish:openings/", "stockfish:openings/main_lines"], 0.12),
+        ("king_safety", ["stockfish:king_safety/castling", "stockfish:king_safety/"], 0.08),
+        ("weakness_backrank", ["stockfish:weaknesses/back_rank_weakness", "stockfish:weaknesses/"], 0.08),
+        ("positional", ["stockfish:positional/pawn_structure", "stockfish:positional/"], 0.08),
+        ("endgames", ["stockfish:endgames/king_and_pawn", "stockfish:endgames/"], 0.12),
+        ("tactical", ["stockfish:tactical/", "stockfish:tactical/puzzles"], 0.12),
     ]
     # Filter available and normalize weights
     available: list[tuple[str, list[str], float]] = []
@@ -132,12 +138,10 @@ def _evaluate_quick_stockfish(model: PolicyValueNet, dm: DataManager, device: st
     model.eval()
     total_pol, total_val, n = 0.0, 0.0, 0
     prefixes = [
+        "teacher:",  # Teacher data for evaluation
         "stockfish:openings/",
         "stockfish:tactical/",
         "stockfish:endgames/",
-        "stockfish:king_safety/",
-        "stockfish:weaknesses/",
-        "stockfish:positional/",
     ]
     try:
         batch_iter = dm.get_training_batch_by_source_prefixes(batch_size, prefixes)
@@ -170,13 +174,13 @@ def _evaluate_quick_stockfish(model: PolicyValueNet, dm: DataManager, device: st
 def main():
     ap = argparse.ArgumentParser(description="Matrix0 External Pretraining")
     ap.add_argument("--config", type=str, default="config.yaml")
-    ap.add_argument("--steps", type=int, default=100000)
+    ap.add_argument("--steps", type=int, default=929)  # 1 epoch with 89k samples
     ap.add_argument("--batch-size", type=int, default=96)
     ap.add_argument("--lr", type=float, default=0.001)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--device", type=str, default="auto")
     ap.add_argument("--checkpoint-in", type=str, default="checkpoints/enhanced_best.pt")
-    ap.add_argument("--checkpoint-out", type=str, default="checkpoints/pretrained_100k.pt")
+    ap.add_argument("--checkpoint-out", type=str, default="checkpoints/pretrained_1epoch.pt")
     ap.add_argument("--eval-batches", type=int, default=20)
     ap.add_argument("--source", type=str, default="mixed", choices=["mixed", "tactical", "openings"], help="Deprecated: legacy external data selector")
     ap.add_argument("--stockfish-root", type=str, default="data/stockfish_games", help="Root directory of Stockfish-generated datasets")
@@ -209,6 +213,13 @@ def main():
     # EMA controls
     ap.add_argument("--ema-decay", type=float, default=0.999, help="EMA decay for shadow weights (higher = smoother)")
     ap.add_argument("--no-ema", action="store_true", help="Disable EMA maintenance and saving")
+    # Phase weighting controls
+    ap.add_argument("--teacher-weight", type=float, default=0.40, help="Weight for teacher data in curriculum")
+    ap.add_argument("--external-weight", type=float, default=0.00, help="Weight for external pool in curriculum")
+    # Throughput/memory tuning
+    ap.add_argument("--accum-steps", type=int, default=1, help="Gradient accumulation steps")
+    ap.add_argument("--ssl-every-n", type=int, default=1, help="Compute SSL every N steps (1 = every step)")
+    ap.add_argument("--ssl-chunk-size", type=int, default=0, help="Chunked SSL batch size (0 = full batch)")
     args = ap.parse_args()
 
     cfg = Config.load(args.config)
@@ -371,7 +382,7 @@ def main():
                 return
 
     if args.curriculum == "stockfish":
-        phases = _build_stockfish_phases(dm, total_steps=args.steps)
+        phases = _build_stockfish_phases(dm, total_steps=args.steps, teacher_weight=float(args.teacher_weight), external_weight=float(args.external_weight))
         logger.info(f"Stockfish curriculum phases: {[(nm, st) for nm, _, st in phases]}")
         current_step = start_step
         for phase_idx, (phase_name, prefixes, phase_steps) in enumerate(phases):
@@ -393,13 +404,13 @@ def main():
                 # Train step using core_train_step (includes SSL, masking, precision guards)
                 loss_values = core_train_step(
                     model, optimizer, scaler, batch, device,
-                    accum_steps=1, augment=True,
+                    accum_steps=int(args.accum_steps), augment=True,
                     ssl_weight=float(args.ssl_weight), enable_ssl=True,
                     label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                     policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=current_step,
                     ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
                     precision=("fp16" if scaler is not None else "fp32"),
-                    ssl_every_n=1, ssl_chunk_size=0
+                    ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size)
                 )
                 if loss_values is None:
                     continue
@@ -434,7 +445,7 @@ def main():
                     pbar.set_postfix({
                         "loss": f"{float(loss):.4f}",
                         "pol": f"{float(policy_loss):.4f}",
-                        "val": f"{float(value_loss):.4f}",
+                        "val": f"{float(value_loss):.4e}",
                         "ssl": f"{float(ssl_loss):.4f}",
                         "r_pol": f"{running_pol:.4f}",
                         "r_val": f"{running_val:.4f}",
@@ -465,7 +476,7 @@ def main():
                 # Optional periodic save
                 if args.save_every and (current_step % args.save_every == 0):
                     tag = f"{args.checkpoint_prefix}_step_{current_step}.pt"
-                    save_checkpoint(model, None, optimizer, scheduler, current_step, Path(args.checkpoint_out).parent / tag)
+                    save_checkpoint(model, ema, optimizer, scheduler, current_step, Path(args.checkpoint_out).parent / tag)
                     logger.info(f"Saved intermediate checkpoint: {tag}")
 
                 if current_step >= args.steps:
@@ -482,13 +493,13 @@ def main():
 
             loss_values = core_train_step(
                 model, optimizer, scaler, batch, device,
-                accum_steps=1, augment=True,
+                accum_steps=int(args.accum_steps), augment=True,
                 ssl_weight=float(args.ssl_weight), enable_ssl=True,
                 label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                 policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=step,
                 ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
                 precision=("fp16" if scaler is not None else "fp32"),
-                ssl_every_n=1, ssl_chunk_size=0
+                ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size)
             )
             if loss_values is None:
                 continue
@@ -520,7 +531,7 @@ def main():
                 pbar.set_postfix({
                     "loss": f"{float(loss):.4f}",
                     "pol": f"{float(policy_loss):.4f}",
-                    "val": f"{float(value_loss):.4f}",
+                    "val": f"{float(value_loss):.4e}",
                     "ssl": f"{float(ssl_loss):.4f}",
                     "r_pol": f"{running_pol:.4f}",
                     "r_val": f"{running_val:.4f}",
@@ -549,13 +560,14 @@ def main():
 
             if args.save_every and (step + 1) % args.save_every == 0:
                 tag = f"{args.checkpoint_prefix}_step_{step+1}.pt"
-                save_checkpoint(model, None, optimizer, scheduler, step + 1, Path(args.checkpoint_out).parent / tag)
+                save_checkpoint(model, ema, optimizer, scheduler, step + 1, Path(args.checkpoint_out).parent / tag)
                 logger.info(f"Saved intermediate checkpoint: {tag}")
 
     # Save checkpoint
     pbar.close()
     out_path = Path(args.checkpoint_out)
-    save_checkpoint(model, ema, optimizer, scheduler, step+1 if 'step' in locals() else 0, out_path)
+    final_step = (current_step if 'current_step' in locals() else (step+1 if 'step' in locals() else 0))
+    save_checkpoint(model, ema, optimizer, scheduler, final_step, out_path)
     logger.info(f"Saved pretrained checkpoint: {out_path}")
 
     # Quick post-train eval
@@ -581,5 +593,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
