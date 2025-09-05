@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 14"]
+[Site "Matrix0 Arena"]
+[Date "2025.09.05"]
+[Round "Decisive - Game 14"]
+[White "enhanced_best"]
+[Black "pretrained_35k_ema"]
+[Result "1/2-1/2"]
+[TimeControl "unlimited"]
+[Termination "unknown"]
+
+1. g3 g6 2. a4 h5 3. b4 Rh6 4. e3 c6 5. d4 h4 6. Ra3 f6 7. Rd3 d6 8. c4 c5 9. Qf3 a5 10. Bg2 Qb6 11. bxa5 hxg3 12. Qxb7 Bg7 13. Rb3 cxd4 14. Qxc8+ Kf7 15. exd4 f5 16. Qxg8+ Kxg8 17. Rxg3 Kh7 18. Rxg6 Nd7 19. Nf3 Qb4+ 20. Ke2 Rh8 21. h4 e6 22. Rxg7+ Kxg7 23. Bf1 Qb3 24. Ng5 Rg8 25. Bb2 Kh8 26. Nh7 Kxh7 27. Nd2 Rgg6 28. Ke1 Kh8 29. Rh2 Qd1+ 30. Kxd1 Kg8 31. Be2 Rh7 32. Rh3 Kh8 33. Kc1 Rgg7 34. Rg3 Kg8 35. Kd1 f4 36. Rxg7+ Kh8 37. Nf3 d5 38. Rg8+ Kxg8 39. Ba1 Rh6 40. Ng5 Kh8 41. Nf7+ Kh7 42. Nh8 Kxh8 43. Kc1 Kh7 44. Bh5 Kh8 45. Bc3 Kh7 46. Be8 Kh8 47. Bxd7 Kg8 48. Be8 Kh8 49. Bd7 Kg8 50. Be8 Kh8 1/2-1/2

@@ -1,11 +1,11 @@
 [Event "Matrix0 Enhanced Evaluation Game 8"]
 [Site "Matrix0 Arena"]
-[Date "2025.09.04"]
+[Date "2025.09.05"]
 [Round "Decisive - Game 8"]
-[White "Baseline"]
-[Black "Trained"]
+[White "enhanced_best"]
+[Black "pretrained_35k_ema"]
 [Result "1/2-1/2"]
 [TimeControl "unlimited"]
 [Termination "unknown"]
 
-1. e3 Nc6 2. a4 Rb8 3. Qe2 a5 4. c4 e5 5. h3 Ba3 6. b3 Bxc1 7. Qd1 Nb4 8. h4 Nh6 9. d3 Qe7 10. Rh3 Rg8 11. Ne2 f5 12. Rg3 Rh8 13. Nxc1 Qf8 14. Rxg7 Rg8 15. Be2 Qf6 16. Rxg8+ Kf7 17. Re8 Na2 18. Rh8 Ra8 19. h5 f4 20. Rg8 Rb8 21. d4 Qd6 22. Rh8 Ra8 23. g3 Nf5 24. Rg8 Rb8 25. b4 Kxg8 26. Bg4 Kh8 27. Rxa2 h6 28. Bxf5 Kg8 29. Bd3 Kg7 30. Bh7 Ra8 31. Ke2 Ra6 32. Bg8 Kh8 33. Ra1 Qf8 34. Bh7 Kxh7 35. bxa5 b6 36. Kf3 Qh8 37. g4 d6 38. Ke4 Qg8 39. Qd3 Rxa5 40. Kf3+ Kh8 41. Ra3 b5 42. Nc3 Kg7 43. Ke4 Qe8 44. Nd5 Qh8 45. Ne7 Ra6 46. Rb3 Qg8 47. Nxg8 Rxa4 48. g5 Bd7 49. Ne7 f3 50. Nf5+ Kh8 51. Ng7 Kg8 52. Ra3 Kh8 53. Ne8 Bc6+ 54. d5 Kg8 55. Ng7 bxc4 56. Ra2 Kh8 57. Ne8 Ra6 58. Ng7 Kg8 59. Ne8 Ra7 60. Qb3 Kh8 61. Ng7 Rb7 62. Ra7 Kg8 63. Ne8 Rb6 64. Ra2 Kh8 65. Ng7 Be8 66. Ra5 Kg8 67. Nxe8 Rxb3 68. Rc5 Kh8 69. Ng7 Rb6 70. Rxc4 Kg8 71. Ne8 Kh8 72. Kf5 Kg8 73. Ng7 c5 74. Rg4 Kh8 75. Ne8 Rc6 76. Ra4 Kg8 77. Ng7 Rc8 78. Ke4 Kh8 79. Ne8 Rxe8 80. Rc4 Kg8 81. Kf5 Kg7 82. gxh6+ Kh8 83. Kg6 e4 84. Rxe4 Kg8 85. Kf6 Rc8 86. Nb3 Kh8 87. Kf7 c4 88. Ke7 Kg8 89. Kd7 Kf7 90. Nc1 Rh8 91. Kc7 Kf6 92. Rxc4 Rg8 93. Kd7 Rg3 94. Rc8 Kf7 95. Rh8 Rh3 96. Kc8 Ke7 97. Rg8 Rh2 98. Nd3 Kf7 99. Rh8 Rh3 100. Nc1 Ke7 101. Rg8 Rh2 102. Nd3 Kf7 103. Nf4 Rh1 104. Rh8 Ke7 105. Ng2 Rf1 106. Rg8 Kf7 107. Kd8 Rg1 108. Rh8 Kf6 109. Re8 Rh1 110. Rh8 Kf7 111. Nh4 Rc1 112. Rg8 Kxg8 113. Ke8 Kh8 114. Kf8 Kh7 115. Ke7 Kh8 116. Kf8 Rd1 117. Ng6+ Kh7 118. Ke8 Rb1 119. Nh8 Kxh8 120. Kf8 Re1 1/2-1/2
+1. d3 Nh6 2. Bd2 f6 3. Be3 Nc6 4. c4 Nd4 5. Nc3 Ng8 6. Qb1 c6 7. h4 g5 8. Nd5 f5 9. a4 Nf6 10. Kd2 Bg7 11. Kc3 Nb3 12. Nxe7 Rg8 13. Nxc6 Rh8 14. Nxd8 Rg8 15. Ra3 Nc1 16. Nf7 Rh8 17. Rh2 Nxd3 18. Nxh8 Kf8 19. h5 Ne4+ 20. Kxd3 Kg8 21. Qa1 Kxh8 22. Bxa7 Kg8 23. Qd1 f4 24. Bb8 Kh8 25. Bxf4 g4 26. Bb8 Kg8 27. f3 Bh8 28. Bc7 Bg7 29. Rh1 Nd2 30. Bd8 Kh8 31. Rb3 Ra5 32. Be7 Kg8 33. Kxd2 Rxa4 34. Bf8 Kh8 35. h6 Bxh6+ 36. Kd3 Kg8 37. Rxb7 Ra7 38. Bg7 Kxg7 39. Qa4 Kh8 40. Rb8 Kg8 41. Rxh6 g3 42. Rxc8+ Kg7 43. Rhc6 Ra8 44. Rh8 Rxh8 45. Qa6 h6 46. Rc8 Rg8 47. Qb7 Kf7 48. Rxg8 Kxg8 49. Qc8+ Kg7 50. Qh8+ Kxh8 51. e4 d6 52. Kd4 Kg8 53. Kd3 Kh7 54. Kd4 Kh8 55. b4 Kg8 56. Kd5 Kh8 57. Ke6 d5 58. Kf7 Kh7 59. f4 Kh8 60. Kf8 Kh7 61. Kf7 dxe4 62. Ke8 Kh8 63. Kf8 e3 64. f5 Kh7 65. Ke8 h5 66. Kf8 Kh8 67. Ke8 h4 68. Kd7 Kg8 69. Ke8 Kh7 70. Ke7 Kh8 71. Kf8 Kh7 72. Ke8 e2 73. f6 Kh8 74. Kf8 exf1=Q 75. Nf3 Kh7 76. Ke8 Kg8 77. Nxh4 Kh8 78. Kf8 Qa1 79. Kf7 Kh7 80. Kf8 Qa3 1/2-1/2
