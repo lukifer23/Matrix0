@@ -564,14 +564,78 @@ def ssl_status():
         # Try to get model parameter counts for SSL heads
         if _matrix0_model is not None and hasattr(_matrix0_model, 'ssl_heads'):
             ssl_head_params = {}
+            ssl_head_analysis = {}
+
             for task_name, head in _matrix0_model.ssl_heads.items():
-                ssl_head_params[task_name] = sum(p.numel() for p in head.parameters())
+                params = sum(p.numel() for p in head.parameters())
+                ssl_head_params[task_name] = params
+
+                # Analyze head structure
+                ssl_head_analysis[task_name] = {
+                    "parameters": params,
+                    "structure": str(head).split('\n')[0],  # First line of head description
+                    "trainable": sum(p.numel() for p in head.parameters() if p.requires_grad)
+                }
+
             ssl_info["head_parameters"] = ssl_head_params
             ssl_info["total_ssl_params"] = sum(ssl_head_params.values())
+            ssl_info["head_analysis"] = ssl_head_analysis
+
+            # Add SSL task weights from config
+            ssl_weights = {}
+            training_config = cfg.training()
+            for task in ssl_info["tasks"]:
+                weight_key = f"ssl_{task}_weight"
+                ssl_weights[task] = training_config.get(weight_key, 1.0)
+
+            ssl_info["task_weights"] = ssl_weights
 
         return ssl_info
     except Exception as e:
         return {"error": str(e), "enabled": False}
+
+
+@app.get("/ssl/performance")
+def ssl_performance():
+    """Get SSL performance metrics and training progress."""
+    try:
+        # Read recent training logs for SSL performance
+        ssl_metrics = {
+            "ssl_loss_history": [],
+            "task_contributions": {},
+            "learning_progress": {}
+        }
+
+        train_log = BASE_DIR / "logs" / "matrix0.log"
+        if train_log.exists():
+            with open(train_log, 'r') as f:
+                lines = f.readlines()[-50:]  # Last 50 lines for SSL analysis
+
+            for line in lines:
+                if "TRAINING_HB" in line:
+                    import re
+                    match = re.search(r'Step (\d+)/(\d+) .* SSL: ([0-9.]+)', line)
+                    if match:
+                        step, total_steps, ssl_loss = match.groups()
+                        ssl_metrics["ssl_loss_history"].append({
+                            "step": int(step),
+                            "ssl_loss": float(ssl_loss)
+                        })
+
+        # Calculate SSL performance statistics
+        if ssl_metrics["ssl_loss_history"]:
+            losses = [m["ssl_loss"] for m in ssl_metrics["ssl_loss_history"]]
+            ssl_metrics["statistics"] = {
+                "current_ssl_loss": losses[-1],
+                "avg_ssl_loss": sum(losses) / len(losses),
+                "ssl_loss_trend": "decreasing" if len(losses) > 1 and losses[-1] < losses[0] else "stable",
+                "min_ssl_loss": min(losses),
+                "max_ssl_loss": max(losses)
+            }
+
+        return ssl_metrics
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/training/status")
@@ -585,7 +649,7 @@ def training_status():
         train_log = BASE_DIR / "logs" / "matrix0.log"
         if train_log.exists():
             with open(train_log, 'r') as f:
-                lines = f.readlines()[-20:]  # Last 20 lines
+                lines = f.readlines()[-100:]  # Last 100 lines for better history
 
             for line in lines:
                 if "TRAINING_HB" in line:
@@ -606,6 +670,13 @@ def training_status():
 
         if training_data:
             latest = training_data[-1]
+
+            # Calculate training statistics
+            steps = [d["step"] for d in training_data]
+            losses = [d["loss"] for d in training_data]
+            ssl_losses = [d["ssl_loss"] for d in training_data]
+            learning_rates = [d["learning_rate"] for d in training_data]
+
             return {
                 "is_training": True,
                 "current_step": latest["step"],
@@ -618,7 +689,14 @@ def training_status():
                     "ssl_loss": latest["ssl_loss"],
                     "learning_rate": latest["learning_rate"]
                 },
-                "recent_history": training_data[-5:]  # Last 5 entries
+                "recent_history": training_data[-10:],  # Last 10 entries for better visualization
+                "statistics": {
+                    "avg_loss": sum(losses) / len(losses),
+                    "avg_ssl_loss": sum(ssl_losses) / len(ssl_losses),
+                    "loss_trend": "decreasing" if len(losses) > 1 and losses[-1] < losses[0] else "stable",
+                    "ssl_trend": "decreasing" if len(ssl_losses) > 1 and ssl_losses[-1] < ssl_losses[0] else "stable",
+                    "lr_range": [min(learning_rates), max(learning_rates)]
+                }
             }
         else:
             return {

@@ -5,7 +5,7 @@
 [![Training Pipeline Test](https://github.com/lukifer23/Matrix0/workflows/Training%20Pipeline%20Test/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Bugbot Review](https://img.shields.io/badge/Bugbot-Review%20Ready-blue?logo=bug)](https://bugbot.dev)
 
-Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition.
+Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **7 specialized tasks**.
 
 ## 🎯 Project Overview
 
@@ -173,6 +173,9 @@ python -m azchess.tools.model_info
 # Inference performance benchmarking
 python -m azchess.tools.bench_inference
 
+# Export to CoreML for Apple Silicon optimization
+python coreml_export.py --checkpoint checkpoints/best.pt --output matrix0.mlmodel --benchmark
+
 # MCTS performance benchmarking
 python -m azchess.tools.bench_mcts
 
@@ -305,7 +308,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **SSL Visualization**: Advanced heatmaps and decision explanation tools
 
 ### 🎯 Immediate Next Steps
-1. **SSL Learning Validation**: Measure effectiveness of all 5 SSL tasks
+1. **SSL Learning Validation**: Measure effectiveness of all 7 SSL tasks
 2. **Performance Benchmarking**: Establish SSL contribution baselines
 3. **WebUI Enhancement**: Add SSL-specific visualization features
 4. **Model Analysis**: Deep-dive into SSL learning patterns and effectiveness
@@ -316,7 +319,7 @@ See [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md), [docs/webu
 
 **Matrix0 v2.1 - SSL Architecture Integration Achieved**
 
-*🚀 Advanced chess AI research platform with 53.2M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring and analysis capabilities.*
+*🚀 Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring and analysis capabilities.*
 
 
 cd /Users/admin/Downloads/VSCode/Matrix0 && source .venv/bin/activate && python -m azchess.orchestrator --config config.yaml --games 9 --workers 3 --tui table

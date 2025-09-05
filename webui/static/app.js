@@ -32,7 +32,7 @@ function switchView(viewName) {
   }
 }
 
-// Training monitoring
+// Enhanced training monitoring with statistics
 async function loadTrainingStatus() {
   try {
     const response = await fetch('/training/status');
@@ -63,14 +63,26 @@ async function loadTrainingStatus() {
       sslLossEl.textContent = metrics.ssl_loss.toFixed(4);
       lrEl.textContent = metrics.learning_rate.toFixed(6);
 
-      // Display recent history
+      // Display enhanced recent history with statistics
       const history = data.recent_history;
-      historyEl.textContent = history.map(h =>
-        `Step ${h.step}/${h.total_steps}: Loss=${h.loss.toFixed(4)}, SSL=${h.ssl_loss.toFixed(4)}, LR=${h.learning_rate.toFixed(6)}`
+      const stats = data.statistics;
+
+      let historyText = `Training Statistics:\n`;
+      historyText += `Average Loss: ${stats.avg_loss.toFixed(4)}\n`;
+      historyText += `Average SSL Loss: ${stats.avg_ssl_loss.toFixed(4)}\n`;
+      historyText += `Loss Trend: ${stats.loss_trend}\n`;
+      historyText += `SSL Trend: ${stats.ssl_trend}\n`;
+      historyText += `LR Range: [${stats.lr_range[0].toFixed(6)}, ${stats.lr_range[1].toFixed(6)}]\n\n`;
+
+      historyText += `Recent Steps:\n`;
+      historyText += history.map(h =>
+        `Step ${h.step}/${h.total_steps}: Loss=${h.loss.toFixed(4)}, Policy=${h.policy_loss.toFixed(4)}, Value=${h.value_loss.toFixed(4)}, SSL=${h.ssl_loss.toFixed(4)}, LR=${h.learning_rate.toFixed(6)}`
       ).join('\n');
 
-      // Update training chart
-      updateTrainingChart(history);
+      historyEl.textContent = historyText;
+
+      // Update training chart with enhanced data
+      updateTrainingChart(history, stats);
     } else {
       statusEl.textContent = 'Not Training';
       statusEl.className = 'status-indicator not-training';
@@ -88,7 +100,7 @@ async function loadTrainingStatus() {
   }
 }
 
-// SSL status monitoring
+// Enhanced SSL status monitoring with performance metrics
 async function loadSSLStatus() {
   try {
     const response = await fetch('/ssl/status');
@@ -116,8 +128,21 @@ async function loadSSLStatus() {
     weightEl.textContent = data.config.ssl_weight;
     paramsEl.textContent = data.total_ssl_params ? data.total_ssl_params.toLocaleString() : '—';
 
-    // Display SSL heads
-    if (data.head_parameters) {
+    // Display enhanced SSL heads with weights and analysis
+    if (data.head_analysis && data.task_weights) {
+      const headsHtml = Object.entries(data.head_analysis)
+        .map(([name, analysis]) => {
+          const weight = data.task_weights[name] || 1.0;
+          return `
+            <div class="ssl-head">
+              <div class="ssl-head-name">${name} (weight: ${weight})</div>
+              <div class="ssl-head-params">${analysis.parameters.toLocaleString()} parameters</div>
+              <div class="ssl-head-structure">${analysis.structure}</div>
+            </div>
+          `;
+        }).join('');
+      headsEl.innerHTML = headsHtml;
+    } else if (data.head_parameters) {
       const headsHtml = Object.entries(data.head_parameters)
         .map(([name, params]) => `
           <div class="ssl-head">
@@ -130,8 +155,39 @@ async function loadSSLStatus() {
       headsEl.textContent = 'SSL heads not available';
     }
 
+    // Load SSL performance metrics
+    await loadSSLPerformance();
+
   } catch (error) {
     log('Failed to load SSL status: ' + error.message);
+  }
+}
+
+// SSL performance monitoring
+async function loadSSLPerformance() {
+  try {
+    const response = await fetch('/ssl/performance');
+    const data = await response.json();
+
+    // Update SSL performance visualization if we have data
+    if (data.statistics) {
+      const perfEl = document.getElementById('sslPerformance');
+      if (perfEl) {
+        perfEl.innerHTML = `
+          <div class="ssl-metric">
+            <strong>Current SSL Loss:</strong> ${data.statistics.current_ssl_loss.toFixed(4)}
+          </div>
+          <div class="ssl-metric">
+            <strong>Average SSL Loss:</strong> ${data.statistics.avg_ssl_loss.toFixed(4)}
+          </div>
+          <div class="ssl-metric">
+            <strong>SSL Loss Trend:</strong> ${data.statistics.ssl_loss_trend}
+          </div>
+        `;
+      }
+    }
+  } catch (error) {
+    log('Failed to load SSL performance: ' + error.message);
   }
 }
 
@@ -172,53 +228,113 @@ async function loadModelAnalysis() {
   }
 }
 
-// Training chart
-function updateTrainingChart(history) {
+// Enhanced training chart with multiple metrics
+function updateTrainingChart(history, statistics) {
   const ctx = document.getElementById('trainingChart').getContext('2d');
-  const data = {
-    labels: history.map(h => h.step),
-    datasets: [
-      {
-        label: 'Total Loss',
-        data: history.map(h => h.loss),
-        borderColor: '#ef4444',
-        backgroundColor: 'rgba(239, 68, 68, 0.15)',
-        tension: 0.2,
-      },
-      {
-        label: 'SSL Loss',
-        data: history.map(h => h.ssl_loss),
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.15)',
-        tension: 0.2,
-      },
-      {
-        label: 'Learning Rate',
-        data: history.map(h => h.learning_rate),
-        borderColor: '#10b981',
-        backgroundColor: 'rgba(16, 185, 129, 0.15)',
-        yAxisID: 'y1',
-        tension: 0.2,
-      }
-    ]
-  };
+
+  // Create datasets for all metrics
+  const datasets = [
+    {
+      label: 'Total Loss',
+      data: history.map(h => ({ x: h.step, y: h.loss })),
+      borderColor: '#ef4444',
+      backgroundColor: 'rgba(239, 68, 68, 0.15)',
+      tension: 0.2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    },
+    {
+      label: 'Policy Loss',
+      data: history.map(h => ({ x: h.step, y: h.policy_loss })),
+      borderColor: '#f59e0b',
+      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+      tension: 0.2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    },
+    {
+      label: 'Value Loss',
+      data: history.map(h => ({ x: h.step, y: h.value_loss })),
+      borderColor: '#8b5cf6',
+      backgroundColor: 'rgba(139, 92, 246, 0.15)',
+      tension: 0.2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    },
+    {
+      label: 'SSL Loss',
+      data: history.map(h => ({ x: h.step, y: h.ssl_loss })),
+      borderColor: '#3b82f6',
+      backgroundColor: 'rgba(59, 130, 246, 0.15)',
+      tension: 0.2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    },
+    {
+      label: 'Learning Rate',
+      data: history.map(h => ({ x: h.step, y: h.learning_rate })),
+      borderColor: '#10b981',
+      backgroundColor: 'rgba(16, 185, 129, 0.15)',
+      yAxisID: 'y1',
+      tension: 0.2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    }
+  ];
+
+  const data = { datasets };
 
   const options = {
     responsive: true,
-    plugins: { legend: { labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#fff' } } },
+    interaction: {
+      mode: 'index',
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        labels: {
+          color: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#fff',
+          usePointStyle: true,
+          pointStyle: 'line'
+        }
+      },
+      tooltip: {
+        callbacks: {
+          title: function(context) {
+            return `Step ${context[0].parsed.x}`;
+          }
+        }
+      }
+    },
     scales: {
       x: {
-        ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--muted') },
-        title: { display: true, text: 'Training Step', color: getComputedStyle(document.documentElement).getPropertyValue('--muted') }
+        type: 'linear',
+        ticks: {
+          color: getComputedStyle(document.documentElement).getPropertyValue('--muted'),
+          callback: function(value) { return value; }
+        },
+        title: {
+          display: true,
+          text: 'Training Step',
+          color: getComputedStyle(document.documentElement).getPropertyValue('--muted')
+        }
       },
       y: {
         ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--muted') },
-        title: { display: true, text: 'Loss', color: getComputedStyle(document.documentElement).getPropertyValue('--muted') }
+        title: {
+          display: true,
+          text: 'Loss',
+          color: getComputedStyle(document.documentElement).getPropertyValue('--muted')
+        }
       },
       y1: {
         position: 'right',
         ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--muted') },
-        title: { display: true, text: 'Learning Rate', color: getComputedStyle(document.documentElement).getPropertyValue('--muted') }
+        title: {
+          display: true,
+          text: 'Learning Rate',
+          color: getComputedStyle(document.documentElement).getPropertyValue('--muted')
+        }
       }
     }
   };
@@ -227,6 +343,7 @@ function updateTrainingChart(history) {
     trainingChart = new Chart(ctx, { type: 'line', data, options });
   } else {
     trainingChart.data = data;
+    trainingChart.options = options;
     trainingChart.update();
   }
 }

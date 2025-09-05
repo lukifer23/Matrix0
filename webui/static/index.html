@@ -72,6 +72,12 @@
       .ssl-head { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
       .ssl-head-name { font-weight: 600; color: var(--accent); }
       .ssl-head-params { font-size: 12px; color: var(--muted); }
+      .ssl-head-structure { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; margin-top: 4px; }
+
+      /* SSL Performance Display */
+      .ssl-performance-display { display: flex; flex-direction: column; gap: 6px; }
+      .ssl-metric { padding: 6px 0; border-bottom: 1px solid var(--border); }
+      .ssl-metric:last-child { border-bottom: none; }
 
       /* Model Analysis */
       .model-analysis { display: flex; flex-direction: column; gap: 8px; }
@@ -189,7 +195,7 @@
                 <div id="trainProgress" class="metric-value">—</div>
               </div>
               <div class="metric">
-                <div class="metric-label">Loss</div>
+                <div class="metric-label">Total Loss</div>
                 <div id="trainLoss" class="metric-value">—</div>
               </div>
               <div class="metric">
@@ -209,13 +215,16 @@
                 <div id="trainLR" class="metric-value">—</div>
               </div>
             </div>
-            <canvas id="trainingChart"></canvas>
+            <div class="panel-header">
+              <h3>Training Progress Visualization</h3>
+            </div>
+            <canvas id="trainingChart" style="max-height: 300px;"></canvas>
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>Recent Training History</h3>
+              <h3>Training Analytics & History</h3>
             </div>
-            <div id="trainingHistory" class="mono"></div>
+            <div id="trainingHistory" class="mono" style="max-height: 400px; overflow-y: auto;"></div>
           </div>
         </div>
       </div>
@@ -250,10 +259,16 @@
                 <span id="sslParams" class="config-value">—</span>
               </div>
             </div>
+            <div class="panel-header">
+              <h3>SSL Performance</h3>
+            </div>
+            <div id="sslPerformance" class="ssl-performance-display">
+              Loading SSL performance metrics...
+            </div>
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>SSL Heads</h3>
+              <h3>SSL Heads Analysis</h3>
             </div>
             <div id="sslHeads" class="ssl-heads-display">
               Loading SSL head information...
