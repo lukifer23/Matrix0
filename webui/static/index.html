@@ -79,6 +79,34 @@
       .ssl-metric { padding: 6px 0; border-bottom: 1px solid var(--border); }
       .ssl-metric:last-child { border-bottom: none; }
 
+      /* Tournament Interface */
+      .tournament-controls { display: flex; flex-direction: column; gap: 12px; }
+      .control-group { display: flex; flex-direction: column; gap: 4px; }
+      .control-group label { font-size: 14px; font-weight: 500; color: var(--fg); }
+      .control-group input, .control-group select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); }
+      .engine-selection { display: flex; gap: 12px; flex-wrap: wrap; }
+      .engine-selection label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+      .create-btn { background: var(--accent); color: white; border: 1px solid var(--accent); padding: 10px 16px; border-radius: 8px; font-weight: 500; }
+      .create-btn:hover { background: var(--accent); opacity: 0.9; }
+
+      /* Tournament Lists */
+      .tournament-list, .tournament-history { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
+      .tournament-item { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+      .tournament-item h4 { margin: 0 0 8px 0; color: var(--accent); }
+      .tournament-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; font-size: 12px; }
+      .tournament-stat { text-align: center; }
+      .tournament-stat-label { color: var(--muted); margin-bottom: 2px; }
+      .tournament-stat-value { font-weight: 600; color: var(--fg); }
+
+      /* Ratings Display */
+      .ratings-display { display: flex; flex-direction: column; gap: 8px; }
+      .rating-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+      .rating-item:last-child { border-bottom: none; }
+      .rating-engine { font-weight: 500; color: var(--accent); }
+      .rating-values { text-align: right; font-size: 13px; }
+      .rating-elo { font-weight: 600; color: var(--fg); }
+      .rating-glicko { color: var(--muted); }
+
       /* Model Analysis */
       .model-analysis { display: flex; flex-direction: column; gap: 8px; }
       .analysis-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
@@ -133,6 +161,7 @@
           <button id="showGame" class="view-btn active">Game</button>
           <button id="showTraining" class="view-btn">Training</button>
           <button id="showSSL" class="view-btn">SSL</button>
+          <button id="showTournament" class="view-btn">Tournament</button>
           <button id="showAnalysis" class="view-btn">Analysis</button>
         </div>
       </div>
@@ -272,6 +301,80 @@
             </div>
             <div id="sslHeads" class="ssl-heads-display">
               Loading SSL head information...
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tournament View -->
+      <div id="tournamentView" class="view-content">
+        <div class="grid">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Create New Tournament</h3>
+            </div>
+            <div class="tournament-controls">
+              <div class="control-group">
+                <label>Tournament Name:</label>
+                <input type="text" id="tournamentName" placeholder="My Tournament" />
+              </div>
+              <div class="control-group">
+                <label>Engines:</label>
+                <div id="engineSelection" class="engine-selection">
+                  <label><input type="checkbox" value="matrix0" checked /> Matrix0</label>
+                  <label><input type="checkbox" value="stockfish" /> Stockfish</label>
+                  <label><input type="checkbox" value="lc0" /> LC0</label>
+                </div>
+              </div>
+              <div class="control-group">
+                <label>Format:</label>
+                <select id="tournamentFormat">
+                  <option value="round_robin">Round Robin</option>
+                  <option value="single_elimination">Single Elimination</option>
+                  <option value="swiss">Swiss</option>
+                  <option value="double_round_robin">Double Round Robin</option>
+                </select>
+              </div>
+              <div class="control-group">
+                <label>Games per Pairing:</label>
+                <input type="number" id="gamesPerPairing" min="1" max="10" value="1" />
+              </div>
+              <div class="control-group">
+                <label>Time Control (ms):</label>
+                <input type="number" id="timeControl" min="10" max="10000" value="100" />
+              </div>
+              <div class="control-group">
+                <label>Max Concurrency:</label>
+                <input type="number" id="maxConcurrency" min="1" max="8" value="2" />
+              </div>
+              <button id="createTournament" class="create-btn">Create Tournament</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Active Tournaments</h3>
+            </div>
+            <div id="activeTournaments" class="tournament-list">
+              Loading tournaments...
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Engine Ratings</h3>
+            </div>
+            <div id="engineRatings" class="ratings-display">
+              Loading ratings...
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Tournament History</h3>
+            </div>
+            <div id="tournamentHistory" class="tournament-history">
+              Loading history...
             </div>
           </div>
         </div>

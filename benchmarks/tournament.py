@@ -345,39 +345,132 @@ class Tournament:
         """Play a single game between two engines."""
         logger.info(f"Playing game: {white_engine} (White) vs {black_engine} (Black)")
 
-        # This would integrate with the actual benchmark system
-        # For now, return a mock result
         start_time = time.time()
 
-        # Simulate game time (would be replaced with actual engine play)
-        game_time = random.uniform(10, 120)  # 10-120 seconds
-        move_count = random.randint(20, 100)
+        # Import here to avoid circular imports
+        from azchess.config import Config, select_device
+        from azchess.model import PolicyValueNet
+        from azchess.mcts import MCTS, MCTSConfig
+        from azchess.encoding import encode_board
 
-        # Random result for demonstration
-        rand = random.random()
-        if rand < 0.45:
-            result = TournamentResult.WHITE_WIN
-        elif rand < 0.9:
-            result = TournamentResult.BLACK_WIN
-        else:
-            result = TournamentResult.DRAW
+        try:
+            # Initialize engines if needed
+            matrix0_model = None
+            matrix0_mcts = None
+            stockfish_engine = None
 
-        end_time = start_time + game_time
+            # Load Matrix0 if one of the engines is matrix0
+            if white_engine == "matrix0" or black_engine == "matrix0":
+                cfg = Config.load("config.yaml")
+                device = select_device(cfg.training().get("device", "cpu"))
+                model = PolicyValueNet.from_config(cfg.model())
+                model.eval()
 
-        game_result = GameResult(
-            white_engine=white_engine,
-            black_engine=black_engine,
-            result=result,
-            game_time=game_time,
-            move_count=move_count,
-            metadata={
-                "simulated": True,
-                "tournament_format": self.config.format.value
-            }
-        )
+                eval_cfg = cfg.eval()
+                mcts_cfg = MCTSConfig(
+                    num_simulations=eval_cfg.get("num_simulations", 200),
+                    cpuct=eval_cfg.get("cpuct", 1.5)
+                )
+                mcts = MCTS(model, mcts_cfg, device)
 
-        logger.info(f"Game completed: {white_engine} vs {black_engine} -> {result.value}")
-        return game_result
+                matrix0_model = model
+                matrix0_mcts = mcts
+
+            # Load Stockfish if one of the engines is stockfish
+            if white_engine == "stockfish" or black_engine == "stockfish":
+                try:
+                    import chess.engine
+                    stockfish_engine = chess.engine.SimpleEngine.popen_uci("stockfish")
+                except Exception as e:
+                    logger.error(f"Failed to load Stockfish: {e}")
+                    # Return draw if Stockfish unavailable
+                    return GameResult(
+                        white_engine=white_engine,
+                        black_engine=black_engine,
+                        result=TournamentResult.DRAW,
+                        game_time=time.time() - start_time,
+                        move_count=0,
+                        metadata={"error": "Stockfish unavailable"}
+                    )
+
+            # Play the game
+            board = chess.Board()
+            moves = []
+            move_count = 0
+
+            while not board.is_game_over() and move_count < self.config.max_moves:
+                current_engine = white_engine if board.turn == chess.WHITE else black_engine
+
+                if current_engine == "matrix0":
+                    # Matrix0 move
+                    visits, pi, v = matrix0_mcts.run(board)
+                    move = max(visits.items(), key=lambda kv: kv[1])[0]
+                elif current_engine == "stockfish" and stockfish_engine:
+                    # Stockfish move
+                    limit = chess.engine.Limit(time=self.config.time_control / 1000.0)
+                    result = stockfish_engine.play(board, limit)
+                    move = result.move
+                else:
+                    # Unknown engine - make random legal move
+                    legal_moves = list(board.legal_moves)
+                    if legal_moves:
+                        move = random.choice(legal_moves)
+                    else:
+                        break
+
+                if move:
+                    board.push(move)
+                    moves.append(move.uci())
+                    move_count += 1
+
+            # Determine result
+            if board.is_checkmate():
+                if board.turn == chess.WHITE:
+                    result = TournamentResult.BLACK_WIN
+                else:
+                    result = TournamentResult.WHITE_WIN
+            elif board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+                result = TournamentResult.DRAW
+            else:
+                # Game hit max moves or other termination
+                result = TournamentResult.DRAW
+
+            game_time = time.time() - start_time
+
+            # Clean up engines
+            if stockfish_engine:
+                try:
+                    stockfish_engine.quit()
+                except:
+                    pass
+
+            game_result = GameResult(
+                white_engine=white_engine,
+                black_engine=black_engine,
+                result=result,
+                game_time=game_time,
+                move_count=move_count,
+                metadata={
+                    "tournament_format": self.config.format.value,
+                    "time_control": self.config.time_control,
+                    "moves": moves
+                }
+            )
+
+            logger.info(f"Game completed: {white_engine} vs {black_engine} -> {result.value} ({move_count} moves, {game_time:.1f}s)")
+            return game_result
+
+        except Exception as e:
+            logger.error(f"Error playing game {white_engine} vs {black_engine}: {e}")
+            # Return draw on error
+            return GameResult(
+                white_engine=white_engine,
+                black_engine=black_engine,
+                result=TournamentResult.DRAW,
+                game_time=time.time() - start_time,
+                move_count=0,
+                metadata={"error": str(e)}
+            )
 
     def _update_standings(self, game_result: GameResult):
         """Update tournament standings after a game."""

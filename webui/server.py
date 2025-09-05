@@ -18,6 +18,13 @@ from azchess.config import Config, select_device
 from azchess.draw import should_adjudicate_draw
 from azchess.mcts import MCTS, MCTSConfig
 from azchess.model import PolicyValueNet
+from azchess.elo import expected_score, update_elo
+from azchess.ratings import Glicko2Rating, update_glicko2_player
+from benchmarks.tournament import (
+    Tournament, TournamentConfig, TournamentFormat,
+    TournamentResult, EngineStanding, GameResult,
+    create_tournament_config, run_tournament
+)
 
 try:
     import chess.engine
@@ -80,6 +87,24 @@ class BatchMatchRequest(BaseModel):
     games: int = 20
     engine_tc_ms: int = 100
     start_white: str = "matrix0"  # which engine starts as white: matrix0|stockfish
+
+
+class TournamentCreateRequest(BaseModel):
+    name: str
+    engines: List[str]
+    format: str = "round_robin"  # round_robin, single_elimination, swiss, double_round_robin
+    num_games_per_pairing: int = 1
+    time_control_ms: int = 100
+    max_concurrency: int = 2
+
+
+class TournamentStatusRequest(BaseModel):
+    tournament_id: str
+
+
+class EloCalculationRequest(BaseModel):
+    engine_ratings: Dict[str, float]  # engine_name -> current_rating
+    game_results: List[Dict[str, Any]]  # list of {white: str, black: str, result: str}
 
 
 app = FastAPI(title="Matrix0 WebUI", version="1.0")
@@ -180,6 +205,26 @@ GAMES: Dict[str, GameState] = {}
 
 # Remove games after they finish or exceed this TTL (seconds)
 GAME_TTL_SEC = 3600
+
+# Tournament management
+ACTIVE_TOURNAMENTS: Dict[str, Tournament] = {}
+COMPLETED_TOURNAMENTS: Dict[str, Dict[str, Any]] = {}
+ENGINE_RATINGS: Dict[str, Dict[str, Any]] = {}  # engine_name -> {"elo": float, "glicko": Glicko2Rating}
+
+# Initialize default ratings
+def _init_ratings():
+    """Initialize default ratings for common engines."""
+    global ENGINE_RATINGS
+    default_rating = {
+        "elo": 1500.0,
+        "glicko": Glicko2Rating(rating=1500.0, rd=350.0, sigma=0.06)
+    }
+
+    for engine in ["matrix0", "stockfish", "lc0"]:
+        if engine not in ENGINE_RATINGS:
+            ENGINE_RATINGS[engine] = default_rating.copy()
+
+_init_ratings()
 
 
 def _cleanup_games(ttl_sec: int = GAME_TTL_SEC) -> int:
@@ -774,6 +819,242 @@ def admin_purge():
     """Endpoint to purge finished or stale games."""
     removed = _cleanup_games()
     return {"removed": removed, "active": len(GAMES)}
+
+
+# Tournament Management Endpoints
+
+@app.post("/tournament/create")
+async def create_tournament(req: TournamentCreateRequest):
+    """Create and start a new tournament."""
+    try:
+        # Create tournament configuration
+        config = TournamentConfig(
+            name=req.name,
+            format=TournamentFormat(req.format),
+            engines=req.engines,
+            num_games_per_pairing=req.num_games_per_pairing,
+            time_control=f"{req.time_control_ms}ms",
+            concurrency=req.max_concurrency,
+            output_dir="webui_tournaments",
+            save_pgns=True,
+            calculate_ratings=True
+        )
+
+        # Create and start tournament
+        tournament = Tournament(config)
+        tournament_id = f"tournament_{int(_now_ts() * 1000)}"
+
+        # Store active tournament
+        ACTIVE_TOURNAMENTS[tournament_id] = tournament
+
+        # Run tournament asynchronously
+        import asyncio
+        asyncio.create_task(run_tournament_async(tournament_id, tournament))
+
+        return {
+            "tournament_id": tournament_id,
+            "status": "started",
+            "config": {
+                "name": req.name,
+                "format": req.format,
+                "engines": req.engines,
+                "games_per_pairing": req.num_games_per_pairing,
+                "time_control_ms": req.time_control_ms,
+                "concurrency": req.max_concurrency
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to create tournament: {str(e)}")
+
+
+async def run_tournament_async(tournament_id: str, tournament: Tournament):
+    """Run tournament asynchronously and store results."""
+    try:
+        results = await tournament.run_tournament()
+
+        # Move to completed tournaments
+        COMPLETED_TOURNAMENTS[tournament_id] = results
+        ACTIVE_TOURNAMENTS.pop(tournament_id, None)
+
+        # Update ratings based on tournament results
+        await update_ratings_from_tournament(results)
+
+    except Exception as e:
+        logger.error(f"Tournament {tournament_id} failed: {e}")
+        ACTIVE_TOURNAMENTS.pop(tournament_id, None)
+
+
+@app.get("/tournament/list")
+def list_tournaments():
+    """List all active and completed tournaments."""
+    active = []
+    for tid, tournament in ACTIVE_TOURNAMENTS.items():
+        active.append({
+            "id": tid,
+            "name": tournament.config.name,
+            "status": "running",
+            "engines": tournament.config.engines,
+            "format": tournament.config.format.value,
+            "start_time": tournament.start_time,
+            "duration": tournament.duration
+        })
+
+    completed = []
+    for tid, results in COMPLETED_TOURNAMENTS.items():
+        completed.append({
+            "id": tid,
+            "name": results.get("tournament_name", "Unknown"),
+            "status": "completed",
+            "engines": results.get("engines", []),
+            "format": results.get("format", "unknown"),
+            "start_time": results.get("start_time"),
+            "end_time": results.get("end_time"),
+            "duration": results.get("duration", 0),
+            "total_games": results.get("total_games", 0)
+        })
+
+    return {
+        "active_tournaments": active,
+        "completed_tournaments": completed,
+        "total_active": len(active),
+        "total_completed": len(completed)
+    }
+
+
+@app.get("/tournament/{tournament_id}/status")
+def get_tournament_status(tournament_id: str):
+    """Get status of a specific tournament."""
+    # Check active tournaments
+    if tournament_id in ACTIVE_TOURNAMENTS:
+        tournament = ACTIVE_TOURNAMENTS[tournament_id]
+        return {
+            "id": tournament_id,
+            "status": "running",
+            "name": tournament.config.name,
+            "progress": len(tournament.completed_games) / max(1, len(tournament.completed_games) + len(tournament.rounds) * 10),  # Estimate
+            "engines": tournament.config.engines,
+            "format": tournament.config.format.value,
+            "games_completed": len(tournament.completed_games),
+            "standings": [
+                {
+                    "engine": standing.engine_name,
+                    "points": standing.points,
+                    "games_played": standing.games_played,
+                    "wins": standing.wins,
+                    "losses": standing.losses,
+                    "draws": standing.draws
+                }
+                for standing in tournament.standings.values()
+            ]
+        }
+
+    # Check completed tournaments
+    if tournament_id in COMPLETED_TOURNAMENTS:
+        results = COMPLETED_TOURNAMENTS[tournament_id]
+        return {
+            "id": tournament_id,
+            "status": "completed",
+            "name": results.get("tournament_name"),
+            "engines": results.get("engines", []),
+            "format": results.get("format"),
+            "standings": results.get("standings", []),
+            "game_results": results.get("game_results", []),
+            "statistics": results.get("statistics", {}),
+            "duration": results.get("duration", 0)
+        }
+
+    raise HTTPException(status_code=404, detail="Tournament not found")
+
+
+@app.get("/ratings")
+def get_ratings():
+    """Get current ELO and Glicko-2 ratings for all engines."""
+    ratings = {}
+    for engine, rating_data in ENGINE_RATINGS.items():
+        ratings[engine] = {
+            "elo": rating_data["elo"],
+            "glicko_rating": rating_data["glicko"].rating,
+            "glicko_rd": rating_data["glicko"].rd,
+            "glicko_sigma": rating_data["glicko"].sigma
+        }
+
+    return {"ratings": ratings}
+
+
+@app.post("/ratings/update")
+def update_ratings(req: EloCalculationRequest):
+    """Update ratings based on game results."""
+    try:
+        updated_ratings = {}
+
+        for game in req.game_results:
+            white = game["white"]
+            black = game["black"]
+            result_str = game["result"]
+
+            # Convert result string to score (1.0 for white win, 0.5 for draw, 0.0 for black win)
+            if result_str == "1-0":
+                white_score = 1.0
+                black_score = 0.0
+            elif result_str == "0-1":
+                white_score = 0.0
+                black_score = 1.0
+            else:  # Draw
+                white_score = 0.5
+                black_score = 0.5
+
+            # Update ELO ratings
+            if white in req.engine_ratings and black in req.engine_ratings:
+                white_elo, black_elo = update_elo(
+                    req.engine_ratings[white],
+                    req.engine_ratings[black],
+                    white_score
+                )
+
+                # Update global ratings
+                ENGINE_RATINGS[white]["elo"] = white_elo
+                ENGINE_RATINGS[black]["elo"] = black_elo
+
+                # Update Glicko-2 ratings
+                white_glicko = update_glicko2_player(
+                    ENGINE_RATINGS[white]["glicko"],
+                    [(req.engine_ratings[black], 350.0)],  # Assume opponent RD
+                    [white_score]
+                )
+                ENGINE_RATINGS[white]["glicko"] = white_glicko
+
+                updated_ratings[white] = {"elo": white_elo, "glicko": white_glicko.rating}
+                updated_ratings[black] = {"elo": black_elo, "glicko": ENGINE_RATINGS[black]["glicko"].rating}
+
+        return {"updated_ratings": updated_ratings, "message": f"Updated ratings for {len(updated_ratings)} engines"}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to update ratings: {str(e)}")
+
+
+async def update_ratings_from_tournament(results: Dict[str, Any]):
+    """Update ratings based on tournament results."""
+    try:
+        game_results = []
+        current_ratings = {engine: ENGINE_RATINGS.get(engine, {"elo": 1500.0})["elo"]
+                          for engine in results.get("engines", [])}
+
+        for game in results.get("game_results", []):
+            game_results.append({
+                "white": game["white"],
+                "black": game["black"],
+                "result": game["result"]
+            })
+
+        if game_results:
+            await update_ratings(EloCalculationRequest(
+                engine_ratings=current_ratings,
+                game_results=game_results
+            ))
+
+    except Exception as e:
+        logger.error(f"Failed to update ratings from tournament: {e}")
 
 if __name__ == "__main__":
     # Launch with: python webui/server.py  (uses uvicorn if available)

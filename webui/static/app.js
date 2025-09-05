@@ -5,6 +5,7 @@ let evalData = { ply: [], matrix0: [], stockfish: [] };
 let evalChart = null;
 let trainingChart = null;
 let currentView = 'game';
+let tournamentPollInterval = null;
 
 // View switching
 function switchView(viewName) {
@@ -27,8 +28,17 @@ function switchView(viewName) {
     loadTrainingStatus();
   } else if (viewName === 'ssl') {
     loadSSLStatus();
+  } else if (viewName === 'tournament') {
+    loadTournamentData();
   } else if (viewName === 'analysis') {
     loadModelAnalysis();
+  }
+
+  // Start/stop tournament polling
+  if (viewName === 'tournament') {
+    startTournamentPolling();
+  } else {
+    stopTournamentPolling();
   }
 }
 
@@ -554,7 +564,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('showGame').addEventListener('click', () => switchView('game'));
   document.getElementById('showTraining').addEventListener('click', () => switchView('training'));
   document.getElementById('showSSL').addEventListener('click', () => switchView('ssl'));
+  document.getElementById('showTournament').addEventListener('click', () => switchView('tournament'));
   document.getElementById('showAnalysis').addEventListener('click', () => switchView('analysis'));
+
+  // Tournament controls
+  document.getElementById('createTournament').addEventListener('click', createTournament);
 
   // Load initial data
   loadAnalytics();
@@ -565,5 +579,188 @@ window.addEventListener('DOMContentLoaded', () => {
   // Load initial view data
   loadTrainingStatus();
   loadSSLStatus();
+  loadTournamentData();
   loadModelAnalysis();
 });
+
+// Tournament Management Functions
+
+async function loadTournamentData() {
+  await Promise.all([
+    loadActiveTournaments(),
+    loadEngineRatings(),
+    loadTournamentHistory()
+  ]);
+}
+
+async function createTournament() {
+  try {
+    const name = document.getElementById('tournamentName').value.trim();
+    if (!name) {
+      alert('Please enter a tournament name');
+      return;
+    }
+
+    // Get selected engines
+    const selectedEngines = Array.from(document.querySelectorAll('#engineSelection input:checked'))
+      .map(cb => cb.value);
+
+    if (selectedEngines.length < 2) {
+      alert('Please select at least 2 engines');
+      return;
+    }
+
+    const config = {
+      name: name,
+      engines: selectedEngines,
+      format: document.getElementById('tournamentFormat').value,
+      num_games_per_pairing: parseInt(document.getElementById('gamesPerPairing').value),
+      time_control_ms: parseInt(document.getElementById('timeControl').value),
+      max_concurrency: parseInt(document.getElementById('maxConcurrency').value)
+    };
+
+    const response = await fetch('/tournament/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      log(`Tournament created: ${result.tournament_id}`);
+      document.getElementById('tournamentName').value = '';
+      await loadTournamentData();
+    } else {
+      const error = await response.json();
+      alert(`Failed to create tournament: ${error.detail}`);
+    }
+  } catch (error) {
+    log(`Tournament creation failed: ${error.message}`);
+  }
+}
+
+async function loadActiveTournaments() {
+  try {
+    const response = await fetch('/tournament/list');
+    const data = await response.json();
+
+    const container = document.getElementById('activeTournaments');
+
+    if (data.active_tournaments.length === 0) {
+      container.innerHTML = '<p>No active tournaments</p>';
+      return;
+    }
+
+    const html = data.active_tournaments.map(tournament => `
+      <div class="tournament-item">
+        <h4>${tournament.name}</h4>
+        <div class="tournament-stats">
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Status</div>
+            <div class="tournament-stat-value">${tournament.status}</div>
+          </div>
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Format</div>
+            <div class="tournament-stat-value">${tournament.format.replace('_', ' ')}</div>
+          </div>
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Engines</div>
+            <div class="tournament-stat-value">${tournament.engines.length}</div>
+          </div>
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Duration</div>
+            <div class="tournament-stat-value">${Math.round(tournament.duration)}s</div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  } catch (error) {
+    log(`Failed to load active tournaments: ${error.message}`);
+  }
+}
+
+async function loadEngineRatings() {
+  try {
+    const response = await fetch('/ratings');
+    const data = await response.json();
+
+    const container = document.getElementById('engineRatings');
+
+    if (!data.ratings || Object.keys(data.ratings).length === 0) {
+      container.innerHTML = '<p>No ratings available</p>';
+      return;
+    }
+
+    const html = Object.entries(data.ratings).map(([engine, ratings]) => `
+      <div class="rating-item">
+        <div class="rating-engine">${engine}</div>
+        <div class="rating-values">
+          <div class="rating-elo">ELO: ${ratings.elo}</div>
+          <div class="rating-glicko">Glicko: ${ratings.glicko_rating.toFixed(0)}</div>
+        </div>
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  } catch (error) {
+    log(`Failed to load engine ratings: ${error.message}`);
+  }
+}
+
+async function loadTournamentHistory() {
+  try {
+    const response = await fetch('/tournament/list');
+    const data = await response.json();
+
+    const container = document.getElementById('tournamentHistory');
+
+    if (data.completed_tournaments.length === 0) {
+      container.innerHTML = '<p>No completed tournaments</p>';
+      return;
+    }
+
+    const html = data.completed_tournaments.slice(0, 5).map(tournament => `
+      <div class="tournament-item">
+        <h4>${tournament.name}</h4>
+        <div class="tournament-stats">
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Format</div>
+            <div class="tournament-stat-value">${tournament.format.replace('_', ' ')}</div>
+          </div>
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Games</div>
+            <div class="tournament-stat-value">${tournament.total_games}</div>
+          </div>
+          <div class="tournament-stat">
+            <div class="tournament-stat-label">Duration</div>
+            <div class="tournament-stat-value">${Math.round(tournament.duration)}s</div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  } catch (error) {
+    log(`Failed to load tournament history: ${error.message}`);
+  }
+}
+
+function startTournamentPolling() {
+  if (tournamentPollInterval) {
+    clearInterval(tournamentPollInterval);
+  }
+  tournamentPollInterval = setInterval(() => {
+    if (currentView === 'tournament') {
+      loadActiveTournaments();
+    }
+  }, 5000); // Poll every 5 seconds
+}
+
+function stopTournamentPolling() {
+  if (tournamentPollInterval) {
+    clearInterval(tournamentPollInterval);
+    tournamentPollInterval = null;
+  }
+}
