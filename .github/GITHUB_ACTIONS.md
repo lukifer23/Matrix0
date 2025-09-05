@@ -1,6 +1,8 @@
-# GitHub Actions for Matrix0
+# GitHub Actions Workflows for Matrix0
 
 This directory contains GitHub Actions workflows that automatically test and validate Matrix0 on every code change.
+
+> **Note**: This is specific to GitHub Actions CI/CD. For the main project README, see the root directory.
 
 ## Workflows
 
@@ -11,17 +13,21 @@ This directory contains GitHub Actions workflows that automatically test and val
 - Linting with flake8
 - Code formatting with black
 - Type checking with mypy
+- **Security scanning with bandit**
 - Configuration validation
 - Package import testing
 
 ### 2. Model Validation (`model-validation.yml`)
 **Triggers**: Changes to model code or checkpoints
-**Purpose**: Validate model architecture and encoding
+**Purpose**: Validate model architecture, encoding, and advanced features
 **Tests**:
 - Model creation and loading
 - Forward pass validation
 - Encoding function testing
 - Configuration compatibility
+- **SSL algorithm testing** (threat detection, square control, piece recognition)
+- **Tournament system validation** (Glicko-2 ratings, tournament config)
+- **Enhanced security scanning** (hardcoded secrets, unsafe patterns)
 
 ### 3. Training Pipeline Test (`training-pipeline-test.yml`)
 **Triggers**: Changes to training code

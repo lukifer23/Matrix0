@@ -70,19 +70,142 @@ jobs:
         python -c "
         from azchess.encoding import encode_board, move_to_index
         import chess
-        
+
         print('✅ Testing encoding functions...')
-        
+
         board = chess.Board()
         encoded = encode_board(board)
         print(f'Board encoding: {encoded.shape}')
-        
+
         # Test move encoding
         legal_moves = list(board.legal_moves)
         if legal_moves:
             move = legal_moves[0]
             idx = move_to_index(board, move)
             print(f'Move encoding: {move} -> {idx}')
-            
+
         print('✅ Encoding tests passed!')
+        "
+
+    - name: Test SSL algorithms
+      run: |
+        python -c "
+        print('🧠 Testing SSL algorithms...')
+
+        from azchess.ssl_algorithms import ChessSSLAlgorithms
+        import torch
+
+        # Create SSL algorithms instance
+        ssl_alg = ChessSSLAlgorithms()
+        print('✅ SSL algorithms instance created')
+
+        # Create test board
+        board = torch.zeros(1, 19, 8, 8)
+        # Add some pieces for testing
+        board[0, 0, 6, 0] = 1  # White pawn
+        board[0, 6, 1, 0] = 1  # Black pawn
+        board[0, 5, 7, 4] = 1  # White king
+        board[0, 11, 0, 4] = 1 # Black king
+
+        # Test SSL tasks
+        ssl_targets = ssl_alg.create_enhanced_ssl_targets(board, ['piece', 'threat'])
+        print(f'✅ SSL targets created: {list(ssl_targets.keys())}')
+
+        # Test individual algorithms
+        threat_map = ssl_alg.detect_threats_batch(board)
+        print(f'✅ Threat detection: {threat_map.shape}')
+
+        control_map = ssl_alg.calculate_square_control_batch(board)
+        print(f'✅ Square control: {control_map.shape}')
+
+        print('✅ All SSL algorithm tests passed!')
+        "
+
+    - name: Test tournament system
+      run: |
+        python -c "
+        print('🏆 Testing tournament system...')
+
+        from benchmarks.tournament import TournamentConfig, TournamentFormat, create_tournament_config
+        from azchess.ratings import Glicko2Rating
+
+        # Test tournament configuration
+        config = create_tournament_config(
+            name='Test Tournament',
+            engines=['Matrix0', 'Stockfish'],
+            format=TournamentFormat.ROUND_ROBIN,
+            num_games_per_pairing=2,
+            time_control_ms=1000
+        )
+        print(f'✅ Tournament config created: {config.name}')
+
+        # Test Glicko-2 rating system
+        rating = Glicko2Rating(rating=1500, rd=350, sigma=0.06)
+        print(f'✅ Glicko-2 rating created: {rating.rating:.0f} ± {rating.rd:.0f}')
+
+        print('✅ Tournament system tests passed!')
+        "
+
+    - name: Enhanced security scan
+      run: |
+        python -c "
+        print('🔒 Running enhanced security checks...')
+
+        import os
+        import re
+
+        # Check for hardcoded secrets
+        secret_patterns = [
+            r'password\s*=\s*[\'\"][^\'\"]*[\'\"]',
+            r'secret\s*=\s*[\'\"][^\'\"]*[\'\"]',
+            r'key\s*=\s*[\'\"][^\'\"]*[\'\"]',
+            r'token\s*=\s*[\'\"][^\'\"]*[\'\"]',
+            r'api_key\s*=\s*[\'\"][^\'\"]*[\'\"]'
+        ]
+
+        found_issues = []
+
+        for root, dirs, files in os.walk('.'):
+            # Skip .git and common directories
+            dirs[:] = [d for d in dirs if d not in ['.git', '__pycache__', '.venv']]
+
+            for file in files:
+                if file.endswith(('.py', '.yml', '.yaml', '.json')):
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+
+                            for pattern in secret_patterns:
+                                matches = re.findall(pattern, content, re.IGNORECASE)
+                                if matches:
+                                    found_issues.extend([f'{filepath}: {match}' for match in matches])
+                    except Exception:
+                        pass
+
+        if found_issues:
+            print('❌ Potential security issues found:')
+            for issue in found_issues[:5]:  # Show first 5
+                print(f'  {issue}')
+            exit(1)
+        else:
+            print('✅ No hardcoded secrets detected')
+
+        # Check for common security issues
+        if os.path.exists('requirements.txt'):
+            with open('requirements.txt', 'r') as f:
+                reqs = f.read()
+
+            # Check for potentially unsafe packages
+            unsafe_patterns = ['pickle', 'eval', 'exec', 'subprocess.call']
+            unsafe_found = []
+
+            for pattern in unsafe_patterns:
+                if pattern in reqs.lower():
+                    unsafe_found.append(pattern)
+
+            if unsafe_found:
+                print(f'⚠️  Potentially unsafe patterns in requirements: {unsafe_found}')
+
+        print('✅ Enhanced security scan completed')
         "

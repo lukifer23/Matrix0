@@ -30,7 +30,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 black mypy isort
+        pip install flake8 black mypy isort bandit
         pip install -r requirements.txt
         
     - name: Check import sorting with isort
@@ -60,6 +60,12 @@ jobs:
       run: |
         python -c "import azchess; print('✅ Package imports successful')"
         
+    - name: Security scan with bandit
+      run: |
+        echo "🔒 Running bandit security scan..."
+        bandit -r azchess/ -f txt --severity-level medium
+        echo "✅ Bandit security scan completed"
+
     - name: Check for common security issues
       run: |
         # Basic security checks
