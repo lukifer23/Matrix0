@@ -10,23 +10,21 @@ performance_config:
 scenarios:
 - concurrency: 1
   engine_config:
-    command: stockfish
+    command: /usr/local/bin/stockfish
     name: stockfish
     options:
-      Hash: '16'
+      Hash: '256'
       Skill Level: '0'
-      Threads: '1'
-      UCI_Elo: '1320'
-      UCI_LimitStrength: 'true'
+      Threads: '2'
     working_dir: null
   max_moves: 200
-  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/model_step_1000.pt
+  model_checkpoint: /Users/admin/Downloads/VSCode/Matrix0/checkpoints/pretrained_35k_ema.pt
   name: stockfish_benchmark
-  num_games: 6
+  num_games: 20
   opening_book: null
   opening_plies: 8
   random_openings: true
-  time_control: 5+0.05
+  time_control: 60+0.6
 statistical_config:
   calculate_elo: true
   confidence_level: 0.95

@@ -1,0 +1,11 @@
+[Event "Matrix0 Enhanced Evaluation Game 22"]
+[Site "Matrix0 Arena"]
+[Date "2025.09.05"]
+[Round "Decisive - Game 22"]
+[White "enhanced_best"]
+[Black "pretrained_35k_ema"]
+[Result "1/2-1/2"]
+[TimeControl "unlimited"]
+[Termination "unknown"]
+
+1. Nf3 b5 2. Ng5 Na6 3. Nxh7 f6 4. e3 Rb8 5. Bxb5 Rb6 6. O-O c5 7. a3 Kf7 8. h4 Rd6 9. f3 Nc7 10. Nxf6 Rxd2 11. f4 a6 12. Nxg8 Rxg8 13. Nc3 g6 14. Bxd7 Rh8 15. Bf5 Qd4 16. Bxc8 Rg8 17. Nd5 Ke8 18. Bd7+ Kd8 19. Rb1 Qxb2 20. Be8 Rh8 21. g3 Qb6 22. Bf7 Rg8 23. Qe1 Re2 24. Bxg8 Bg7 25. Rb3 Rh2 26. Bh7 Ke8 27. Rb2 Qd6 28. Bg8 Kf8 29. f5 Qf4 30. Bh7 Ke8 31. Nxe7 Kd8 32. Bg8 Ke8 33. Nd5 Bh8 34. Bh7 Bg7 35. Rb6 Bf6 36. Bg8 Kf8 37. Nb4 Kg7 38. Bh7 Kh8 39. Rd6 Qxg3+ 40. Qxg3 Kxh7 41. Qxg6+ Kh8 42. Qg8+ Kxg8 43. Rf4 Nb5 44. Rd8+ Kh7 45. Re8 Rh1+ 46. Kg2 Kg7 47. Rd4 Rf1 48. Rh8 Kxh8 49. Kh2 Rf2+ 50. Kh3 Kg8 51. c3 c4 52. Rd8+ Kh7 53. Rh8+ Kxh8 54. Nc6 Kg8 55. h5 Bh4 56. Nd8 Kh8 57. Nc6 Bf6 58. Nd8 Kg8 59. Kg4 Rb2 60. Nf7 Kf8 61. e4 Kg8 62. Bf4 Kf8 63. Nh8 Nc7 64. Bd2 Kg8 65. Nf7 Kxf7 66. a4 Kg8 67. Kf4 Be7 68. f6 Kh8 69. Kg5 Rxd2 70. Kg6 Kg8 71. Kh6 Bf8+ 72. Kg5 Kh8 73. Kg6 a5 74. Kg5 Kg8 75. Kg6 Na8 76. h6 Kh8 77. Kf7 Rf2 78. Ke8 Kg8 79. Kd8 Rh2 80. Ke8 Kh8 1/2-1/2

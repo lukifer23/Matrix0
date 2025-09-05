@@ -485,8 +485,8 @@ class BenchmarkRunner:
                         break
                     if board.is_game_over():
                         termination_reason = "terminal_position"
-                if not self.quiet:
-                    logger.info("Position is terminal before move; ending game.")
+                        if not self.quiet:
+                            logger.info("Position is terminal before move; ending game.")
                         break
                     if is_matrix0_turn:
                         if not self.quiet:

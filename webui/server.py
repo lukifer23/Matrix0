@@ -5,7 +5,11 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+import sys
+import subprocess
+import threading
+import re
 
 import chess
 import chess.pgn
@@ -107,11 +111,30 @@ class EloCalculationRequest(BaseModel):
     game_results: List[Dict[str, Any]]  # list of {white: str, black: str, result: str}
 
 
+class OrchestratorStartRequest(BaseModel):
+    config: str = "config.yaml"
+    games: Optional[int] = None
+    workers: Optional[int] = None
+    sims: Optional[int] = None
+    eval_games: Optional[int] = None
+    promotion_threshold: Optional[float] = None
+    device: Optional[str] = None  # auto/cpu/mps/cuda
+    quick_start: bool = False
+    no_shared_infer: bool = False
+    tui: Optional[str] = None   # bars|table
+    continuous: bool = False    # currently ignored; single-cycle only
+
+
 app = FastAPI(title="Matrix0 WebUI", version="1.0")
 
 # Serve static frontend
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Serve index.html for root path
+@app.get("/")
+async def read_root():
+    return StaticFiles(directory=str(STATIC_DIR), html=True).get_response("index.html", {})
 
 
 # Lazy-loaded engines
@@ -121,6 +144,277 @@ _device = None
 _cfg: Config | None = None
 _stockfish = None
 _stockfish_path = (BASE_DIR / "engines" / "bin" / "stockfish")
+
+# Orchestrator process management (simple single-run control)
+_ORCH_PROC: Optional[subprocess.Popen] = None
+_ORCH_START_TS: Optional[float] = None
+_ORCH_CFG: Dict[str, Any] = {}
+_ORCH_LOCK = threading.RLock()
+_ORCH_LOG_PATH = LOGS_DIR / "structured.jsonl"
+
+
+def _compute_target_games(cfg_path: str, overrides: Dict[str, Any]) -> int:
+    try:
+        cfg = Config.load(cfg_path)
+        orch = cfg.orchestrator() or {}
+        games_override = overrides.get("games")
+        if games_override is not None:
+            return int(games_override)
+        quick_start = bool(overrides.get("quick_start", False))
+        initial_games = int(orch.get("initial_games", 64))
+        subsequent_games = int(orch.get("subsequent_games", 64))
+        # Mirror orchestrator logic: if no/bare checkpoints → initial_games
+        checkpoint_dir = Path("checkpoints")
+        ckpts = list(checkpoint_dir.glob("*.pt")) if checkpoint_dir.exists() else []
+        if quick_start or len(ckpts) <= 1:
+            return initial_games
+        return subsequent_games
+    except Exception:
+        return int(overrides.get("games", 64) or 64)
+
+
+def _read_structured_since(ts_cutoff: float) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    try:
+        if not _ORCH_LOG_PATH.exists():
+            return events
+        # Read last ~10k lines max to bound time; fall back to full if small file
+        with _ORCH_LOG_PATH.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if float(rec.get("ts", 0.0)) >= ts_cutoff:
+                    events.append(rec)
+    except Exception:
+        pass
+    return events
+
+
+def _resolve_workers(cfg_path: str, override_workers: Optional[int]) -> int:
+    if override_workers is not None:
+        return max(1, int(override_workers))
+    try:
+        cfg = Config.load(cfg_path)
+        workers = int(cfg.selfplay().get("num_workers", 2))
+        return max(1, workers)
+    except Exception:
+        return 2
+
+
+@app.post("/orchestrator/start")
+def start_orchestrator(req: OrchestratorStartRequest):
+    global _ORCH_PROC, _ORCH_START_TS, _ORCH_CFG
+    with _ORCH_LOCK:
+        # Check if already running
+        if _ORCH_PROC is not None and _ORCH_PROC.poll() is None:
+            raise HTTPException(status_code=409, detail="orchestrator already running")
+
+        # Build command
+        cmd = [sys.executable, "-m", "azchess.orchestrator", "--config", req.config]
+        overrides: Dict[str, Any] = {}
+        if req.games is not None:
+            cmd += ["--games", str(int(req.games))]
+            overrides["games"] = int(req.games)
+        if req.workers is not None:
+            cmd += ["--workers", str(int(req.workers))]
+            overrides["workers"] = int(req.workers)
+        if req.sims is not None:
+            cmd += ["--sims", str(int(req.sims))]
+            overrides["sims"] = int(req.sims)
+        if req.eval_games is not None:
+            cmd += ["--eval-games", str(int(req.eval_games))]
+            overrides["eval_games"] = int(req.eval_games)
+        if req.promotion_threshold is not None:
+            cmd += ["--promotion-threshold", str(float(req.promotion_threshold))]
+            overrides["promotion_threshold"] = float(req.promotion_threshold)
+        if req.device is not None:
+            cmd += ["--device", str(req.device)]
+            overrides["device"] = str(req.device)
+        if req.no_shared_infer:
+            cmd += ["--no-shared-infer"]
+            overrides["no_shared_infer"] = True
+        if req.quick_start:
+            cmd += ["--quick-start"]
+            overrides["quick_start"] = True
+        if req.tui:
+            cmd += ["--tui", req.tui]
+            overrides["tui"] = req.tui
+
+        # Ensure logs directory
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        orch_out = LOGS_DIR / "orchestrator.out"
+        out_f = open(orch_out, "a", buffering=1)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=out_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(BASE_DIR),
+                env=os.environ.copy(),
+            )
+        except Exception as e:
+            out_f.close()
+            raise HTTPException(status_code=500, detail=f"failed to start orchestrator: {e}")
+
+        _ORCH_PROC = proc
+        _ORCH_START_TS = _now_ts()
+        workers = _resolve_workers(req.config, req.workers)
+        target_games = _compute_target_games(req.config, overrides)
+        # Total planned games = ceil(target_games/workers) * workers
+        from math import ceil
+        games_per_worker = int(ceil(target_games / max(1, workers)))
+        total_games = games_per_worker * workers
+        _ORCH_CFG = {
+            "config": req.config,
+            "overrides": overrides,
+            "workers": workers,
+            "target_games": target_games,
+            "games_per_worker": games_per_worker,
+            "total_games": total_games,
+            "pid": proc.pid,
+            "orch_out": str(orch_out),
+        }
+
+        return {"pid": proc.pid, "started": True, "cmd": cmd, "plan": _ORCH_CFG}
+
+
+@app.post("/orchestrator/stop")
+def stop_orchestrator():
+    global _ORCH_PROC
+    with _ORCH_LOCK:
+        if _ORCH_PROC is None or _ORCH_PROC.poll() is not None:
+            return {"stopped": False, "message": "orchestrator not running"}
+        try:
+            _ORCH_PROC.terminate()
+            try:
+                _ORCH_PROC.wait(timeout=10)
+            except Exception:
+                _ORCH_PROC.kill()
+        finally:
+            _ORCH_PROC = None
+        return {"stopped": True}
+
+
+@app.get("/orchestrator/status")
+def orchestrator_status():
+    with _ORCH_LOCK:
+        running = bool(_ORCH_PROC is not None and _ORCH_PROC.poll() is None)
+        pid = int(_ORCH_PROC.pid) if running and _ORCH_PROC is not None else None
+        started_at = _ORCH_START_TS
+        plan = _ORCH_CFG.copy() if _ORCH_CFG else {}
+
+    # Aggregate progress from structured logs since start
+    progress = {
+        "completed_games": 0,
+        "wins": 0,
+        "losses": 0,
+        "draws": 0,
+    }
+    eval_info: Dict[str, Any] = {}
+    promo_info: Dict[str, Any] = {}
+
+    if started_at:
+        try:
+            events = _read_structured_since(float(started_at))
+            game_rx = re.compile(r"Game\s+\d+\s+completed: .*?result:\s*([+-]?[0-9.]+)")
+            eval_start_rx = re.compile(r"Evaluating candidate.*?vs best")
+            eval_done_rx = re.compile(r"Evaluation complete: win_rate=([0-9.]+)")
+            promo_rx = re.compile(r"Promoted candidate to best")
+            for ev in events:
+                msg = str(ev.get("msg", ""))
+                m = game_rx.search(msg)
+                if m:
+                    progress["completed_games"] += 1
+                    try:
+                        res = float(m.group(1))
+                        if res > 0:
+                            progress["wins"] += 1
+                        elif res < 0:
+                            progress["losses"] += 1
+                        else:
+                            progress["draws"] += 1
+                    except Exception:
+                        pass
+                    continue
+                if eval_start_rx.search(msg):
+                    eval_info["status"] = "running"
+                    eval_info["ts"] = ev.get("ts")
+                m2 = eval_done_rx.search(msg)
+                if m2:
+                    try:
+                        eval_info["status"] = "completed"
+                        eval_info["win_rate"] = float(m2.group(1))
+                        eval_info["ts"] = ev.get("ts")
+                    except Exception:
+                        pass
+                if promo_rx.search(msg):
+                    promo_info = {"promoted": True, "ts": ev.get("ts")}
+        except Exception:
+            pass
+
+    # Compute percent
+    total_games = int(plan.get("total_games", 0) or 0)
+    completed = int(progress["completed_games"]) if started_at else 0
+    pct = (completed / total_games * 100.0) if total_games > 0 else 0.0
+
+    # Include training sub-status
+    try:
+        train = training_status()  # reuse existing endpoint function
+    except Exception:
+        train = {"is_training": False}
+
+    return {
+        "running": running,
+        "pid": pid,
+        "started_at": started_at,
+        "plan": plan,
+        "selfplay": {
+            "completed": completed,
+            "total": total_games,
+            "progress_pct": pct,
+            "wins": progress["wins"],
+            "losses": progress["losses"],
+            "draws": progress["draws"],
+        },
+        "evaluation": eval_info,
+        "promotion": promo_info,
+        "training": train,
+    }
+
+
+@app.get("/orchestrator/logs")
+def orchestrator_logs(tail: int = 200, kind: str = "structured"):
+    tail = max(1, min(int(tail), 2000))
+    lines: List[str] = []
+    try:
+        if kind == "matrix":
+            path = LOGS_DIR / "matrix0.log"
+            if path.exists():
+                with path.open("r", encoding="utf-8") as f:
+                    buf = f.readlines()
+                    lines = [ln.rstrip("\n") for ln in buf[-tail:]]
+        else:
+            path = _ORCH_LOG_PATH
+            if path.exists():
+                with path.open("r", encoding="utf-8") as f:
+                    buf = f.readlines()
+                # Render a compact textual view of structured events
+                for ln in buf[-tail:]:
+                    try:
+                        rec = json.loads(ln)
+                        ts = rec.get("ts")
+                        lvl = rec.get("level")
+                        name = rec.get("name")
+                        msg = rec.get("msg")
+                        lines.append(f"[{ts}] {lvl} {name}: {msg}")
+                    except Exception:
+                        lines.append(ln.strip())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to read logs: {e}")
+    return {"kind": kind, "lines": lines}
 
 
 def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, device_pref: str = "cpu"):
@@ -258,12 +552,27 @@ def _cleanup() -> None:
 
 @app.post("/new")
 def new_game(req: NewGameRequest):
-    _load_matrix0()
+    logger.info(f"New game request: white={req.white}, black={req.black}, tc={req.engine_tc_ms}")
+    try:
+        _load_matrix0()
+        logger.info("Matrix0 loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load Matrix0: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load Matrix0: {str(e)}")
+
     game_id = f"g_{int(_now_ts()*1000)}"
+    logger.info(f"Creating game {game_id}")
+
     try:
         board = chess.Board(req.fen) if req.fen else chess.Board()
-    except ValueError:
+        logger.info(f"Board created with FEN: {board.fen()}")
+    except ValueError as e:
+        logger.error(f"Invalid FEN: {req.fen}")
         raise HTTPException(status_code=400, detail="invalid FEN")
+    except Exception as e:
+        logger.error(f"Error creating board: {e}")
+        raise HTTPException(status_code=500, detail=f"Board creation error: {str(e)}")
+
     gs = GameState(
         game_id=game_id,
         created_ts=_now_ts(),
@@ -274,8 +583,12 @@ def new_game(req: NewGameRequest):
         engine_tc_ms=max(10, int(req.engine_tc_ms)),
     )
     GAMES[game_id] = gs
+    logger.info(f"Game {game_id} created successfully")
+
     _jsonl_write(WEBUI_LOG, {"ts": _now_ts(), "type": "new_game", "game_id": game_id, "white": req.white, "black": req.black, "fen": board.fen(), "tc_ms": gs.engine_tc_ms})
-    return {"game_id": game_id, "fen": board.fen(), "turn": "w" if board.turn == chess.WHITE else "b"}
+    result = {"game_id": game_id, "fen": board.fen(), "turn": "w" if board.turn == chess.WHITE else "b"}
+    logger.info(f"Returning game result: {result}")
+    return result
 
 
 @app.post("/move")

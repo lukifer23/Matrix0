@@ -31,29 +31,26 @@ engines:
       TimeManager: "legacy"
       MultiPV: "1"
 
-# Komodo removed - commercial software
+  komodo:
+    command: "komodo"
+    working_dir: "/path/to/komodo"
+    options:
+      Threads: "4"
+      Hash: "512"
 
 # Test scenarios
 scenarios:
-  - name: "Stockfish_Test"
+  - name: "Stockfish_Quick_Test"
     engine: "stockfish"
     model_checkpoint: "checkpoints/best.pt"
     num_games: 10
     time_control: "5+0.05"
     max_moves: 200
-    concurrency: 1
+    concurrency: 2
     random_openings: true
     opening_plies: 8
 
-  - name: "LC0_Test"
-    engine: "lc0"
-    model_checkpoint: "checkpoints/best.pt"
-    num_games: 10
-    time_control: "5+0.05"
-    max_moves: 150
-    concurrency: 1
-    random_openings: true
-    opening_plies: 6
+# Removed lc0 and Komodo scenarios for quick testing
 
 # Performance monitoring configuration
 performance:

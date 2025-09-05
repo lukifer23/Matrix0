@@ -1,0 +1,57 @@
+description: Standard benchmark suite against Stockfish and lc0
+name: Matrix0 Standard Benchmark
+output_dir: benchmarks/results
+performance_config:
+  log_system_load: true
+  sample_interval: 0.1
+  track_cpu: true
+  track_gpu: true
+  track_memory: true
+scenarios:
+- concurrency: 1
+  engine_config:
+    command: /opt/homebrew/bin/stockfish
+    name: stockfish
+    options:
+      Hash: '256'
+      Skill Level: '0'
+      Threads: '2'
+    working_dir: null
+  max_moves: 200
+  model_checkpoint: checkpoints/best.pt
+  name: Stockfish_Test
+  num_games: 10
+  opening_book: null
+  opening_plies: 8
+  random_openings: true
+  time_control: 5+0.05
+- concurrency: 1
+  engine_config:
+    command: /opt/homebrew/bin/lc0
+    name: lc0
+    options:
+      Backend: metal
+      Blas: 'true'
+      CPuct: '1.745000'
+      MaxPrefetch: '32'
+      MinibatchSize: '32'
+      MoveOverheadMs: '200'
+      MultiPV: '1'
+      NNCacheSize: '2000000'
+      RamLimitMb: '0'
+      Threads: '4'
+      TimeManager: legacy
+    working_dir: null
+  max_moves: 150
+  model_checkpoint: checkpoints/best.pt
+  name: LC0_Test
+  num_games: 10
+  opening_book: null
+  opening_plies: 6
+  random_openings: true
+  time_control: 5+0.05
+statistical_config:
+  calculate_elo: true
+  confidence_level: 0.95
+  elo_k_factor: 32
+  min_games_for_stats: 30

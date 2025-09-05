@@ -7,8 +7,15 @@ let trainingChart = null;
 let currentView = 'game';
 let tournamentPollInterval = null;
 
+// Debug logging
+function debugLog(message, data = null) {
+  console.log(`[WebUI Debug] ${message}`, data || '');
+}
+
 // View switching
 function switchView(viewName) {
+  debugLog(`Switching to view: ${viewName}`);
+
   // Update buttons
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.classList.remove('active');
@@ -25,12 +32,16 @@ function switchView(viewName) {
 
   // Load view-specific data
   if (viewName === 'training') {
+    debugLog('Loading training status');
     loadTrainingStatus();
   } else if (viewName === 'ssl') {
+    debugLog('Loading SSL status');
     loadSSLStatus();
   } else if (viewName === 'tournament') {
+    debugLog('Loading tournament data');
     loadTournamentData();
   } else if (viewName === 'analysis') {
+    debugLog('Loading model analysis');
     loadModelAnalysis();
   }
 
@@ -44,8 +55,10 @@ function switchView(viewName) {
 
 // Enhanced training monitoring with statistics
 async function loadTrainingStatus() {
+  debugLog('Fetching training status from /training/status');
   try {
     const response = await fetch('/training/status');
+    debugLog('Training status response received', response.status);
     const data = await response.json();
 
     const statusEl = document.getElementById('trainingStatus');
@@ -387,19 +400,29 @@ function renderMoves() {
 }
 
 async function api(path, body) {
+  debugLog(`API call: ${path}`, body);
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
+  debugLog(`API response: ${path} -> ${res.status}`);
+  if (!res.ok) {
+    const errorText = await res.text();
+    debugLog(`API error: ${path} -> ${res.status}: ${errorText}`);
+    throw new Error(errorText);
+  }
+  const result = await res.json();
+  debugLog(`API success: ${path}`, result);
+  return result;
 }
 
 async function newGame() {
+  debugLog('New game button clicked');
   const white = document.getElementById('white').value;
   const black = document.getElementById('black').value;
   const tc = parseInt(document.getElementById('tc').value || '100', 10);
+  debugLog(`Starting new game: ${white} vs ${black}, tc=${tc}`);
   const out = await api('/new', { white, black, engine_tc_ms: tc });
   gameId = out.game_id;
   document.getElementById('gid').textContent = gameId;
