@@ -117,9 +117,24 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     # Avoid CPU over-subscription when using GPU/MPS
     try:
         if device != "cpu":
-            # Use config thread count or default to 2 cores per worker
-            config_threads = getattr(cfg_dict, 'num_threads', 2)
-            torch.set_num_threads(config_threads)
+            # Prefer explicit selfplay.worker_threads, then mps preset override, else fallback
+            threads_cfg = None
+            try:
+                threads_cfg = int(cfg_dict.get('selfplay', {}).get('worker_threads', None) or 0)
+            except Exception:
+                threads_cfg = None
+            if not threads_cfg:
+                try:
+                    dev_sel = select_device(cfg_dict.get('device', 'auto'))
+                    threads_cfg = int(cfg_dict.get('presets', {}).get(dev_sel, {}).get('worker_threads', 0) or 0)
+                except Exception:
+                    threads_cfg = None
+            if not threads_cfg:
+                try:
+                    threads_cfg = int(cfg_dict.get('num_threads', 0) or 0)
+                except Exception:
+                    threads_cfg = None
+            torch.set_num_threads(int(threads_cfg) if threads_cfg and threads_cfg > 0 else 1)
     except Exception:
         pass
 
@@ -635,4 +650,3 @@ def game_result(board: chess.Board) -> float:
     if res == "0-1":
         return -1.0
     return 0.0
-

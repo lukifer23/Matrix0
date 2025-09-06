@@ -500,6 +500,7 @@ def orchestrator_status():
                 import json as _json
                 sp_start = None
                 sp_games = []
+                saw_activity = False
                 for ln in lines:
                     try:
                         ev = _json.loads(ln)
@@ -507,8 +508,10 @@ def orchestrator_status():
                         continue
                     if ev.get("type") == "sp_start":
                         sp_start = ev
+                        saw_activity = True
                     elif ev.get("type") == "sp_game":
                         sp_games.append(ev)
+                        saw_activity = True
                 if sp_start:
                     workers_ev = int(sp_start.get("workers", plan.get("workers", 0) or 0))
                     gpw_ev = int(sp_start.get("games_per_worker", plan.get("games_per_worker", 0) or 0))
@@ -534,6 +537,11 @@ def orchestrator_status():
                             else: draws += 1
                         progress["wins"], progress["losses"], progress["draws"] = wins, losses, draws
 
+                # If we observed activity from webui.jsonl, treat orchestrator as running
+                if saw_activity and not running:
+                    running = True
+                    inferred = True
+
             # If still no plan, estimate from config
             if not plan:
                 cfg_path = "config.yaml"
@@ -554,6 +562,7 @@ def orchestrator_status():
             plan = {}
 
     total_games = int(plan.get("total_games", 0) or 0)
+    # Consider CLI runs inferred from webui.jsonl as active
     completed = int(progress["completed_games"]) if (started_at or inferred) else 0
     pct = (completed / total_games * 100.0) if total_games > 0 else 0.0
 
@@ -739,7 +748,7 @@ def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, dev
     ckpt_path = ckpt or cfg.engines().get("matrix0", {}).get("checkpoint", str(CHECKPOINTS_DIR / "best.pt"))
     if ckpt_path and Path(ckpt_path).exists():
         import torch
-        state = torch.load(ckpt_path, map_location=_device)
+        state = torch.load(ckpt_path, map_location=_device, weights_only=False)
         model.load_state_dict(state.get("model_ema", state.get("model", {})))
     _matrix0_model = model.to(_device)
     e = cfg.eval()
@@ -840,7 +849,14 @@ def _cleanup_games(ttl_sec: int = GAME_TTL_SEC) -> int:
     now = _now_ts()
     to_del: List[str] = []
     for gid, gs in list(GAMES.items()):
-        if gs.board.is_game_over(claim_draw=True) or now - gs.created_ts > ttl_sec:
+        try:
+            is_game_over = gs.board.is_game_over(claim_draw=True)
+        except Exception:
+            # If there's an error checking game over (e.g., invalid moves in history),
+            # assume the game might be corrupted and clean it up
+            is_game_over = True
+
+        if is_game_over or now - gs.created_ts > ttl_sec:
             to_del.append(gid)
     for gid in to_del:
         GAMES.pop(gid, None)
@@ -963,7 +979,20 @@ def engine_move(req: EngineMoveRequest):
     if engine == "matrix0":
         _load_matrix0()
         visits, pi, v = _matrix0_mcts.run(gs.board)
-        mv = max(visits.items(), key=lambda kv: kv[1])[0]
+
+        # Filter visits to only include legal moves and select the best one
+        legal_moves = list(gs.board.legal_moves)
+        legal_visits = {move: visits.get(move, 0) for move in legal_moves if move in visits}
+
+        if not legal_visits:
+            # Fallback: if no legal moves found in visits, use any legal move
+            mv = legal_moves[0] if legal_moves else None
+        else:
+            mv = max(legal_visits.items(), key=lambda kv: kv[1])[0]
+
+        if mv is None:
+            raise HTTPException(status_code=500, detail="No legal moves available")
+
         elapsed = (time.perf_counter() - start) * 1000.0
         gs.board.push(mv)
         gs.moves.append(mv.uci())

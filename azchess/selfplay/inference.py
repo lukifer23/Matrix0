@@ -232,8 +232,18 @@ def run_inference_server(
         # On MPS, AMP often slows inference due to cast overhead; keep AMP only on CUDA
         use_amp = (device_type == "cuda")
 
-        # Target batch size tuned per device to avoid long waits/timeouts
-        target_batch_for_device = 4 if device_type == "mps" else 16
+        # Target batch size tuned per device to avoid long waits/timeouts.
+        # Allow environment overrides for quick tuning without code changes.
+        # Defaults: MPS=4 (safe), CUDA=16 (typical), CPU=4.
+        try:
+            if device_type == "mps":
+                target_batch_for_device = int(os.environ.get("MATRIX0_MPS_TARGET_BATCH", "4"))
+            elif device_type == "cuda":
+                target_batch_for_device = int(os.environ.get("MATRIX0_CUDA_TARGET_BATCH", "16"))
+            else:
+                target_batch_for_device = int(os.environ.get("MATRIX0_CPU_TARGET_BATCH", "4"))
+        except Exception:
+            target_batch_for_device = 4 if device_type == "mps" else 16
 
         worker_events = [res["request_event"] for res in shared_memory_resources]
         event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
@@ -369,7 +379,7 @@ def run_inference_server(
                 # Process larger batches for better GPU utilization
                 try:
                     batch_tensor = torch.cat(tensors_to_process, dim=0).to(device)
-                    logger.info(f"Processing batch of size {batch_tensor.shape[0]} from {len(batch_sizes)} workers")
+                    logger.debug(f"Processing batch of size {batch_tensor.shape[0]} from {len(batch_sizes)} workers")
                     logger.debug(f"Batch tensor shape: {batch_tensor.shape}, device: {batch_tensor.device}")
                 except Exception as cat_error:
                     logger.error(f"Failed to concatenate tensors: {cat_error}")
@@ -389,7 +399,7 @@ def run_inference_server(
                 inference_start = time.time()
                 with torch.no_grad():
                     try:
-                        logger.info(f"Starting inference for batch size {batch_tensor.shape[0]} on {device_type}")
+                        logger.debug(f"Starting inference for batch size {batch_tensor.shape[0]} on {device_type}")
                         model_start = time.time()
 
                         if use_amp:
@@ -399,14 +409,14 @@ def run_inference_server(
                             policy_logits, value_tensor = model(batch_tensor)
 
                         model_time = time.time() - model_start
-                        logger.info(f"Model forward pass completed in {model_time:.3f}s")
+                        logger.debug(f"Model forward pass completed in {model_time:.3f}s")
 
                         # Validate model outputs
                         if policy_logits is None or value_tensor is None:
                             raise ValueError("Model returned None outputs")
 
                         inference_time = time.time() - inference_start
-                        logger.info(f"Full inference completed in {inference_time:.3f}s for batch size {batch_tensor.shape[0]}")
+                        logger.debug(f"Full inference completed in {inference_time:.3f}s for batch size {batch_tensor.shape[0]}")
 
                         # Convert to numpy for response with strict dtype/shape
                         policy = torch.softmax(policy_logits, dim=-1).detach().to(torch.float32).cpu().numpy()

@@ -34,12 +34,26 @@ Once running, access the enhanced WebUI at:
 - **Alternative API Docs**: http://127.0.0.1:8000/redoc
 
 ## 📊 Enhanced Features Overview
+\n+## Integration Contract (Do Not Break)
+- The WebUI reads lightweight JSONL events written by the orchestrator at `logs/webui.jsonl`.
+- Required event types are:
+  - `sp_start` — emitted at self‑play start with `workers`, `games_per_worker`, `total_target`.
+  - `sp_heartbeat` — periodic worker heartbeat with `worker`, `moves`, `avg_sims`.
+  - `sp_game` — one line per finished game with `worker`, `moves`, `avg_ms_per_move`, `avg_sims`, `result`, `done`, `total`.
+- These events are emitted from the main orchestrator process and are intentionally tiny; do not remove them. They are decoupled from inference/training and have negligible overhead.
+- Avoid introducing long blocking calls in the shared inference server that would starve event production (e.g., giant batches on MPS). If tuning inference, validate that heartbeats and `sp_game` events continue to arrive regularly.
+
+Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs and will infer progress if the JSONL events are missing, but the JSONL path is the supported mechanism for accurate worker status.
 
 ### 🎮 Game View - Interactive Chess Interface
-- **Interactive Play**: Play against SSL-integrated Matrix0 models
+- **Interactive Chess Board**: Fully functional 8x8 chess board with proper alternating square colors
+- **Interactive Play**: Play against SSL-integrated Matrix0 models with click-to-move interface
 - **Game Analysis**: Real-time position evaluation with SSL-aware analysis
 - **Move Visualization**: See model evaluation charts and move suggestions
 - **Game Management**: Full game lifecycle with PGN export and analysis
+- **Model vs Model Games**: Automated Matrix0 vs Matrix0 games
+- **External Engine Games**: Matrix0 vs Stockfish/LC0 integration
+- **Responsive Layout**: Optimized for desktop, tablet, and mobile devices
 
 ### Training View - Real-Time Training Monitor
 - **Live Training Status**: Real-time step tracking and progress visualization
@@ -230,11 +244,17 @@ Once running, access the enhanced WebUI at:
 The enhanced WebUI features four specialized views accessible via the top navigation:
 
 #### 🎮 Game View - Interactive Chess Interface
-1. **Engine Selection**: Choose Matrix0, Stockfish, or Human players for each side
-2. **Time Controls**: Set engine thinking time (10ms - 10s range)
-3. **Interactive Play**: Click on the board or use move input to play
-4. **Real-time Analysis**: View live evaluation charts and SSL-aware analysis
-5. **Game Management**: Start new games, review move history, export PGN
+1. **Chess Board**: Fully functional 8x8 board with proper alternating square colors (light beige/dark brown)
+2. **Engine Selection**: Choose Matrix0, Stockfish, or Human players for each side
+3. **Time Controls**: Set engine thinking time (10ms - 10s range)
+4. **Interactive Play**: Click-to-move interface with legal move highlighting
+5. **Game Modes**: 
+   - Human vs Matrix0
+   - Model vs Model (Matrix0 vs Matrix0)
+   - Matrix0 vs Stockfish
+6. **Real-time Analysis**: View live evaluation charts and SSL-aware analysis
+7. **Game Management**: Start new games, review move history, export PGN
+8. **Responsive Design**: Optimized layout for all screen sizes
 
 #### 📈 Training View - Live Training Monitor
 1. **Training Status**: View current step, progress, and estimated completion
@@ -396,11 +416,15 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 - **Performance**: ~3-4 seconds per training step with SSL
 
 ### WebUI Capabilities
-- **Multi-View Interface**: Game, Training, SSL, and Analysis views
+- **Multi-View Interface**: Game, Training, SSL, Tournament, and Analysis views
+- **Interactive Chess Board**: Fully functional 8x8 board with proper styling and responsive design
 - **Real-time Monitoring**: Live training and SSL status updates
 - **Interactive Visualization**: Charts, progress bars, and status indicators
 - **SSL Dashboard**: Complete SSL head analysis and performance tracking
 - **Model Analysis**: Deep architecture inspection and parameter breakdown
+- **Tournament System**: Comprehensive tournament management with multiple formats
+- **Responsive Design**: Optimized for desktop, tablet, and mobile devices
+- **Modern UI**: Clean, professional interface with efficient space utilization
 
 ### Development Priorities
 1. **SSL Performance Validation**: Measure and validate SSL learning effectiveness
@@ -410,6 +434,6 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 
 ---
 
-**Matrix0 Enhanced WebUI v2.1** - Complete monitoring and analysis platform for SSL-integrated chess AI development.
+**Matrix0 Enhanced WebUI v2.2** - Complete monitoring and analysis platform for SSL-integrated chess AI development.
 
-*Current focus: SSL performance validation and multi-engine evaluation with SSL-aware metrics.*
+*Latest updates: Interactive chess board with proper styling, responsive design, tournament system, and optimized layout for all screen sizes.*

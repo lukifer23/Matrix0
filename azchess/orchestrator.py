@@ -37,6 +37,23 @@ from .utils import (clear_memory_cache, get_memory_usage, log_config_summary,
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="runpy")
 
+# Minimal WebUI integration: emit lightweight JSONL events that the
+# WebUI reads to display worker/game progress. This is intentionally
+# decoupled from core training/inference to avoid performance impact.
+WEBUI_LOG = Path("logs") / "webui.jsonl"
+
+def _webui_log(payload: Dict[str, object]) -> None:
+    try:
+        import json as _json
+        WEBUI_LOG.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(payload)
+        payload.setdefault("ts", time.time())
+        with WEBUI_LOG.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload) + "\n")
+    except Exception:
+        # Never let WebUI logging affect orchestrator
+        pass
+
 
 def cleanup_temp_files(data_dir: Path) -> None:
     """Clean up temporary files from previous runs."""
@@ -306,6 +323,15 @@ def orchestrate(
             cleanup_temp_files(Path(cfg.get("data_dir", "data")))
 
             logger.info("Starting self-play")
+            try:
+                _webui_log({
+                    "type": "sp_start",
+                    "workers": int(workers),
+                    "games_per_worker": int(games_per_worker),
+                    "total_target": int(workers * games_per_worker),
+                })
+            except Exception:
+                pass
             # Reduce MCTS verbosity during self-play to keep TUI readable
             try:
                 import logging as _logging
@@ -557,6 +583,16 @@ def orchestrate(
                                     progress.update(hb_task, completed=0)
                                 except Exception:
                                     pass
+                                # Emit lightweight heartbeat for WebUI worker summary
+                                try:
+                                    _webui_log({
+                                        "type": "sp_heartbeat",
+                                        "worker": wid,
+                                        "moves": int(msg.get("moves", 0)),
+                                        "avg_sims": float(msg.get("avg_sims", 0.0)),
+                                    })
+                                except Exception:
+                                    pass
                                 # Heartbeat processed - no table refresh needed
                                 continue
                             if isinstance(msg, dict) and msg.get("type") == "game":
@@ -585,6 +621,22 @@ def orchestrate(
                                         stats['res_w'] += 1
                                     elif rc == 'B':
                                         stats['res_b'] += 1
+                                # Emit per-game event for WebUI worker summary
+                                try:
+                                    _webui_log({
+                                        "type": "sp_game",
+                                        "worker": wid,
+                                        "moves": int(msg.get("moves", 0)),
+                                        "avg_ms_per_move": float(msg.get("avg_ms_per_move", 0.0)),
+                                        "avg_sims": float(msg.get("avg_sims", 0.0)),
+                                        "result": float(msg.get("result", 0.0)),
+                                        "resigned": bool(msg.get("resigned", False)),
+                                        "resigner": msg.get("resigner", None),
+                                        "done": int(done),
+                                        "total": int(total_target),
+                                    })
+                                except Exception:
+                                    pass
                                 # Rebuild table with memory and heartbeat info
                                 new_table = Table(title=mem_title())
                                 new_table.add_column("Worker", justify="left")
@@ -628,6 +680,18 @@ def orchestrate(
                             continue
                         # Any message counts as progress for stall detection
                         last_msg_time = time.time()
+                        if isinstance(msg, dict) and msg.get("type") == "heartbeat":
+                            try:
+                                wid = int(msg.get("proc", -1))
+                                _webui_log({
+                                    "type": "sp_heartbeat",
+                                    "worker": wid,
+                                    "moves": int(msg.get("moves", 0)),
+                                    "avg_sims": float(msg.get("avg_sims", 0.0)),
+                                })
+                            except Exception:
+                                pass
+                            continue
                         if isinstance(msg, dict) and msg.get("type") == "game":
                             done += 1
                             progress.update(sp_task, advance=1)
@@ -647,6 +711,21 @@ def orchestrate(
                             elif res < 0: stats["loss"] += 1
                             else: stats["draw"] += 1
                             progress.update(stats_task, description=f"W/L/D: {stats['win']}/{stats['loss']}/{stats['draw']}")
+                            try:
+                                _webui_log({
+                                    "type": "sp_game",
+                                    "worker": wid,
+                                    "moves": int(msg.get("moves", 0)),
+                                    "avg_ms_per_move": float(msg.get("avg_ms_per_move", 0.0)),
+                                    "avg_sims": float(msg.get("avg_sims", 0.0)),
+                                    "result": float(msg.get("result", 0.0)),
+                                    "resigned": bool(msg.get("resigned", False)),
+                                    "resigner": msg.get("resigner", None),
+                                    "done": int(done),
+                                    "total": int(total_target),
+                                })
+                            except Exception:
+                                pass
             finally:
                 for p in procs:
                     p.join()
@@ -672,6 +751,10 @@ def orchestrate(
                 attempt += 1
         # Post self-play: compact data, validate/quarantine if requested
         logger.info("Compacting self-play data into replay buffer")
+        try:
+            _webui_log({"type": "sp_compact"})
+        except Exception:
+            pass
         dm = DataManager(base_dir=cfg.get("data_dir", "data"))
         try:
             dm.compact_selfplay_to_replay()
@@ -767,6 +850,10 @@ def orchestrate(
         # Train phase
         logger.info("Starting training phase")
         try:
+            _webui_log({"type": "training_start"})
+        except Exception:
+            pass
+        try:
             # Write merged config (with CLI overrides) to a temp YAML for training
             try:
                 ts = int(time.time())
@@ -813,6 +900,15 @@ def orchestrate(
         # Evaluate candidate vs current best
         if eval_games > 0:
             logger.info(f"Evaluating candidate {candidate} vs best {best_ckpt}")
+            try:
+                _webui_log({
+                    "type": "eval_start",
+                    "candidate": str(candidate),
+                    "best": str(best_ckpt),
+                    "games": int(eval_games),
+                })
+            except Exception:
+                pass
             # Parallelize eval games if configured
             eval_workers = int(cfg.eval().get("workers", 1))
             eval_num_sims = int(cfg.eval().get("num_simulations", cfg.mcts().get("num_simulations", 500)))
@@ -827,6 +923,14 @@ def orchestrate(
             )
             win_rate = score / float(eval_games)
             logger.info(f"Evaluation complete: win_rate={win_rate:.3f} threshold={promote_thr:.3f}")
+            try:
+                _webui_log({
+                    "type": "eval_done",
+                    "win_rate": float(win_rate),
+                    "games": int(eval_games),
+                })
+            except Exception:
+                pass
         else:
             logger.info(f"Skipping evaluation (eval_games={eval_games})")
             score = 0.0
@@ -867,6 +971,14 @@ def orchestrate(
             try:
                 shutil.copy2(candidate, best_ckpt)
                 logger.info(f"Promoted candidate to best: {best_ckpt}")
+                try:
+                    _webui_log({
+                        "type": "promotion",
+                        "best": str(best_ckpt),
+                        "candidate": str(candidate),
+                    })
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Failed to promote candidate: {e}")
             # Enforce keep_top_k archives

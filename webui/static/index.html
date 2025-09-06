@@ -3,139 +3,1008 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Matrix0 WebUI</title>
-    <link rel="stylesheet" href="https://unpkg.com/chessground@8.4.3/assets/chessground.css" />
+    <title>Matrix0 WebUI - Advanced Chess AI Platform</title>
+    <!-- Chess board styles will be inline -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-      :root { color-scheme: light dark; --bg: #0b0d10; --fg: #e8eaf0; --muted:#9aa4b2; --card:#12161a; --border:#1f242a; --accent:#5ac8fa;}
-      @media(prefers-color-scheme: light) { :root { --bg:#f7f8fa; --fg:#0b0d10; --muted:#5b6470; --card:#ffffff; --border:#e5e8ee; --accent:#007aff; } }
-      * { box-sizing: border-box; }
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-      header { padding: 12px 16px; border-bottom: 1px solid var(--border); position: sticky; top:0; backdrop-filter: blur(6px);}
-      .title { font-weight:600; letter-spacing:.2px; margin-bottom: 8px; }
-      .title-main { font-size: 18px; }
-      .title-subtitle { font-size: 12px; color: var(--muted); }
-      .header-controls { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px; }
-      .game-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      .view-controls { display: flex; gap: 4px; }
-      .view-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); font-size: 12px; }
-      .view-btn:hover { border-color: var(--accent); }
-      .view-btn.active { border-color: var(--accent); background: var(--accent); color: white; }
-      .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-      label { font-size: 13px; color: var(--muted); display:flex; gap:6px; align-items:center; }
-      input, select { padding: 6px 8px; border-radius: 6px; border:1px solid var(--border); background: var(--card); color: var(--fg); }
-      button { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--fg); cursor:pointer; }
-      button:hover { border-color: var(--accent); }
-      main { display: grid; grid-template-columns: minmax(360px, 560px) 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
-      #boardWrap { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-      #board { width: 100%; aspect-ratio: 1 / 1; height: auto; border-radius: 8px; overflow: hidden; }
-      .grid { display:grid; gap:16px; grid-template-columns: 1fr; }
-      .panel { border: 1px solid var(--border); background: var(--card); padding: 12px; border-radius: 10px; }
-      .row { margin: 6px 0; font-size: 13px; color: var(--muted); }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; color: var(--fg); }
-      .val { font-weight: 600; color: var(--fg); }
-      .columns { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      canvas { width: 100% !important; height: 240px !important; }
-      .kvs { display:flex; gap:12px; align-items:center; }
-      .badge { font-size: 12px; padding: 4px 8px; border-radius: 999px; border:1px solid var(--border); background: var(--bg); }
+      :root {
+        color-scheme: light dark;
+        --bg: #0f1117;
+        --fg: #f1f5f9;
+        --muted: #94a3b8;
+        --card: #1a1d23;
+        --card-hover: #202428;
+        --border: #2a2f3a;
+        --accent: #3b82f6;
+        --accent-hover: #2563eb;
+        --success: #10b981;
+        --warning: #f59e0b;
+        --error: #ef4444;
+        --info: #06b6d4;
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      }
 
-      /* View Content Switching */
-      .view-content { display: none; }
-      .view-content.active { display: grid; grid-template-columns: 520px 1fr; gap: 16px; }
-      .view-content.active.full-width { grid-template-columns: 1fr; grid-column: 1 / -1; }
+      @media(prefers-color-scheme: light) {
+        :root {
+          --bg: #f8fafc;
+          --fg: #1e293b;
+          --muted: #64748b;
+          --card: #ffffff;
+          --card-hover: #f1f5f9;
+          --border: #e2e8f0;
+          --accent: #3b82f6;
+          --accent-hover: #2563eb;
+          --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+          --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+      }
 
-      /* Panel Headers */
-      .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-      .panel-header h3 { margin: 0; font-size: 16px; font-weight: 600; color: var(--accent); }
+      * {
+        box-sizing: border-box;
+        /* Optimize for performance */
+        -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+      }
+
+      /* Re-enable selection for text inputs and content areas */
+      input, select, textarea, .mono, .log {
+        -webkit-user-select: text;
+        -moz-user-select: text;
+        -ms-user-select: text;
+        user-select: text;
+      }
+      body {
+        font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        margin: 0; padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        line-height: 1.6;
+        font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* Header */
+      header {
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        backdrop-filter: blur(12px);
+        background: var(--bg);
+        z-index: 100;
+        box-shadow: var(--shadow);
+      }
+
+      .title {
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .title-main {
+        font-size: 24px;
+        background: linear-gradient(135deg, var(--accent), #8b5cf6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .title-icon {
+        font-size: 28px;
+        color: var(--accent);
+      }
+
+      .title-subtitle {
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 400;
+      }
+
+      .header-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 20px;
+      }
+
+      .game-controls {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .view-controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .view-btn {
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--fg);
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .view-btn:hover {
+        border-color: var(--accent);
+        background: var(--card-hover);
+        transform: translateY(-1px);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .view-btn.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+
+      /* Main Layout */
+      main {
+        display: grid;
+        grid-template-columns: minmax(400px, 600px) 1fr;
+        gap: 24px;
+        padding: 24px;
+        max-width: 1600px;
+        margin: 0 auto;
+      }
+
+      /* Chess Board */
+      .game-grid {
+        display: grid;
+        grid-template-columns: 1fr 400px;
+        gap: 20px;
+        align-items: start;
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+
+      #boardWrap {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: var(--shadow);
+        transition: box-shadow 0.2s ease;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1 / 1;
+        max-width: 600px;
+      }
+
+      #boardWrap:hover {
+        box-shadow: var(--shadow-lg);
+      }
+
+      .game-panels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        align-items: start;
+      }
+
+      #board {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        position: relative;
+      }
+
+      #board.loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--card);
+        min-height: 448px;
+      }
+
+      .board-loading {
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .board-loading i {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+        display: block;
+      }
+
+      .board-loading span {
+        font-size: 0.9rem;
+      }
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+      }
+
+      /* Panels */
+      .grid {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        background: var(--card);
+        padding: 20px;
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        transition: all 0.2s ease;
+      }
+
+      .panel:hover {
+        box-shadow: var(--shadow-lg);
+        transform: translateY(-1px);
+      }
+
+      /* Performance optimizations */
+      .panel {
+        contain: layout style paint;
+        will-change: transform, box-shadow;
+      }
+
+      .view-btn {
+        will-change: transform, background, border-color;
+      }
+
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 12px;
+      }
+
+      .panel-header h3 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--accent);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      /* Form Controls */
+      .controls {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      label {
+        font-size: 14px;
+        color: var(--muted);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-weight: 500;
+      }
+
+      input, select {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--fg);
+        font-size: 14px;
+        transition: border-color 0.2s ease;
+      }
+
+      input:focus, select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+
+      button {
+        padding: 10px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--fg);
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        background: var(--card-hover);
+        transform: translateY(-1px);
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+
+      button.primary:hover {
+        background: var(--accent-hover);
+      }
+
+      button.danger {
+        background: var(--error);
+        color: white;
+        border-color: var(--error);
+      }
+
+      button.danger:hover {
+        background: #dc2626;
+      }
 
       /* Status Indicators */
-      .status-indicator { font-size: 12px; padding: 4px 8px; border-radius: 12px; }
-      .status-indicator.training { background: #10b981; color: white; }
-      .status-indicator.not-training { background: #6b7280; color: white; }
-      .status-indicator.ssl-enabled { background: #3b82f6; color: white; }
-      .status-indicator.ssl-disabled { background: #ef4444; color: white; }
+      .status-indicator {
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
 
-      /* Metrics Grid */
-      .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px; }
-      .metric { text-align: center; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-      .metric-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-      .metric-value { font-size: 18px; font-weight: 600; color: var(--fg); }
+      .status-indicator.training {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+      }
 
-      /* Config Display */
-      .config-display { display: flex; flex-direction: column; gap: 8px; }
-      .config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
-      .config-label { font-size: 14px; color: var(--muted); }
-      .config-value { font-size: 14px; color: var(--fg); font-weight: 500; }
+      .status-indicator.not-training {
+        background: rgba(107, 114, 128, 0.15);
+        color: var(--muted);
+        border: 1px solid rgba(107, 114, 128, 0.2);
+      }
 
-      /* SSL Heads Display */
-      .ssl-heads-display { display: flex; flex-direction: column; gap: 8px; }
-      .ssl-head { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
-      .ssl-head-name { font-weight: 600; color: var(--accent); }
-      .ssl-head-params { font-size: 12px; color: var(--muted); }
-      .ssl-head-structure { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; margin-top: 4px; }
+      .status-indicator.ssl-enabled {
+        background: rgba(59, 130, 246, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+      }
 
-      /* SSL Performance Display */
-      .ssl-performance-display { display: flex; flex-direction: column; gap: 6px; }
-      .ssl-metric { padding: 6px 0; border-bottom: 1px solid var(--border); }
-      .ssl-metric:last-child { border-bottom: none; }
+      .status-indicator.ssl-disabled {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--error);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+      }
 
-      /* Tournament Interface */
-      .tournament-controls { display: flex; flex-direction: column; gap: 12px; }
-      .control-group { display: flex; flex-direction: column; gap: 4px; }
-      .control-group label { font-size: 14px; font-weight: 500; color: var(--fg); }
-      .control-group input, .control-group select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--fg); }
-      .engine-selection { display: flex; gap: 12px; flex-wrap: wrap; }
-      .engine-selection label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
-      .create-btn { background: var(--accent); color: white; border: 1px solid var(--accent); padding: 10px 16px; border-radius: 8px; font-weight: 500; }
-      .create-btn:hover { background: var(--accent); opacity: 0.9; }
+      /* Metrics */
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 16px;
+        margin-bottom: 20px;
+      }
 
-      /* Tournament Lists */
-      .tournament-list, .tournament-history { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
-      .tournament-item { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-      .tournament-item h4 { margin: 0 0 8px 0; color: var(--accent); }
-      .tournament-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; font-size: 12px; }
-      .tournament-stat { text-align: center; }
-      .tournament-stat-label { color: var(--muted); margin-bottom: 2px; }
-      .tournament-stat-value { font-weight: 600; color: var(--fg); }
+      .metric {
+        text-align: center;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        transition: all 0.2s ease;
+      }
 
-      /* Ratings Display */
-      .ratings-display { display: flex; flex-direction: column; gap: 8px; }
-      .rating-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
-      .rating-item:last-child { border-bottom: none; }
-      .rating-engine { font-weight: 500; color: var(--accent); }
-      .rating-values { text-align: right; font-size: 13px; }
-      .rating-elo { font-weight: 600; color: var(--fg); }
-      .rating-glicko { color: var(--muted); }
+      .metric:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow);
+      }
 
-      /* Model Analysis */
-      .model-analysis { display: flex; flex-direction: column; gap: 8px; }
-      .analysis-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
-      .analysis-label { font-size: 14px; color: var(--muted); }
-      .analysis-value { font-size: 14px; color: var(--fg); font-weight: 500; }
+      .metric-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
 
-      /* Parameter Breakdown */
-      .param-breakdown { display: flex; flex-direction: column; gap: 6px; }
-      .param-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
-      .param-type { font-size: 13px; color: var(--muted); }
-      .param-count { font-size: 13px; color: var(--fg); font-weight: 500; }
+      .metric-value {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--fg);
+        font-variant-numeric: tabular-nums;
+      }
 
       /* Progress Bars */
-      .progress-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 4px 0; }
-      .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+      .progress-bar {
+        width: 100%;
+        height: 12px;
+        background: var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 8px 0;
+        position: relative;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+        transition: width 0.4s ease;
+        border-radius: 6px;
+      }
+
+      /* Config Display */
+      .config-display {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .config-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+        transition: background-color 0.2s ease;
+      }
+
+      .config-item:hover {
+        background: var(--card-hover);
+        border-radius: 6px;
+        padding: 12px;
+        margin: 0 -12px;
+      }
+
+      .config-label {
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .config-value {
+        font-size: 14px;
+        color: var(--fg);
+        font-weight: 600;
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      }
+
+      /* Charts */
+      canvas {
+        width: 100% !important;
+        height: 300px !important;
+        border-radius: 8px;
+      }
+
+      /* Tournament Interface */
+      .tournament-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .control-group label {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+
+      .engine-selection {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+      }
+
+      .engine-selection label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .engine-selection label:hover {
+        border-color: var(--accent);
+        background: var(--card-hover);
+      }
+
+      .engine-selection input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
+
+      .create-btn {
+        background: var(--accent);
+        color: white;
+        border: 1px solid var(--accent);
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 16px;
+        transition: all 0.2s ease;
+      }
+
+      .create-btn:hover {
+        background: var(--accent-hover);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow);
+      }
+
+      /* Tournament Lists */
+      .tournament-list, .tournament-history {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+
+      .tournament-item {
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        transition: all 0.2s ease;
+        cursor: pointer;
+      }
+
+      .tournament-item:hover {
+        border-color: var(--accent);
+        background: var(--card-hover);
+        transform: translateY(-1px);
+      }
+
+      .tournament-item h4 {
+        margin: 0 0 12px 0;
+        color: var(--accent);
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .tournament-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .tournament-stat {
+        text-align: center;
+        padding: 8px;
+        border-radius: 6px;
+        background: var(--bg);
+      }
+
+      .tournament-stat-label {
+        color: var(--muted);
+        margin-bottom: 4px;
+        font-size: 12px;
+      }
+
+      .tournament-stat-value {
+        font-weight: 700;
+        color: var(--fg);
+        font-size: 14px;
+      }
+
+      /* Game Interface */
+      .kvs {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .badge {
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 20px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .mono {
+        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+        color: var(--fg);
+        background: var(--bg);
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        overflow-x: auto;
+      }
+
+      .row {
+        margin: 8px 0;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .val {
+        font-weight: 700;
+        color: var(--fg);
+      }
+
+      .columns {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      /* View Switching */
+      .view-content {
+        display: none;
+        animation: fadeIn 0.3s ease;
+      }
+
+      .view-content.active {
+        display: grid;
+        grid-template-columns: 580px 1fr;
+        gap: 24px;
+      }
+
+      .view-content.active.full-width {
+        grid-template-columns: 1fr;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
 
       /* Responsive */
       @media (max-width: 1200px) {
-        .view-content.active { grid-template-columns: 1fr; }
-        #boardWrap { order: -1; }
-        main { grid-template-columns: 1fr; }
+        .game-grid {
+          grid-template-columns: 1fr;
+          gap: 20px;
+          max-width: 800px;
+        }
+        #boardWrap {
+          width: 100%;
+          height: auto;
+          max-width: 500px;
+          margin: 0 auto;
+        }
+        #board {
+          width: 100%;
+          height: auto;
+          aspect-ratio: 1 / 1;
+        }
+        .game-panels {
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+      }
+
+      @media (max-width: 992px) {
+        .game-grid {
+          grid-template-columns: 1fr;
+          gap: 16px;
+          max-width: 600px;
+        }
+        #boardWrap {
+          width: 100%;
+          height: auto;
+          max-width: 400px;
+          margin: 0 auto;
+        }
+        #board {
+          width: 100%;
+          height: auto;
+          aspect-ratio: 1 / 1;
+        }
+        .game-panels {
+          grid-template-columns: 1fr;
+          gap: 16px;
+        }
+        .metrics-grid {
+          grid-template-columns: repeat(2, 1fr);
+          gap: 12px;
+        }
+
+        .panel {
+          padding: 16px;
+        }
+
+        /* Tournament controls on tablet */
+        .tournament-controls {
+          gap: 14px;
+        }
+
+        /* Tablet view buttons */
+        .view-btn {
+          padding: 10px 14px;
+          font-size: 14px;
+        }
+
+        /* Tablet form controls */
+        .control-group input,
+        .control-group select {
+          padding: 8px 12px;
+        }
+
+        /* Tablet orchestrator controls */
+        .controls[style*="flex-wrap"] {
+          gap: 10px;
+        }
+
+        .controls[style*="flex-wrap"] label {
+          font-size: 13px;
+        }
+      }
+
+      @media (max-width: 768px) {
+        main {
+          grid-template-columns: 1fr;
+          padding: 16px;
+          gap: 16px;
+        }
+
+        header {
+          padding: 12px 16px;
+        }
+
+        .title-main { font-size: 20px; }
+        .header-controls { flex-direction: column; align-items: stretch; gap: 16px; }
+        .game-controls, .view-controls { justify-content: center; }
+        .view-btn { flex: 1; justify-content: center; }
+
+        .game-grid {
+          grid-template-columns: 1fr;
+          gap: 16px;
+          max-width: 500px;
+        }
+        #boardWrap {
+          width: 100%;
+          height: auto;
+          max-width: 350px;
+          margin: 0 auto;
+        }
+        #board {
+          width: 100%;
+          height: auto;
+          aspect-ratio: 1 / 1;
+        }
+        .game-panels {
+          grid-template-columns: 1fr;
+          gap: 16px;
+        }
+
+        .panel { padding: 16px; }
+        .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+        .kvs { flex-direction: column; align-items: flex-start; gap: 8px; }
+        .columns { grid-template-columns: 1fr; }
+
+        /* Mobile form controls */
+        input, select {
+          min-width: 0;
+          max-width: 100%;
+        }
+
+        .tournament-controls .control-group input,
+        .tournament-controls .control-group select {
+          width: 100%;
+        }
+
+        /* Mobile tournament grid */
+        .tournament-controls div[style*="grid-template-columns"] {
+          grid-template-columns: 1fr !important;
+        }
+
+        /* Mobile orchestrator controls */
+        #orchConfig {
+          min-width: 120px !important;
+        }
+
+        /* Mobile grid adjustments */
+        .grid {
+          gap: 16px;
+        }
+
+        /* Mobile metrics */
+        .metric {
+          padding: 12px;
+        }
+
+        /* Mobile text displays */
+        .mono {
+          font-size: 12px;
+          line-height: 1.4;
+          word-wrap: break-word;
+        }
+
+        /* Mobile scrollable areas */
+        .tournament-list, .tournament-history {
+          max-height: 300px;
+        }
+
+        /* Mobile panel headers */
+        .panel-header h3 {
+          font-size: 16px;
+        }
+
+        .panel-header h3 i {
+          margin-right: 8px;
+        }
+      }
+
+      /* Loading States */
+      .loading {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+      }
+
+      .loading::after {
+        content: '';
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--border);
+        border-top: 2px solid var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 16px;
+        color: white;
+        font-weight: 500;
+      }
+
+      .panel.loading {
+        position: relative;
+        pointer-events: none;
+      }
+
+      .panel.loading::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 24px;
+        height: 24px;
+        margin: -12px 0 0 -12px;
+        border: 3px solid var(--border);
+        border-top: 3px solid var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        z-index: 10;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Engine Status Indicators */
+      .engine-status {
+        margin-left: 8px;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+      }
+
+      /* Notification States */
+      .error, .warning, .success {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 1000;
+        padding: 12px 16px;
+        border-radius: 8px;
+        box-shadow: var(--shadow-lg);
+        max-width: 400px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+        animation: slideIn 0.3s ease;
+      }
+
+      .error {
+        background: rgba(239, 68, 68, 0.95);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        color: white;
+      }
+
+      .warning {
+        background: rgba(245, 158, 11, 0.95);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        color: white;
+      }
+
+      .success {
+        background: rgba(16, 185, 129, 0.95);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: white;
+      }
+
+      .error-dismiss, .warning-dismiss, .success-dismiss {
+        background: none;
+        border: none;
+        color: inherit;
+        font-size: 18px;
+        cursor: pointer;
+        padding: 0;
+        margin-left: auto;
+        opacity: 0.7;
+        transition: opacity 0.2s ease;
+      }
+
+      .error-dismiss:hover, .warning-dismiss:hover, .success-dismiss:hover {
+        opacity: 1;
+      }
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
       }
     </style>
   </head>
   <body>
     <header>
       <div class="title">
-        <div class="title-main">Matrix0 WebUI</div>
-        <div class="title-subtitle">Advanced Chess Engine with SSL Integration</div>
+        <i class="fas fa-chess-queen title-icon"></i>
+        <div>
+          <div class="title-main">Matrix0 WebUI</div>
+          <div class="title-subtitle">Advanced Chess AI Platform</div>
+        </div>
       </div>
       <div class="header-controls">
         <div class="game-controls">
@@ -154,40 +1023,62 @@
             </select>
           </label>
           <label>TC (ms) <input type="number" id="tc" min="10" step="10" value="100" /></label>
-          <button id="new">New Game</button>
-          <button id="engineMove">Engine Move</button>
-          <button id="evalBtn">Evaluate</button>
+          <button id="new" class="primary"><i class="fas fa-plus"></i> New Game</button>
+          <button id="modelVsModel" class="primary"><i class="fas fa-robot"></i> Model vs Model</button>
+          <button id="matrixVsStockfish" class="primary"><i class="fas fa-chess-knight"></i> vs Stockfish</button>
+          <button id="engineMove"><i class="fas fa-play"></i> Engine Move</button>
+          <button id="evalBtn"><i class="fas fa-search"></i> Evaluate</button>
         </div>
         <div class="view-controls">
-          <button id="showGame" class="view-btn active">Game</button>
-          <button id="showTraining" class="view-btn">Training</button>
-          <button id="showOrchestrator" class="view-btn">Orchestrator</button>
-          <button id="showSSL" class="view-btn">SSL</button>
-          <button id="showTournament" class="view-btn">Tournament</button>
-          <button id="showAnalysis" class="view-btn">Analysis</button>
+          <div id="connectionStatus" class="status-indicator ssl-enabled" style="font-size: 12px; padding: 4px 8px;">Connecting...</div>
+          <button id="showGame" class="view-btn active"><i class="fas fa-chess-board"></i> Game</button>
+          <button id="showTraining" class="view-btn"><i class="fas fa-chart-line"></i> Training</button>
+          <button id="showOrchestrator" class="view-btn"><i class="fas fa-cogs"></i> Orchestrator</button>
+          <button id="showSSL" class="view-btn"><i class="fas fa-brain"></i> SSL</button>
+          <button id="showTournament" class="view-btn"><i class="fas fa-trophy"></i> Tournament</button>
+          <button id="showAnalysis" class="view-btn"><i class="fas fa-chart-bar"></i> Analysis</button>
         </div>
       </div>
     </header>
     <main>
       <!-- Game View -->
       <div id="gameView" class="view-content active">
-        <div id="boardWrap">
-          <div id="board"></div>
-        </div>
-        <div class="grid">
+        <div class="game-grid">
+          <div id="boardWrap">
+            <div id="board" class="loading">
+              <div class="board-loading">
+                <i class="fas fa-chess-board"></i>
+                <span>Loading chess board...</span>
+              </div>
+            </div>
+          </div>
+          <div class="game-panels">
+            <div class="grid">
           <div class="panel">
+            <div class="panel-header">
+              <h3><i class="fas fa-info-circle"></i> Game Info</h3>
+            </div>
             <div class="kvs">
               <div>Game ID: <span id="gid" class="mono">—</span></div>
               <div class="badge">Turn: <span id="turn">—</span></div>
               <div class="badge">TC: <span id="tclabel">—</span> ms</div>
+              <div id="gameStatus" class="badge" style="display: none;">Status</div>
             </div>
             <div class="row">FEN</div>
             <div id="fen" class="mono"></div>
           </div>
           <div class="panel">
+            <div class="panel-header">
+              <h3><i class="fas fa-chart-area"></i> Position Evaluation</h3>
+            </div>
             <div class="kvs">
               <div>Matrix0 value: <span id="mval" class="val">—</span></div>
               <div>Stockfish cp: <span id="scpf" class="val">—</span></div>
+              <div>Evaluation diff: <span id="evalDiff" class="val">—</span></div>
+            </div>
+            <div class="controls" style="margin: 12px 0;">
+              <button id="deepAnalysis" class="primary"><i class="fas fa-search-plus"></i> Deep Analysis</button>
+              <button id="clearEval" class="danger"><i class="fas fa-trash"></i> Clear</button>
             </div>
             <canvas id="evalChart"></canvas>
           </div>
@@ -200,21 +1091,25 @@
               <div class="row">Analytics</div>
               <div id="analytics" class="mono">Loading…</div>
               <div class="row" style="margin-top:8px; display:flex; gap:8px; align-items:center;">
-                <button id="purgeBtn">Purge Stale Games</button>
+                <button id="purgeBtn" class="danger"><i class="fas fa-trash"></i> Purge Stale</button>
                 <span id="purgeInfo" class="mono"></span>
               </div>
             </div>
           </div>
           <div class="panel">
-            <div class="row">Messages</div>
+            <div class="panel-header">
+              <h3><i class="fas fa-terminal"></i> Messages</h3>
+            </div>
             <div id="log" class="mono"></div>
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>PGN Files</h3>
-              <button id="refreshPgn">Refresh</button>
+              <h3><i class="fas fa-file-alt"></i> PGN Files</h3>
+              <button id="refreshPgn"><i class="fas fa-sync"></i> Refresh</button>
             </div>
             <div id="pgnList" class="mono" style="max-height: 220px; overflow-y:auto;"></div>
+          </div>
+          </div>
           </div>
         </div>
       </div>
@@ -224,7 +1119,7 @@
         <div class="grid">
           <div class="panel">
             <div class="panel-header">
-              <h3>Training Status</h3>
+              <h3><i class="fas fa-play-circle"></i> Training Status</h3>
               <div id="trainingStatus" class="status-indicator">Checking...</div>
             </div>
             <div id="trainingMetrics" class="metrics-grid">
@@ -256,17 +1151,38 @@
                 <div class="metric-label">Learning Rate</div>
                 <div id="trainLR" class="metric-value">—</div>
               </div>
+              <div class="metric">
+                <div class="metric-label">SSL Weight</div>
+                <div id="trainSSLWeight" class="metric-value">—</div>
+              </div>
             </div>
             <div class="panel-header">
-              <h3>Training Progress Visualization</h3>
+              <h3><i class="fas fa-chart-line"></i> Training Progress Visualization</h3>
             </div>
             <canvas id="trainingChart" style="max-height: 300px;"></canvas>
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>Training Analytics & History</h3>
+              <h3><i class="fas fa-history"></i> Training Analytics & History</h3>
             </div>
-            <div id="trainingHistory" class="mono" style="max-height: 400px; overflow-y: auto;"></div>
+            <div id="trainingHistory" class="mono" style="max-height: 300px; overflow-y: auto;"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3><i class="fas fa-cogs"></i> Training Controls</h3>
+            </div>
+            <div class="controls" style="flex-direction: column; gap: 12px;">
+              <div class="row">
+                <strong>Current Status:</strong> <span id="trainingControlStatus">Checking...</span>
+              </div>
+              <div class="row">
+                <strong>Last Update:</strong> <span id="trainingLastUpdate">Never</span>
+              </div>
+              <div class="controls">
+                <button id="refreshTraining" class="primary"><i class="fas fa-sync"></i> Refresh</button>
+                <button id="viewTrainingConfig"><i class="fas fa-file-alt"></i> View Config</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -276,8 +1192,17 @@
         <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));">
           <div class="panel">
             <div class="panel-header">
-              <h3>Orchestrator Control</h3>
+              <h3><i class="fas fa-cogs"></i> Orchestrator Control</h3>
               <div id="orchRunning" class="status-indicator">Idle</div>
+            </div>
+            <div class="row">
+              <strong>Status:</strong> <span id="orchStatusDetail">Ready to start</span>
+            </div>
+            <div class="row">
+              <strong>Cycle:</strong> <span id="orchCycleInfo">—</span>
+            </div>
+            <div class="row">
+              <strong>Runtime:</strong> <span id="orchRuntime">—</span>
             </div>
             <div class="controls" style="flex-wrap: wrap; gap: 12px;">
               <label>Config <input type="text" id="orchConfig" value="config.yaml" style="min-width: 200px;"/></label>
@@ -312,7 +1237,7 @@
 
           <div class="panel">
             <div class="panel-header">
-              <h3>Self-Play Progress</h3>
+              <h3><i class="fas fa-tasks"></i> Self-Play Progress</h3>
               <div id="orchProgressPct" class="badge">0%</div>
             </div>
             <div class="metrics-grid">
@@ -326,7 +1251,7 @@
 
           <div class="panel">
             <div class="panel-header">
-              <h3>Evaluation & Promotion</h3>
+              <h3><i class="fas fa-award"></i> Evaluation & Promotion</h3>
             </div>
             <div class="kvs">
               <div>Eval Status: <span id="orchEvalStatus" class="val">—</span></div>
@@ -336,7 +1261,7 @@
           </div>
 
           <div class="panel">
-            <div class="panel-header"><h3>Logs (structured)</h3></div>
+            <div class="panel-header"><h3><i class="fas fa-terminal"></i> Logs (structured)</h3></div>
             <div id="orchLogs" class="mono" style="max-height: 320px; overflow-y: auto;"></div>
           </div>
         </div>
@@ -347,7 +1272,7 @@
         <div class="grid">
           <div class="panel">
             <div class="panel-header">
-              <h3>SSL Configuration</h3>
+              <h3><i class="fas fa-brain"></i> SSL Configuration</h3>
               <div id="sslStatus" class="status-indicator">Checking...</div>
             </div>
             <div id="sslConfig" class="config-display">
@@ -373,7 +1298,7 @@
               </div>
             </div>
             <div class="panel-header">
-              <h3>SSL Performance</h3>
+              <h3><i class="fas fa-chart-bar"></i> SSL Performance</h3>
             </div>
             <div id="sslPerformance" class="ssl-performance-display">
               Loading SSL performance metrics...
@@ -381,7 +1306,7 @@
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>SSL Heads Analysis</h3>
+              <h3><i class="fas fa-search"></i> SSL Heads Analysis</h3>
             </div>
             <div id="sslHeads" class="ssl-heads-display">
               Loading SSL head information...
@@ -395,23 +1320,23 @@
         <div class="grid">
           <div class="panel">
             <div class="panel-header">
-              <h3>Create New Tournament</h3>
+              <h3><i class="fas fa-plus-circle"></i> Create New Tournament</h3>
             </div>
             <div class="tournament-controls">
               <div class="control-group">
-                <label>Tournament Name:</label>
+                <label><i class="fas fa-tag"></i> Tournament Name:</label>
                 <input type="text" id="tournamentName" placeholder="My Tournament" />
               </div>
               <div class="control-group">
-                <label>Engines:</label>
+                <label><i class="fas fa-chess"></i> Engines:</label>
                 <div id="engineSelection" class="engine-selection">
-                  <label><input type="checkbox" value="matrix0" checked /> Matrix0</label>
-                  <label><input type="checkbox" value="stockfish" /> Stockfish</label>
-                  <label><input type="checkbox" value="lc0" /> LC0</label>
+                  <label><input type="checkbox" value="matrix0" checked /> <i class="fas fa-robot"></i> Matrix0</label>
+                  <label><input type="checkbox" value="stockfish" /> <i class="fas fa-chess-knight"></i> Stockfish</label>
+                  <label><input type="checkbox" value="lc0" /> <i class="fas fa-crown"></i> LC0</label>
                 </div>
               </div>
               <div class="control-group">
-                <label>Format:</label>
+                <label><i class="fas fa-trophy"></i> Format:</label>
                 <select id="tournamentFormat">
                   <option value="round_robin">Round Robin</option>
                   <option value="single_elimination">Single Elimination</option>
@@ -419,25 +1344,30 @@
                   <option value="double_round_robin">Double Round Robin</option>
                 </select>
               </div>
-              <div class="control-group">
-                <label>Games per Pairing:</label>
-                <input type="number" id="gamesPerPairing" min="1" max="10" value="1" />
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="control-group">
+                  <label><i class="fas fa-gamepad"></i> Games per Pairing:</label>
+                  <input type="number" id="gamesPerPairing" min="1" max="10" value="2" />
+                </div>
+                <div class="control-group">
+                  <label><i class="fas fa-clock"></i> Time Control (ms):</label>
+                  <input type="number" id="timeControl" min="10" max="10000" value="200" />
+                </div>
               </div>
               <div class="control-group">
-                <label>Time Control (ms):</label>
-                <input type="number" id="timeControl" min="10" max="10000" value="100" />
-              </div>
-              <div class="control-group">
-                <label>Max Concurrency:</label>
+                <label><i class="fas fa-cogs"></i> Max Concurrency:</label>
                 <input type="number" id="maxConcurrency" min="1" max="8" value="2" />
               </div>
-              <button id="createTournament" class="create-btn">Create Tournament</button>
+              <div class="controls" style="margin-top: 16px;">
+                <button id="createTournament" class="create-btn"><i class="fas fa-play"></i> Create Tournament</button>
+                <button id="quickTournament" class="primary"><i class="fas fa-bolt"></i> Quick Match</button>
+              </div>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-header">
-              <h3>Active Tournaments</h3>
+              <h3><i class="fas fa-play-circle"></i> Active Tournaments</h3>
             </div>
             <div id="activeTournaments" class="tournament-list">
               Loading tournaments...
@@ -446,7 +1376,7 @@
 
           <div class="panel">
             <div class="panel-header">
-              <h3>Engine Ratings</h3>
+              <h3><i class="fas fa-star"></i> Engine Ratings</h3>
             </div>
             <div id="engineRatings" class="ratings-display">
               Loading ratings...
@@ -455,7 +1385,7 @@
 
           <div class="panel">
             <div class="panel-header">
-              <h3>Tournament History</h3>
+              <h3><i class="fas fa-history"></i> Tournament History</h3>
             </div>
             <div id="tournamentHistory" class="tournament-history">
               Loading history...
@@ -469,7 +1399,39 @@
         <div class="grid">
           <div class="panel">
             <div class="panel-header">
-              <h3>Model Architecture</h3>
+              <h3><i class="fas fa-chart-line"></i> System Metrics Dashboard</h3>
+            </div>
+            <div class="metrics-grid">
+              <div class="metric">
+                <div class="metric-label">Active Games</div>
+                <div id="metricActiveGames" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Training Status</div>
+                <div id="metricTrainingStatus" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">SSL Tasks</div>
+                <div id="metricSSLTasks" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Tournaments</div>
+                <div id="metricTournaments" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Memory Usage</div>
+                <div id="metricMemoryUsage" class="metric-value">—</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Response Time</div>
+                <div id="metricResponseTime" class="metric-value">—</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3><i class="fas fa-microchip"></i> Model Architecture</h3>
+              <button id="refreshMetrics" class="primary"><i class="fas fa-sync"></i> Refresh</button>
             </div>
             <div id="modelAnalysis" class="model-analysis">
               <div class="analysis-item">
@@ -496,7 +1458,7 @@
           </div>
           <div class="panel">
             <div class="panel-header">
-              <h3>Parameter Breakdown</h3>
+              <h3><i class="fas fa-chart-pie"></i> Parameter Breakdown</h3>
             </div>
             <div id="paramBreakdown" class="param-breakdown">
               Loading parameter analysis...
@@ -505,23 +1467,47 @@
         </div>
       </div>
     </main>
-    <script src="https://unpkg.com/chess.mjs@1.3.2/dist/chess.js"></script>
-    <script src="https://unpkg.com/chessground@8.4.3/dist/chessground.min.js"></script>
+    <!-- Chess libraries -->
+    <script>
+      // Fix for chess.js CommonJS exports issue
+      if (typeof window !== 'undefined') {
+        window.exports = {};
+        window.module = { exports: {} };
+      }
+    </script>
+    <script src="https://unpkg.com/chess.js@1.4.0/dist/cjs/chess.js"></script>
+    <script>
+      // Test if libraries loaded
+      setTimeout(function() {
+        console.log('Library check:', {
+          Chess: typeof Chess,
+          window: {
+            exports: typeof window.exports,
+            module: typeof window.module
+          }
+        });
+      }, 1000);
+    </script>
     <script>
       // Lightweight CDN fallback for board libraries so the rest of the UI stays usable.
       (function(){
         function load(src){ var s=document.createElement('script'); s.src=src; s.async=true; document.head.appendChild(s); }
         function loadCss(href){ var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; document.head.appendChild(l); }
-        // Retry with jsDelivr after a short delay if globals aren't defined
+        // Retry with alternative CDNs after a short delay if globals aren't defined
         setTimeout(function(){
           if (typeof Chess === 'undefined') {
-            load('https://cdn.jsdelivr.net/npm/chess.js@1.0.0/dist/chess.min.js');
+            load('https://unpkg.com/chess.js@1.4.0/dist/cjs/chess.js');
           }
-          if (typeof Chessground === 'undefined') {
-            load('https://cdn.jsdelivr.net/npm/chessground@8.4.3/dist/chessground.min.js');
-            loadCss('https://cdn.jsdelivr.net/npm/chessground@8.4.3/assets/chessground.css');
+          // Chessboard.js not needed with our simple HTML implementation
+        }, 1000);
+
+        // Final fallback to another CDN after longer delay
+        setTimeout(function(){
+          if (typeof Chess === 'undefined') {
+            load('https://cdn.jsdelivr.net/npm/chess.js@1.4.0/dist/cjs/chess.js');
           }
-        }, 300);
+          // Chessboard.js not needed with our simple HTML implementation
+        }, 3000);
       })();
     </script>
     <script src="/static/app.js?v=2"></script>
