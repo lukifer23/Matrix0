@@ -1,11 +1,13 @@
 let gameId = null;
 let board = null;
-let chess = new Chess();
+let chess = null;
 let evalData = { ply: [], matrix0: [], stockfish: [] };
 let evalChart = null;
 let trainingChart = null;
 let currentView = 'game';
 let tournamentPollInterval = null;
+let orchPollInterval = null;
+let orchEventSource = null;
 
 // Debug logging
 function debugLog(message, data = null) {
@@ -20,13 +22,15 @@ function switchView(viewName) {
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.classList.remove('active');
   });
-  document.getElementById(`show${viewName.charAt(0).toUpperCase() + viewName.slice(1)}`).classList.add('active');
+  const btn = document.getElementById(`show${viewName.charAt(0).toUpperCase() + viewName.slice(1)}`);
+  if (btn) btn.classList.add('active');
 
   // Update content
   document.querySelectorAll('.view-content').forEach(content => {
     content.classList.remove('active');
   });
-  document.getElementById(`${viewName}View`).classList.add('active');
+  const container = document.getElementById(`${viewName}View`);
+  if (container) container.classList.add('active');
 
   currentView = viewName;
 
@@ -34,6 +38,10 @@ function switchView(viewName) {
   if (viewName === 'training') {
     debugLog('Loading training status');
     loadTrainingStatus();
+  } else if (viewName === 'orchestrator') {
+    debugLog('Loading orchestrator status');
+    loadOrchestratorStatus();
+    loadOrchestratorLogs();
   } else if (viewName === 'ssl') {
     debugLog('Loading SSL status');
     loadSSLStatus();
@@ -50,6 +58,13 @@ function switchView(viewName) {
     startTournamentPolling();
   } else {
     stopTournamentPolling();
+  }
+  if (viewName === 'orchestrator') {
+    startOrchestratorPolling();
+    startOrchestratorSSE();
+  } else {
+    stopOrchestratorPolling();
+    stopOrchestratorSSE();
   }
 }
 
@@ -444,7 +459,8 @@ async function engineMove() {
   const color = (turn === 'w' ? 'white' : 'black');
   const engine = document.getElementById(color).value; // who plays this color
   const out = await api('/engine-move', { game_id: gameId, engine });
-  log(`${engine} plays ${out.uci}`);
+  const ms = (out.ms != null) ? ` (${out.ms.toFixed(1)} ms)` : '';
+  log(`${engine} plays ${out.uci}${ms}`);
   updateState(out.fen, out.turn, out.game_over, out.result);
   // collect eval snapshot
   try { await evalPos(); } catch {}
@@ -464,6 +480,11 @@ async function evalPos() {
 }
 
 function initBoard() {
+  if (typeof Chess === 'undefined' || typeof Chessground === 'undefined') {
+    debugLog('Game board disabled (chess.js or chessground unavailable).');
+    return;
+  }
+  chess = new Chess();
   board = Chessground(document.getElementById('board'), {
     fen: chess.fen(),
     orientation: 'white',
@@ -553,6 +574,155 @@ function stopPeriodicUpdates() {
   updateIntervals = {};
 }
 
+function startOrchestratorPolling() {
+  if (orchPollInterval) clearInterval(orchPollInterval);
+  orchPollInterval = setInterval(() => {
+    if (currentView === 'orchestrator') {
+      loadOrchestratorStatus();
+      loadOrchestratorLogs();
+      loadOrchestratorWorkers();
+    }
+  }, 5000);
+}
+
+function stopOrchestratorPolling() {
+  if (orchPollInterval) {
+    clearInterval(orchPollInterval);
+    orchPollInterval = null;
+  }
+}
+
+function startOrchestratorSSE() {
+  try {
+    if (orchEventSource) orchEventSource.close();
+    orchEventSource = new EventSource('/orchestrator/stream?kind=structured');
+    orchEventSource.onmessage = (ev) => {
+      const el = document.getElementById('orchLogs');
+      if (!el) return;
+      el.textContent += (ev.data + '\n');
+      el.scrollTop = el.scrollHeight;
+    };
+    orchEventSource.onerror = () => {
+      // SSE may fail (browser or server). We'll rely on polling fallback.
+    };
+  } catch (e) {
+    // ignore
+  }
+}
+
+function stopOrchestratorSSE() {
+  if (orchEventSource) {
+    try { orchEventSource.close(); } catch {}
+    orchEventSource = null;
+  }
+}
+
+async function loadOrchestratorStatus() {
+  try {
+    const res = await fetch('/orchestrator/status');
+    const data = await res.json();
+
+    const runningEl = document.getElementById('orchRunning');
+    if (data.running) {
+      runningEl.textContent = `Running (pid ${data.pid})`;
+      runningEl.className = 'status-indicator training';
+    } else {
+      runningEl.textContent = 'Idle';
+      runningEl.className = 'status-indicator not-training';
+    }
+
+    const completed = data.selfplay?.completed ?? 0;
+    const total = data.selfplay?.total ?? 0;
+    const pct = data.selfplay?.progress_pct ?? 0;
+    const wins = data.selfplay?.wins ?? 0;
+    const losses = data.selfplay?.losses ?? 0;
+    const draws = data.selfplay?.draws ?? 0;
+
+    document.getElementById('orchCompleted').textContent = completed;
+    document.getElementById('orchTotal').textContent = total || '—';
+    document.getElementById('orchProgressPct').textContent = `${pct.toFixed(1)}%`;
+    document.getElementById('orchWLD').textContent = `${wins}/${losses}/${draws}`;
+    document.getElementById('orchProgressBar').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+
+    const evalStatus = data.evaluation?.status || '—';
+    document.getElementById('orchEvalStatus').textContent = evalStatus;
+    document.getElementById('orchEvalWR').textContent = (data.evaluation?.win_rate != null) ? (data.evaluation.win_rate.toFixed(3)) : '—';
+    document.getElementById('orchPromo').textContent = data.promotion?.promoted ? 'Promoted' : '—';
+  } catch (e) {
+    log('Failed to load orchestrator status: ' + e.message);
+  }
+}
+
+async function loadOrchestratorWorkers() {
+  try {
+    const res = await fetch('/orchestrator/workers');
+    const data = await res.json();
+    const el = document.getElementById('orchWorkersTable');
+    if (!el) return;
+    const rows = (data.workers || []).map(w => {
+      const hb = (w.hb_age != null) ? `${Math.round(w.hb_age)}s` : '—';
+      return `W${w.worker}: ${w.done}/${w.games_per_worker} | ${w.avg_ms.toFixed(1)} ms | ${w.avg_sims.toFixed(1)} sims | moves ${w.moves} | HB ${hb}`;
+    });
+    el.textContent = rows.join('\n');
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function loadOrchestratorLogs() {
+  try {
+    const res = await fetch('/orchestrator/logs?tail=200&kind=structured');
+    const data = await res.json();
+    const el = document.getElementById('orchLogs');
+    if (data.lines && el) {
+      el.textContent = data.lines.join('\n');
+      el.scrollTop = el.scrollHeight;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function startOrchestrator() {
+  const payload = {
+    config: document.getElementById('orchConfig').value || 'config.yaml',
+    games: toInt(document.getElementById('orchGames').value),
+    workers: toInt(document.getElementById('orchWorkers').value),
+    sims: toInt(document.getElementById('orchSims').value),
+    eval_games: toInt(document.getElementById('orchEvalGames').value),
+    promotion_threshold: toFloat(document.getElementById('orchPromote').value),
+    device: (document.getElementById('orchDevice').value || undefined),
+    quick_start: document.getElementById('orchQuickStart').checked,
+    no_shared_infer: document.getElementById('orchNoSharedInfer').checked,
+    tui: (document.getElementById('orchTui').value || undefined),
+    continuous: document.getElementById('orchContinuous').checked,
+  };
+  try {
+    const res = await fetch('/orchestrator/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    log('Orchestrator started: pid ' + d.pid);
+    loadOrchestratorStatus();
+    loadOrchestratorLogs();
+  } catch (e) {
+    log('Failed to start orchestrator: ' + e.message);
+  }
+}
+
+async function stopOrchestrator() {
+  try {
+    const res = await fetch('/orchestrator/stop', { method: 'POST' });
+    const d = await res.json();
+    log('Orchestrator stop: ' + (d.stopped ? 'ok' : d.message || 'not running'));
+    loadOrchestratorStatus();
+  } catch (e) {
+    log('Failed to stop orchestrator: ' + e.message);
+  }
+}
+
+function toInt(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : undefined; }
+function toFloat(v) { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; }
+
 async function loadAnalytics() {
   try {
     const res = await fetch('/analytics/summary');
@@ -575,35 +745,103 @@ function addProgressBar(progressPercent) {
   progressEl.appendChild(progressBar);
 }
 
+async function purgeStaleGames() {
+  try {
+    const res = await fetch('/admin/purge', { method: 'POST' });
+    const data = await res.json();
+    const infoEl = document.getElementById('purgeInfo');
+    if (infoEl) infoEl.textContent = `Removed: ${data.removed}, Active: ${data.active}`;
+  } catch (e) {
+    const infoEl = document.getElementById('purgeInfo');
+    if (infoEl) infoEl.textContent = `Error: ${e.message}`;
+  }
+}
+
+async function loadPgnList() {
+  try {
+    const res = await fetch('/pgn/list');
+    const data = await res.json();
+    const el = document.getElementById('pgnList');
+    if (!el) return;
+    if (!data.files || data.files.length === 0) {
+      el.textContent = 'No PGN files yet';
+      return;
+    }
+    const links = data.files.reverse().slice(0, 50).map(name => `<a href="/pgn/${name}" target="_blank">${name}</a>`).join('<br/>');
+    el.innerHTML = links;
+  } catch (e) {
+    const el = document.getElementById('pgnList');
+    if (el) el.textContent = 'Failed to load PGN list';
+  }
+}
+
+async function checkEngineAvailability() {
+  try {
+    const res = await fetch('/health');
+    const data = await res.json();
+    const sfAvailable = !!data.stockfish;
+    const disableSFInSelect = (id) => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      Array.from(sel.options || []).forEach(opt => {
+        if (opt.value === 'stockfish') opt.disabled = !sfAvailable;
+      });
+    };
+    disableSFInSelect('white');
+    disableSFInSelect('black');
+    // Tournament engine checkbox
+    const sfCb = Array.from(document.querySelectorAll('#engineSelection input[type="checkbox"]')).find(cb => cb.value === 'stockfish');
+    if (sfCb) {
+      sfCb.disabled = !sfAvailable;
+      if (!sfAvailable) sfCb.checked = false;
+    }
+    if (!sfAvailable) {
+      log('Stockfish not available. Set MATRIX0_STOCKFISH_PATH or install stockfish.');
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  initBoard();
+  try { initBoard(); } catch (e) { debugLog('initBoard failed', e); }
 
   // Game controls
-  document.getElementById('new').addEventListener('click', newGame);
-  document.getElementById('engineMove').addEventListener('click', engineMove);
-  document.getElementById('evalBtn').addEventListener('click', evalPos);
+  const newBtn = document.getElementById('new'); if (newBtn) newBtn.addEventListener('click', newGame);
+  const engBtn = document.getElementById('engineMove'); if (engBtn) engBtn.addEventListener('click', engineMove);
+  const evalBtn = document.getElementById('evalBtn'); if (evalBtn) evalBtn.addEventListener('click', evalPos);
+  const purgeBtn = document.getElementById('purgeBtn');
+  if (purgeBtn) purgeBtn.addEventListener('click', purgeStaleGames);
+  const refreshPgnBtn = document.getElementById('refreshPgn');
+  if (refreshPgnBtn) refreshPgnBtn.addEventListener('click', loadPgnList);
 
   // View switching controls
-  document.getElementById('showGame').addEventListener('click', () => switchView('game'));
-  document.getElementById('showTraining').addEventListener('click', () => switchView('training'));
-  document.getElementById('showSSL').addEventListener('click', () => switchView('ssl'));
-  document.getElementById('showTournament').addEventListener('click', () => switchView('tournament'));
-  document.getElementById('showAnalysis').addEventListener('click', () => switchView('analysis'));
+  const bGame = document.getElementById('showGame'); if (bGame) bGame.addEventListener('click', () => switchView('game'));
+  const bTrain = document.getElementById('showTraining'); if (bTrain) bTrain.addEventListener('click', () => switchView('training'));
+  const bOrch = document.getElementById('showOrchestrator'); if (bOrch) bOrch.addEventListener('click', () => switchView('orchestrator'));
+  const bSSL = document.getElementById('showSSL'); if (bSSL) bSSL.addEventListener('click', () => switchView('ssl'));
+  const bTourn = document.getElementById('showTournament'); if (bTourn) bTourn.addEventListener('click', () => switchView('tournament'));
+  const bAnal = document.getElementById('showAnalysis'); if (bAnal) bAnal.addEventListener('click', () => switchView('analysis'));
 
   // Tournament controls
   document.getElementById('createTournament').addEventListener('click', createTournament);
 
+  // Orchestrator controls
+  const sBtn = document.getElementById('orchStart');
+  const xBtn = document.getElementById('orchStop');
+  if (sBtn) sBtn.addEventListener('click', startOrchestrator);
+  if (xBtn) xBtn.addEventListener('click', stopOrchestrator);
+
   // Load initial data
   loadAnalytics();
+  loadPgnList();
+  checkEngineAvailability();
 
   // Start periodic updates
   startPeriodicUpdates();
 
-  // Load initial view data
-  loadTrainingStatus();
-  loadSSLStatus();
-  loadTournamentData();
-  loadModelAnalysis();
+  // Load only the current view's data; others load on tab switch
+  switchView('game');
 });
 
 // Tournament Management Functions

@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""
+Allow `python webui/server.py` to work when executed directly by ensuring
+the repository root (containing the `azchess` package) is on sys.path.
+This complements the recommended invocation `python -m webui.server`.
+"""
+import sys as _sys
+from pathlib import Path as _Path
+_ROOT = _Path(__file__).resolve().parents[1]
+if str(_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_ROOT))
+
 import json
 import os
 import time
@@ -7,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import sys
+import logging
 import subprocess
 import threading
 import re
@@ -14,9 +26,11 @@ import re
 import chess
 import chess.pgn
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse, Response
 
 from azchess.config import Config, select_device
 from azchess.draw import should_adjudicate_draw
@@ -131,10 +145,29 @@ app = FastAPI(title="Matrix0 WebUI", version="1.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Local logger
+logger = logging.getLogger("webui")
+
 # Serve index.html for root path
 @app.get("/")
 async def read_root():
-    return StaticFiles(directory=str(STATIC_DIR), html=True).get_response("index.html", {})
+    try:
+        path = STATIC_DIR / "index.html"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="index.html not found")
+        return FileResponse(str(path), media_type="text/html")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to serve index: {e}")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    ico = STATIC_DIR / "favicon.ico"
+    if ico.exists():
+        return FileResponse(str(ico), media_type="image/x-icon")
+    return Response(status_code=204)
 
 
 # Lazy-loaded engines
@@ -147,6 +180,10 @@ _stockfish_path = (BASE_DIR / "engines" / "bin" / "stockfish")
 
 # Orchestrator process management (simple single-run control)
 _ORCH_PROC: Optional[subprocess.Popen] = None
+_ORCH_SUP_THREAD: Optional[threading.Thread] = None
+_ORCH_STOP_EVENT = threading.Event()
+_ORCH_CONTINUOUS: bool = False
+_ORCH_CYCLE: int = 0
 _ORCH_START_TS: Optional[float] = None
 _ORCH_CFG: Dict[str, Any] = {}
 _ORCH_LOCK = threading.RLock()
@@ -205,10 +242,10 @@ def _resolve_workers(cfg_path: str, override_workers: Optional[int]) -> int:
 
 @app.post("/orchestrator/start")
 def start_orchestrator(req: OrchestratorStartRequest):
-    global _ORCH_PROC, _ORCH_START_TS, _ORCH_CFG
+    global _ORCH_PROC, _ORCH_START_TS, _ORCH_CFG, _ORCH_SUP_THREAD, _ORCH_CONTINUOUS, _ORCH_CYCLE
     with _ORCH_LOCK:
         # Check if already running
-        if _ORCH_PROC is not None and _ORCH_PROC.poll() is None:
+        if (_ORCH_PROC is not None and _ORCH_PROC.poll() is None) or (_ORCH_SUP_THREAD is not None and _ORCH_SUP_THREAD.is_alive()):
             raise HTTPException(status_code=409, detail="orchestrator already running")
 
         # Build command
@@ -245,47 +282,121 @@ def start_orchestrator(req: OrchestratorStartRequest):
         # Ensure logs directory
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         orch_out = LOGS_DIR / "orchestrator.out"
-        out_f = open(orch_out, "a", buffering=1)
 
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=out_f,
-                stderr=subprocess.STDOUT,
-                cwd=str(BASE_DIR),
-                env=os.environ.copy(),
-            )
-        except Exception as e:
-            out_f.close()
-            raise HTTPException(status_code=500, detail=f"failed to start orchestrator: {e}")
+        def _spawn_once():
+            out_f = open(orch_out, "a", buffering=1)
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=out_f,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(BASE_DIR),
+                    env=os.environ.copy(),
+                )
+            except Exception as e:
+                out_f.close()
+                raise
+            return proc
 
-        _ORCH_PROC = proc
-        _ORCH_START_TS = _now_ts()
+        # Compute plan for visibility
         workers = _resolve_workers(req.config, req.workers)
         target_games = _compute_target_games(req.config, overrides)
-        # Total planned games = ceil(target_games/workers) * workers
         from math import ceil
         games_per_worker = int(ceil(target_games / max(1, workers)))
         total_games = games_per_worker * workers
-        _ORCH_CFG = {
-            "config": req.config,
-            "overrides": overrides,
-            "workers": workers,
-            "target_games": target_games,
-            "games_per_worker": games_per_worker,
-            "total_games": total_games,
-            "pid": proc.pid,
-            "orch_out": str(orch_out),
-        }
 
-        return {"pid": proc.pid, "started": True, "cmd": cmd, "plan": _ORCH_CFG}
+        if req.continuous:
+            _ORCH_CONTINUOUS = True
+            _ORCH_STOP_EVENT.clear()
+            _ORCH_CYCLE = 0
+
+            def _supervisor():
+                nonlocal workers, target_games, games_per_worker, total_games
+                while not _ORCH_STOP_EVENT.is_set():
+                    try:
+                        with _ORCH_LOCK:
+                            proc = _spawn_once()
+                            _ORCH_PROC = proc
+                            _ORCH_START_TS = _now_ts()
+                            _ORCH_CYCLE += 1
+                            _ORCH_CFG.update({
+                                "config": req.config,
+                                "overrides": overrides,
+                                "workers": workers,
+                                "target_games": target_games,
+                                "games_per_worker": games_per_worker,
+                                "total_games": total_games,
+                                "pid": proc.pid,
+                                "orch_out": str(orch_out),
+                                "continuous": True,
+                                "cycle": _ORCH_CYCLE,
+                            })
+                        proc.wait()
+                    except Exception:
+                        pass
+                    if _ORCH_STOP_EVENT.is_set():
+                        break
+                    # small backoff between cycles
+                    time.sleep(10)
+                with _ORCH_LOCK:
+                    # ensure cleared
+                    _ORCH_CONTINUOUS = False
+                    _ORCH_PROC = None
+
+            _ORCH_SUP_THREAD = threading.Thread(target=_supervisor, name="orch-supervisor", daemon=True)
+            _ORCH_SUP_THREAD.start()
+            _ORCH_START_TS = _now_ts()
+            _ORCH_CFG = {
+                "config": req.config,
+                "overrides": overrides,
+                "workers": workers,
+                "target_games": target_games,
+                "games_per_worker": games_per_worker,
+                "total_games": total_games,
+                "pid": None,
+                "orch_out": str(orch_out),
+                "continuous": True,
+                "cycle": 0,
+            }
+            return {"started": True, "continuous": True, "cmd": cmd, "plan": _ORCH_CFG}
+        else:
+            try:
+                proc = _spawn_once()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"failed to start orchestrator: {e}")
+
+            _ORCH_PROC = proc
+            _ORCH_START_TS = _now_ts()
+            _ORCH_CFG = {
+                "config": req.config,
+                "overrides": overrides,
+                "workers": workers,
+                "target_games": target_games,
+                "games_per_worker": games_per_worker,
+                "total_games": total_games,
+                "pid": proc.pid,
+                "orch_out": str(orch_out),
+                "continuous": False,
+                "cycle": 1,
+            }
+            return {"pid": proc.pid, "started": True, "cmd": cmd, "plan": _ORCH_CFG}
 
 
 @app.post("/orchestrator/stop")
 def stop_orchestrator():
-    global _ORCH_PROC
+    global _ORCH_PROC, _ORCH_SUP_THREAD, _ORCH_CONTINUOUS
     with _ORCH_LOCK:
-        if _ORCH_PROC is None or _ORCH_PROC.poll() is not None:
+        if _ORCH_SUP_THREAD is not None and _ORCH_SUP_THREAD.is_alive():
+            _ORCH_STOP_EVENT.set()
+        if _ORCH_PROC is None or (_ORCH_PROC and _ORCH_PROC.poll() is not None):
+            # Nothing active; if supervisor existed, wait briefly
+            if _ORCH_SUP_THREAD is not None:
+                try:
+                    _ORCH_SUP_THREAD.join(timeout=3)
+                except Exception:
+                    pass
+                _ORCH_SUP_THREAD = None
+                _ORCH_CONTINUOUS = False
             return {"stopped": False, "message": "orchestrator not running"}
         try:
             _ORCH_PROC.terminate()
@@ -295,13 +406,20 @@ def stop_orchestrator():
                 _ORCH_PROC.kill()
         finally:
             _ORCH_PROC = None
+            if _ORCH_SUP_THREAD is not None:
+                try:
+                    _ORCH_SUP_THREAD.join(timeout=3)
+                except Exception:
+                    pass
+                _ORCH_SUP_THREAD = None
+                _ORCH_CONTINUOUS = False
         return {"stopped": True}
 
 
 @app.get("/orchestrator/status")
 def orchestrator_status():
     with _ORCH_LOCK:
-        running = bool(_ORCH_PROC is not None and _ORCH_PROC.poll() is None)
+        running = bool((_ORCH_PROC is not None and _ORCH_PROC.poll() is None) or (_ORCH_SUP_THREAD is not None and _ORCH_SUP_THREAD.is_alive()))
         pid = int(_ORCH_PROC.pid) if running and _ORCH_PROC is not None else None
         started_at = _ORCH_START_TS
         plan = _ORCH_CFG.copy() if _ORCH_CFG else {}
@@ -316,9 +434,24 @@ def orchestrator_status():
     eval_info: Dict[str, Any] = {}
     promo_info: Dict[str, Any] = {}
 
-    if started_at:
+    inferred = False
+    # Allow inference of activity even if not launched by WebUI (external orchestrator)
+    recent_ts_cutoff = time.time() - 300  # last 5 minutes
+    recent_events = _read_structured_since(recent_ts_cutoff)
+    if not running and recent_events:
+        # Look for orchestrator/selfplay/training activity in recent logs
+        for ev in reversed(recent_events[-200:]):
+            msg = str(ev.get("msg", ""))
+            if ("TRAINING_HB" in msg) or ("Game" in msg and "completed" in msg) or ("Starting training phase" in msg) or ("Compacting self-play data" in msg) or ("Evaluating candidate" in msg):
+                running = True
+                inferred = True
+                break
+
+    if started_at or inferred:
         try:
-            events = _read_structured_since(float(started_at))
+            # When inferring, scan full file to avoid missing earlier self-play events
+            ts_cutoff = float(started_at) if started_at else 0.0
+            events = _read_structured_since(ts_cutoff)
             game_rx = re.compile(r"Game\s+\d+\s+completed: .*?result:\s*([+-]?[0-9.]+)")
             eval_start_rx = re.compile(r"Evaluating candidate.*?vs best")
             eval_done_rx = re.compile(r"Evaluation complete: win_rate=([0-9.]+)")
@@ -356,8 +489,72 @@ def orchestrator_status():
             pass
 
     # Compute percent
+    # If not launched by WebUI, prefer sp_start from webui.jsonl, else estimate from config
+    if True:
+        try:
+            # Try to derive from recent webui.jsonl events (works for CLI runs too)
+            wpath = LOGS_DIR / "webui.jsonl"
+            if wpath.exists():
+                with wpath.open("r", encoding="utf-8") as f:
+                    lines = f.readlines()[-5000:]
+                import json as _json
+                sp_start = None
+                sp_games = []
+                for ln in lines:
+                    try:
+                        ev = _json.loads(ln)
+                    except Exception:
+                        continue
+                    if ev.get("type") == "sp_start":
+                        sp_start = ev
+                    elif ev.get("type") == "sp_game":
+                        sp_games.append(ev)
+                if sp_start:
+                    workers_ev = int(sp_start.get("workers", plan.get("workers", 0) or 0))
+                    gpw_ev = int(sp_start.get("games_per_worker", plan.get("games_per_worker", 0) or 0))
+                    total_ev = int(sp_start.get("total_target", plan.get("total_games", 0) or 0))
+                    if not plan:
+                        plan = {}
+                    plan.update({
+                        "workers": workers_ev or plan.get("workers"),
+                        "games_per_worker": gpw_ev or plan.get("games_per_worker"),
+                        "total_games": total_ev or plan.get("total_games"),
+                        "source": "webui_events",
+                    })
+                    if sp_games:
+                        progress["completed_games"] = len(sp_games)
+                        wins = losses = draws = 0
+                        for ev in sp_games:
+                            try:
+                                r = float(ev.get("result", 0.0))
+                            except Exception:
+                                r = 0.0
+                            if r > 0: wins += 1
+                            elif r < 0: losses += 1
+                            else: draws += 1
+                        progress["wins"], progress["losses"], progress["draws"] = wins, losses, draws
+
+            # If still no plan, estimate from config
+            if not plan:
+                cfg_path = "config.yaml"
+                workers_cfg = _resolve_workers(cfg_path, None)
+                target = _compute_target_games(cfg_path, {})
+                from math import ceil
+                g_per = int(ceil(target / max(1, workers_cfg)))
+                total_est = g_per * workers_cfg
+                plan = {
+                    "config": cfg_path,
+                    "workers": workers_cfg,
+                    "target_games": target,
+                    "games_per_worker": g_per,
+                    "total_games": total_est,
+                    "estimated": True,
+                }
+        except Exception:
+            plan = {}
+
     total_games = int(plan.get("total_games", 0) or 0)
-    completed = int(progress["completed_games"]) if started_at else 0
+    completed = int(progress["completed_games"]) if (started_at or inferred) else 0
     pct = (completed / total_games * 100.0) if total_games > 0 else 0.0
 
     # Include training sub-status
@@ -371,6 +568,8 @@ def orchestrator_status():
         "pid": pid,
         "started_at": started_at,
         "plan": plan,
+        "continuous": _ORCH_CONTINUOUS,
+        "cycle": _ORCH_CYCLE,
         "selfplay": {
             "completed": completed,
             "total": total_games,
@@ -382,6 +581,7 @@ def orchestrator_status():
         "evaluation": eval_info,
         "promotion": promo_info,
         "training": train,
+        "inferred": inferred,
     }
 
 
@@ -415,6 +615,113 @@ def orchestrator_logs(tail: int = 200, kind: str = "structured"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"failed to read logs: {e}")
     return {"kind": kind, "lines": lines}
+
+
+@app.get("/orchestrator/stream")
+async def orchestrator_stream(request: Request, kind: str = "structured"):
+    """Server-Sent Events stream of orchestrator logs.
+    kind: structured|matrix
+    """
+    async def event_gen():
+        import asyncio
+        path = _ORCH_LOG_PATH if kind != "matrix" else (LOGS_DIR / "matrix0.log")
+        pos = 0
+        if path.exists():
+            try:
+                pos = path.stat().st_size
+            except Exception:
+                pos = 0
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                if path.exists():
+                    size = path.stat().st_size
+                    if size > pos:
+                        with path.open("r", encoding="utf-8") as f:
+                            f.seek(pos)
+                            chunk = f.read()
+                            pos = f.tell()
+                        for ln in chunk.splitlines():
+                            data = ln
+                            if kind != "matrix":
+                                try:
+                                    rec = json.loads(ln)
+                                    data = f"[{rec.get('ts')}] {rec.get('level')} {rec.get('name')}: {rec.get('msg')}"
+                                except Exception:
+                                    pass
+                            yield f"data: {data}\n\n"
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@app.get("/orchestrator/workers")
+def orchestrator_workers():
+    """Summarize per-worker status from webui.jsonl sp_heartbeat and sp_game events."""
+    path = LOGS_DIR / "webui.jsonl"
+    workers: Dict[int, Dict[str, Any]] = {}
+    games_per_worker = None
+    total_target = None
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-2000:]
+            import json as _json
+            for ln in lines:
+                try:
+                    ev = _json.loads(ln)
+                except Exception:
+                    continue
+                et = ev.get("type")
+                if et == "sp_start":
+                    games_per_worker = int(ev.get("games_per_worker", 0) or 0)
+                    total_target = int(ev.get("total_target", 0) or 0)
+                elif et == "sp_heartbeat":
+                    wid = int(ev.get("worker", -1))
+                    if wid < 0:
+                        continue
+                    w = workers.setdefault(wid, {"done": 0, "avg_ms": 0.0, "avg_sims": 0.0, "moves": 0, "hb_ts": 0.0, "games": 0})
+                    w["moves"] = int(ev.get("moves", 0))
+                    w["avg_sims"] = float(ev.get("avg_sims", 0.0))
+                    w["hb_ts"] = float(ev.get("ts", time.time()))
+                elif et == "sp_game":
+                    wid = int(ev.get("worker", -1))
+                    if wid < 0:
+                        continue
+                    w = workers.setdefault(wid, {"done": 0, "avg_ms": 0.0, "avg_sims": 0.0, "moves": 0, "hb_ts": 0.0, "games": 0})
+                    w["done"] = int(w.get("done", 0)) + 1
+                    w["games"] = int(w.get("games", 0)) + 1
+                    ms = float(ev.get("avg_ms_per_move", 0.0))
+                    sims = float(ev.get("avg_sims", 0.0))
+                    # update running averages
+                    c = w["games"]
+                    w["avg_ms"] = (w.get("avg_ms", 0.0) * (c - 1) + ms) / max(1, c)
+                    w["avg_sims"] = (w.get("avg_sims", 0.0) * (c - 1) + sims) / max(1, c)
+        # Fill defaults if absent
+        if games_per_worker is None:
+            plan = orchestrator_status().get("plan", {})
+            games_per_worker = int(plan.get("games_per_worker", 0) or 0)
+            total_target = int(plan.get("total_games", 0) or 0)
+        # Compute heartbeat age
+        now = time.time()
+        out = []
+        for wid in sorted(workers.keys()):
+            w = workers[wid]
+            hb_age = now - float(w.get("hb_ts", 0.0)) if w.get("hb_ts") else None
+            out.append({
+                "worker": wid,
+                "done": int(w.get("done", 0)),
+                "games_per_worker": int(games_per_worker or 0),
+                "avg_ms": float(w.get("avg_ms", 0.0)),
+                "avg_sims": float(w.get("avg_sims", 0.0)),
+                "moves": int(w.get("moves", 0)),
+                "hb_age": hb_age,
+            })
+        return {"workers": out, "games_per_worker": games_per_worker, "total_target": total_target}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to summarize workers: {e}")
 
 
 def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, device_pref: str = "cpu"):
@@ -552,25 +859,46 @@ def _cleanup() -> None:
 
 @app.post("/new")
 def new_game(req: NewGameRequest):
-    logger.info(f"New game request: white={req.white}, black={req.black}, tc={req.engine_tc_ms}")
+    try:
+        logger.info(f"New game request: white={req.white}, black={req.black}, tc={req.engine_tc_ms}")
+    except Exception:
+        pass
     try:
         _load_matrix0()
-        logger.info("Matrix0 loaded successfully")
+        try:
+            logger.info("Matrix0 loaded successfully")
+        except Exception:
+            pass
     except Exception as e:
-        logger.error(f"Failed to load Matrix0: {e}")
+        try:
+            logger.error(f"Failed to load Matrix0: {e}")
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Failed to load Matrix0: {str(e)}")
 
     game_id = f"g_{int(_now_ts()*1000)}"
-    logger.info(f"Creating game {game_id}")
+    try:
+        logger.info(f"Creating game {game_id}")
+    except Exception:
+        pass
 
     try:
         board = chess.Board(req.fen) if req.fen else chess.Board()
-        logger.info(f"Board created with FEN: {board.fen()}")
+        try:
+            logger.info(f"Board created with FEN: {board.fen()}")
+        except Exception:
+            pass
     except ValueError as e:
-        logger.error(f"Invalid FEN: {req.fen}")
+        try:
+            logger.error(f"Invalid FEN: {req.fen}")
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail="invalid FEN")
     except Exception as e:
-        logger.error(f"Error creating board: {e}")
+        try:
+            logger.error(f"Error creating board: {e}")
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Board creation error: {str(e)}")
 
     gs = GameState(
@@ -583,11 +911,17 @@ def new_game(req: NewGameRequest):
         engine_tc_ms=max(10, int(req.engine_tc_ms)),
     )
     GAMES[game_id] = gs
-    logger.info(f"Game {game_id} created successfully")
+    try:
+        logger.info(f"Game {game_id} created successfully")
+    except Exception:
+        pass
 
     _jsonl_write(WEBUI_LOG, {"ts": _now_ts(), "type": "new_game", "game_id": game_id, "white": req.white, "black": req.black, "fen": board.fen(), "tc_ms": gs.engine_tc_ms})
     result = {"game_id": game_id, "fen": board.fen(), "turn": "w" if board.turn == chess.WHITE else "b"}
-    logger.info(f"Returning game result: {result}")
+    try:
+        logger.info(f"Returning game result: {result}")
+    except Exception:
+        pass
     return result
 
 
@@ -661,6 +995,7 @@ def engine_move(req: EngineMoveRequest):
         "turn": "w" if gs.board.turn == chess.WHITE else "b",
         "game_over": finished,
         "result": gs.board.result(claim_draw=True) if finished else None,
+        "ms": float(elapsed),
     }
 
 
@@ -887,6 +1222,22 @@ def list_pgn():
     return {"files": files}
 
 
+@app.get("/pgn/{name}")
+def get_pgn(name: str):
+    """Serve a PGN file by name from the webui PGN directory."""
+    try:
+        # Security: prevent path traversal
+        name = os.path.basename(name)
+        path = PGN_DIR / name
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="PGN not found")
+        return FileResponse(str(path), media_type="application/x-chess-pgn", filename=name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to serve PGN: {e}")
+
+
 @app.get("/health")
 def health():
     # lightweight model info
@@ -972,7 +1323,8 @@ def ssl_performance():
             for line in lines:
                 if "TRAINING_HB" in line:
                     import re
-                    match = re.search(r'Step (\d+)/(\d+) .* SSL: ([0-9.]+)', line)
+                    # Support both legacy "SSL:" and new "SSL(EMA):"
+                    match = re.search(r'Step (\d+)/(\d+).* (?:SSL\(EMA\)|SSL):\s*([0-9.]+)', line)
                     if match:
                         step, total_steps, ssl_loss = match.groups()
                         ssl_metrics["ssl_loss_history"].append({
@@ -1011,9 +1363,19 @@ def training_status():
 
             for line in lines:
                 if "TRAINING_HB" in line:
-                    # Parse training heartbeat lines
+                    # Parse training heartbeat lines (support legacy and new EMA format)
                     import re
-                    match = re.search(r'Step (\d+)/(\d+) .* Loss: ([0-9.]+) .* Policy: ([0-9.]+) .* Value: ([0-9.]+) .* SSL: ([0-9.]+) .* LR: ([0-9.]+)', line)
+                    # New format example:
+                    # TRAINING_HB: Step S/T (updates=U) | BatchLoss: x.xxx | EMA: x.xxx | Policy(EMA): x.xxx | Value(EMA): x.xxx | SSL(EMA): x.xxx | LR: x.xxxxxx
+                    m_new = re.search(
+                        r'Step\s+(\d+)/(\d+).*?EMA:\s*([0-9.]+).*?Policy\(EMA\):\s*([0-9.]+).*?Value\(EMA\):\s*([0-9.]+).*?(?:SSL\(EMA\)|SSL):\s*([0-9.]+).*?LR:\s*([0-9.]+)',
+                        line
+                    )
+                    m_old = re.search(
+                        r'Step\s+(\d+)/(\d+).*?Loss:\s*([0-9.]+).*?Policy:\s*([0-9.]+).*?Value:\s*([0-9.]+).*?(?:SSL\(EMA\)|SSL):\s*([0-9.]+).*?LR:\s*([0-9.]+)',
+                        line
+                    )
+                    match = m_new or m_old
                     if match:
                         step, total_steps, loss, policy, value, ssl, lr = match.groups()
                         training_data.append({

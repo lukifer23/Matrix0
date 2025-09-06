@@ -26,9 +26,9 @@
       input, select { padding: 6px 8px; border-radius: 6px; border:1px solid var(--border); background: var(--card); color: var(--fg); }
       button { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--fg); cursor:pointer; }
       button:hover { border-color: var(--accent); }
-      main { display: grid; grid-template-columns: 520px 1fr; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto; }
+      main { display: grid; grid-template-columns: minmax(360px, 560px) 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
       #boardWrap { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-      #board { width: 488px; height: 488px; border-radius: 8px; overflow:hidden; }
+      #board { width: 100%; aspect-ratio: 1 / 1; height: auto; border-radius: 8px; overflow: hidden; }
       .grid { display:grid; gap:16px; grid-template-columns: 1fr; }
       .panel { border: 1px solid var(--border); background: var(--card); padding: 12px; border-radius: 10px; }
       .row { margin: 6px 0; font-size: 13px; color: var(--muted); }
@@ -42,7 +42,7 @@
       /* View Content Switching */
       .view-content { display: none; }
       .view-content.active { display: grid; grid-template-columns: 520px 1fr; gap: 16px; }
-      .view-content.active.full-width { grid-template-columns: 1fr; }
+      .view-content.active.full-width { grid-template-columns: 1fr; grid-column: 1 / -1; }
 
       /* Panel Headers */
       .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
@@ -127,6 +127,7 @@
       @media (max-width: 1200px) {
         .view-content.active { grid-template-columns: 1fr; }
         #boardWrap { order: -1; }
+        main { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -198,11 +199,22 @@
             <div>
               <div class="row">Analytics</div>
               <div id="analytics" class="mono">Loading…</div>
+              <div class="row" style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+                <button id="purgeBtn">Purge Stale Games</button>
+                <span id="purgeInfo" class="mono"></span>
+              </div>
             </div>
           </div>
           <div class="panel">
             <div class="row">Messages</div>
             <div id="log" class="mono"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3>PGN Files</h3>
+              <button id="refreshPgn">Refresh</button>
+            </div>
+            <div id="pgnList" class="mono" style="max-height: 220px; overflow-y:auto;"></div>
           </div>
         </div>
       </div>
@@ -255,6 +267,77 @@
               <h3>Training Analytics & History</h3>
             </div>
             <div id="trainingHistory" class="mono" style="max-height: 400px; overflow-y: auto;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Orchestrator View -->
+      <div id="orchestratorView" class="view-content full-width">
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Orchestrator Control</h3>
+              <div id="orchRunning" class="status-indicator">Idle</div>
+            </div>
+            <div class="controls" style="flex-wrap: wrap; gap: 12px;">
+              <label>Config <input type="text" id="orchConfig" value="config.yaml" style="min-width: 200px;"/></label>
+              <label>Games <input type="number" id="orchGames" min="1" placeholder="auto" /></label>
+              <label>Workers <input type="number" id="orchWorkers" min="1" placeholder="cfg" /></label>
+              <label>Sims <input type="number" id="orchSims" min="1" placeholder="cfg" /></label>
+              <label>Eval Games <input type="number" id="orchEvalGames" min="0" placeholder="cfg" /></label>
+              <label>Promote ≥ <input type="number" id="orchPromote" step="0.01" min="0" max="1" placeholder="cfg" /></label>
+              <label>Device
+                <select id="orchDevice">
+                  <option value="">(default)</option>
+                  <option value="auto">auto</option>
+                  <option value="cpu">cpu</option>
+                  <option value="mps">mps</option>
+                  <option value="cuda">cuda</option>
+                </select>
+              </label>
+              <label><input type="checkbox" id="orchQuickStart" /> Quick start</label>
+              <label><input type="checkbox" id="orchNoSharedInfer" /> No shared infer</label>
+              <label><input type="checkbox" id="orchContinuous" /> Continuous</label>
+              <label>TUI
+                <select id="orchTui">
+                  <option value="">(default)</option>
+                  <option value="bars">bars</option>
+                  <option value="table">table</option>
+                </select>
+              </label>
+              <button id="orchStart">Start Cycle</button>
+              <button id="orchStop">Stop</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Self-Play Progress</h3>
+              <div id="orchProgressPct" class="badge">0%</div>
+            </div>
+            <div class="metrics-grid">
+              <div class="metric"><div class="metric-label">Completed</div><div id="orchCompleted" class="metric-value">0</div></div>
+              <div class="metric"><div class="metric-label">Total</div><div id="orchTotal" class="metric-value">—</div></div>
+              <div class="metric"><div class="metric-label">W/L/D</div><div id="orchWLD" class="metric-value">0/0/0</div></div>
+            </div>
+            <div class="progress-bar"><div id="orchProgressBar" class="progress-fill" style="width: 0%"></div></div>
+            <div id="orchWorkersTable" class="mono" style="margin-top:8px;"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Evaluation & Promotion</h3>
+            </div>
+            <div class="kvs">
+              <div>Eval Status: <span id="orchEvalStatus" class="val">—</span></div>
+              <div>Win Rate: <span id="orchEvalWR" class="val">—</span></div>
+              <div>Promotion: <span id="orchPromo" class="val">—</span></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header"><h3>Logs (structured)</h3></div>
+            <div id="orchLogs" class="mono" style="max-height: 320px; overflow-y: auto;"></div>
           </div>
         </div>
       </div>
@@ -424,6 +507,23 @@
     </main>
     <script src="https://unpkg.com/chess.mjs@1.3.2/dist/chess.js"></script>
     <script src="https://unpkg.com/chessground@8.4.3/dist/chessground.min.js"></script>
-    <script src="/app.js"></script>
+    <script>
+      // Lightweight CDN fallback for board libraries so the rest of the UI stays usable.
+      (function(){
+        function load(src){ var s=document.createElement('script'); s.src=src; s.async=true; document.head.appendChild(s); }
+        function loadCss(href){ var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; document.head.appendChild(l); }
+        // Retry with jsDelivr after a short delay if globals aren't defined
+        setTimeout(function(){
+          if (typeof Chess === 'undefined') {
+            load('https://cdn.jsdelivr.net/npm/chess.js@1.0.0/dist/chess.min.js');
+          }
+          if (typeof Chessground === 'undefined') {
+            load('https://cdn.jsdelivr.net/npm/chessground@8.4.3/dist/chessground.min.js');
+            loadCss('https://cdn.jsdelivr.net/npm/chessground@8.4.3/assets/chessground.css');
+          }
+        }, 300);
+      })();
+    </script>
+    <script src="/static/app.js?v=2"></script>
   </body>
   </html>

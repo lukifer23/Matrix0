@@ -82,5 +82,5 @@ python -m azchess.eval --external-engines --games 50
 
 ---
 
-**Last Updated**: December 2024  
+**Last Updated**: September 2025  
 **Status**: Production training pipeline operational, complete SSL architecture integration with advanced algorithms
