@@ -9,19 +9,23 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - [Model V2 Design](model_v2.md)
 - [External Engine Integration](EXTERNAL_ENGINES.md)
 - [Benchmark System Guide](BENCHMARK_SYSTEM.md)
+- [EX0Bench External Engine Benchmarking](../benchmarks/EX0BENCH_README.md)
+- [Changelog](../CHANGELOG.md)
 
 ## Current Project Status
 
-**Matrix0 v2.0** - Production training pipeline operational with SSL foundation established.
+**Matrix0 v2.2** - SSL Architecture Integration + Data Pipeline Fixes + EX0Bench System deployed.
 
 ### ✅ What's Working
-- **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle
+- **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with data pipeline fixes
 - **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
-- **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection)
+- **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection) with optimized pipeline
+- **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) without neural network inference
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, Apple Silicon optimization
+- **Data Pipeline**: Fixed SSL target concatenation, shape mismatches, and value target corrections
 - **External Engines**: Stockfish and LC0 integration with automatic discovery and optimization
 - **Apple Silicon**: MPS optimization with 14GB memory management and Metal backend support
-- **Web Interface**: FastAPI-based evaluation and analysis interface
+- **Web Interface**: FastAPI-based evaluation and analysis interface with comprehensive monitoring
 
 ### 🔄 Active Development
 - **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
@@ -30,12 +34,14 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - **Model Strength Improvement**: Continue training to close gap with top engines
 
 ### 📚 Documentation Status
-- **Configuration Guide**: ✅ Current and accurate
+- **Configuration Guide**: ✅ Current and accurate (updated for SSL fixes)
 - **Model V2 Design**: ✅ Current and accurate
 - **Web UI Guide**: ✅ Current and accurate
 - **External Engines**: ✅ Current and accurate
 - **Benchmark System**: ✅ New comprehensive guide added
-- **Status & Roadmap**: ✅ Current and accurate
+- **EX0Bench System**: ✅ New comprehensive guide added
+- **Changelog**: ✅ New comprehensive changelog added
+- **Status & Roadmap**: ✅ Current and accurate (updated for v2.2)
 
 ## Open Issues
 
@@ -82,5 +88,5 @@ python -m azchess.eval --external-engines --games 50
 
 ---
 
-**Last Updated**: September 2025  
-**Status**: Production training pipeline operational, complete SSL architecture integration with advanced algorithms
+**Last Updated**: September 2025
+**Status**: Production training pipeline operational, complete SSL architecture integration with data pipeline fixes, EX0Bench external benchmarking system deployed

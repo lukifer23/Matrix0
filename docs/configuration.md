@@ -6,6 +6,22 @@ The Matrix0 project uses a comprehensive `config.yaml` file to manage all parame
 
 The `config.yaml` file is the single source of truth for all system parameters. It is loaded at startup by the orchestrator and passed to all components.
 
+### Recent Configuration Updates (v2.2)
+
+**SSL Task Optimization**: Reduced from 7 to 5 SSL tasks for improved stability and performance
+- ✅ **Active Tasks**: piece, threat, pin, fork, control detection
+- ❌ **Removed Tasks**: pawn_structure, king_safety (due to data availability issues)
+
+**Data Pipeline Fixes**: Resolved configuration conflicts and duplicate keys
+- ✅ **Duplicate Key Removal**: All duplicate configuration entries eliminated
+- ✅ **SSL Task Alignment**: Configuration matches actual implemented SSL tasks
+- ✅ **Memory Optimization**: Settings optimized for stable SSL training within MPS limits
+
+**EX0Bench Integration**: New external engine benchmarking configuration options
+- ✅ **External-Only Mode**: CPU-only external engine battles without Matrix0
+- ✅ **Automatic Detection**: Smart detection of pure external engine scenarios
+- ✅ **Performance Benefits**: Faster startup, lower memory for external comparisons
+
 ### Current Configuration Structure
 ```yaml
 # Matrix0 V2 Production Configuration
@@ -35,7 +51,7 @@ model:
   policy_factor_rank: 128          # Factorized policy head
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (advanced algorithms integrated)
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # SSL tasks (optimized 5-task configuration)
 ```
 
 ### Advanced Benchmark Configuration
@@ -394,11 +410,11 @@ metrics. Running at the default `INFO` level suppresses these messages.
 3. **Phase 3**: Validate SSL effectiveness across all implemented tasks
 4. **Phase 4**: Optimize SSL performance and memory usage
 
-### Configuration for Future SSL Features
+### Current SSL Configuration (Optimized)
 ```yaml
-# Future SSL configuration (when fully integrated)
+# Current SSL configuration (optimized 5-task setup)
 model:
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]
   ssl_curriculum: true
   ssl_task_weights:
     piece: 1.0
@@ -406,8 +422,6 @@ model:
     pin: 0.6
     fork: 0.4
     control: 0.7
-    pawn_structure: 0.5
-    king_safety: 0.9
 
 training:
   ssl_weight: 0.1                  # Increased SSL weight for multi-task learning

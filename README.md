@@ -19,14 +19,15 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **🏆 Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## Project Status
-**ACTIVE DEVELOPMENT** - **SSL architecture integration achieved**, training pipeline fully operational with SSL framework. See the
-[comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), and the
+**ACTIVE DEVELOPMENT** - **SSL architecture integration achieved**, training pipeline fully operational with SSL framework, **EX0Bench external engine benchmarking system** deployed. See the
+[comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the
+[EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the
 [development roadmap](docs/roadmap.md) for current achievements and next steps.
 
 ## ✨ Key Features
 
 ### SSL Integration (COMPLETE)
-- **7 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection, pawn structure, king safety
+- **5 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
 - **Dedicated SSL Parameters**: SSL capacity with weighted loss functions
 - **Real-Time SSL Monitoring**: WebUI dashboard with SSL head performance tracking
@@ -54,6 +55,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 
 ### Advanced Benchmark System
 - **Multi-Engine Tournaments**: Round-robin, Swiss, and single-elimination formats
+- **EX0Bench External Engine Battles**: Pure Stockfish vs LC0 comparisons with no neural network required
 - **SSL Performance Tracking**: Real-time monitoring of SSL head effectiveness
 - **Apple Silicon Optimization**: MPS memory monitoring and Metal backend support
 - **Automated Engine Discovery**: Intelligent detection and configuration of installed engines
@@ -133,6 +135,24 @@ source .venv/bin/activate
 python -m azchess.orchestrator --workers 3 --sims 300 --lr 0.001 --batch-size 96 --epochs 1 --eval-games 10 --device mps
 ```
 
+Recommended fast, stable Apple‑Silicon run (200 sims)
+```bash
+# Slightly more aggressive self‑play and shorter cycles
+MATRIX0_MPS_TARGET_BATCH=6 \
+python -m azchess.orchestrator \
+  --tui table \
+  --workers 3 \
+  --games 300 \
+  --sims 200 \
+  --eval-games 40 \
+  --promotion-threshold 0.55 \
+  --epochs 1 \
+  --steps-per-epoch 15000 \
+  --opening-plies 6 \
+  --max-game-length 160 \
+  --resign-threshold -0.6
+```
+
 ### 3b. Generate Stockfish Data (Optional)
 ```bash
 # Example: generate 2k tactical positions with SSL targets
@@ -182,11 +202,19 @@ python coreml_export.py --checkpoint checkpoints/best.pt --output matrix0.mlmode
 # MCTS performance benchmarking
 python -m azchess.tools.bench_mcts
 
-# Enhanced Benchmark System
+# Enhanced Benchmark System (full Matrix0 capabilities)
 python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml
+
+# EX0Bench - Pure external engine battles (Stockfish vs LC0, no neural network)
+python benchmarks/ex0bench.py --engine1 stockfish --engine2 lc0 --games 50 --time 60+0.6
 
 # Quick benchmark against external engines
 python benchmarks/benchmark.py --model checkpoints/v2_base.pt --engine stockfish --games 10
+
+engine vs engine tournament (lc0 vs Stockfish)
+```bash
+python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml --scenario Multi_Engine_Tournament
+```
 
 # Training data analysis
 python -m azchess.tools.process_lichess
@@ -212,23 +240,24 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 ## 📚 Documentation
 - [Configuration guide](docs/configuration.md)
 - [Web UI guide](docs/webui.md)
+- [Performance tuning](docs/performance.md)
 - [Model V2 Design](docs/model_v2.md)
 - [External engine integration](docs/EXTERNAL_ENGINES.md)
 - [Full documentation index](docs/index.md)
 
 ## 🔧 Current Training Status
 
-**Latest Update**: September 2025 - SSL Architecture Integration Complete
-- **Training Progress**: **FULLY OPERATIONAL** with SSL architecture integration
+**Latest Update**: September 2025 - SSL Architecture Integration Complete + Data Pipeline Fixes
+- **Training Progress**: **FULLY OPERATIONAL** with SSL architecture integration and data pipeline fixes
 - **Training Speed**: ~1.58-2.5 seconds per step (optimized for SSL processing)
 - **Model Size**: 53M parameter ResNet-24 with SSL heads
-- **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **7 SSL heads**
-- **SSL Status**: **ARCHITECTURE INTEGRATED** - All 7 SSL tasks integrated (piece, threat, pin, fork, control, pawn_structure, king_safety)
+- **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **5 SSL heads**
+- **SSL Status**: **ARCHITECTURE INTEGRATED** - All 5 SSL tasks integrated (piece, threat, pin, fork, control) - optimized data pipeline
 - **Large-Scale Training**: 100K step pretraining run in progress using enhanced_best.pt checkpoint
 - **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **Training Stability**: 100% stable with proper gradient accumulation and scheduler stepping
 - **Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
-- **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, advanced benchmark system, tournament system, CoreML export
+- **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, EX0Bench external engine battles, data pipeline fixes, MPS stability improvements, CoreML export
 
 ## 🔧 Development
 
@@ -295,10 +324,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📈 Current Achievements & Next Steps
 
 ### ✅ Major Milestones Completed (September 2025)
-- **SSL Architecture Integration**: All 7 SSL tasks (piece, threat, pin, fork, control, pawn_structure, king_safety) integrated
+- **SSL Architecture Integration**: All 5 SSL tasks (piece, threat, pin, fork, control) integrated with optimized data pipeline
+- **Data Pipeline Fixes**: Resolved SSL target concatenation issues, fixed control shape mismatches, corrected value targets
 - **Multi-Task Learning**: Simultaneous training of policy, value, and SSL optimization working perfectly
+- **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) for fine-tuning decisions
 - **Enhanced WebUI**: Complete monitoring platform with real-time SSL and training analytics
 - **Training Stability**: 100% stable training with proper scheduler stepping and gradient management
+- **MPS Stability Fixes**: Resolved Metal command buffer issues with comprehensive error recovery
 - **Advanced Checkpoint Management**: SSL-preserving checkpoint creation and merging tools
 - **Production Architecture**: 53M parameter ResNet-24 with complete SSL foundation
 - **Apple Silicon Optimization**: 14GB MPS limit with SSL processing optimization
@@ -315,8 +347,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **SSL Visualization**: Advanced heatmaps and decision explanation tools
 
 ### 🎯 Immediate Next Steps
-1. **SSL Learning Validation**: Measure effectiveness of all 7 SSL tasks
-2. **Performance Benchmarking**: Establish SSL contribution baselines
+1. **SSL Learning Validation**: Measure effectiveness of all 5 SSL tasks
+2. **Performance Benchmarking**: Establish SSL contribution baselines with EX0Bench
 3. **WebUI Enhancement**: Add SSL-specific visualization features
 4. **Model Analysis**: Deep-dive into SSL learning patterns and effectiveness
 
@@ -324,7 +356,6 @@ See [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md), [docs/webu
 
 ---
 
-**Matrix0 v2.1 - SSL Architecture Integration Achieved**
+**Matrix0 v2.2 - SSL Architecture Integration + EX0Bench System**
 
-*Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring and analysis capabilities.*
-
+*Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring, EX0Bench external engine battles, and data pipeline fixes.*

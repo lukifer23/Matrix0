@@ -3,11 +3,11 @@
 
 For current problem areas, see the [Open Issues](index.md#open-issues) section.
 
-## Project Status: PRODUCTION TRAINING
+## Project Status: PRODUCTION TRAINING + EX0BENCH
 
-**Current Version**: v2.1
+**Current Version**: v2.2
 **Last Updated**: September 2025
-**Status**: Production training pipeline active, SSL foundation established with advanced algorithms integrated, 53.4M model stable
+**Status**: Production training pipeline active, SSL foundation optimized with 5-task configuration, data pipeline fixes complete, EX0Bench external benchmarking system deployed
 
 ## Current Achievement Summary
 
@@ -18,7 +18,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 #### Core Architecture (53M Parameters)
 - [x] **ResNet-24 backbone** with 320 channels (increased from 160)
 - [x] **Chess-specific attention mechanism** with 20 heads every 4th block
-- [x] **SSL foundation** with basic piece recognition working and advanced algorithms integrated
+- [x] **SSL foundation** with optimized 5-task configuration and data pipeline fixes
 - [x] **Branch normalization** preventing NaN/Inf policy head instability
 - [x] **Mixed precision training** with FP16 stability on MPS
 
@@ -26,7 +26,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 - [x] **Self-play → Training → Evaluation → Promotion** complete cycle
 - [x] **Memory management** with 14GB MPS limit and automatic cleanup
 - [x] **Emergency recovery** with automatic checkpoint saving
-- [x] **SSL foundation** with basic piece recognition and advanced algorithms operational
+- [x] **SSL foundation** with optimized 5-task configuration and stable data pipeline
 - [x] **Gradient clipping** and numerical stability safeguards
 
 #### MCTS Engine (Optimized)
@@ -45,7 +45,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 
 #### Advanced Benchmark System
 - [x] **Multi-engine tournaments** (round-robin, Swiss, single-elimination)
-- [x] **SSL performance tracking** (7-head monitoring and analysis)
+- [x] **SSL performance tracking** (5-head monitoring and analysis)
 - [x] **Apple Silicon optimization** (MPS monitoring, Metal backend)
 - [x] **Automated engine discovery** (intelligent detection and configuration)
 - [x] **Tournament analysis** (ELO calculations, ranking systems)
@@ -102,7 +102,32 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 - **Training Speed**: ~3-4s per step with 53M parameter model
 - **Memory Usage**: 14GB MPS limit with automatic management
 - **Stability**: No NaN/Inf crashes with current safeguards
-- **SSL Status**: Basic piece recognition working, advanced algorithms integrated
+- **SSL Status**: Optimized 5-task configuration with data pipeline fixes
+- **EX0Bench Status**: External engine benchmarking system deployed and operational
+
+### Recent Achievements (v2.2)
+
+#### ✅ Data Pipeline Fixes
+- **SSL Target Concatenation**: Fixed SSL targets getting lost during batch mixing
+- **Shape Mismatches**: Resolved control task shape issues (8,8) vs (3,8,8)
+- **Value Target Corrections**: Fixed z-value generation in teacher games
+- **Array Length Consistency**: Ensured all arrays in mixed batches have consistent lengths
+
+#### ✅ EX0Bench External Benchmarking System
+- **Pure External Battles**: Stockfish vs LC0 without neural network inference
+- **CPU-Only Operation**: No MPS dependency for external engine comparisons
+- **Automatic Detection**: Smart detection of pure external engine scenarios
+- **Performance Benefits**: Faster startup, lower memory usage, more stable
+
+#### ✅ SSL Task Optimization
+- **Reduced to 5 Tasks**: Optimized from 7 to 5 tasks for improved stability
+- **Active Tasks**: piece, threat, pin, fork, control detection
+- **Data Pipeline Stability**: All SSL targets properly handled in mixed batches
+
+#### ✅ MPS Stability Improvements
+- **Metal Command Buffer Fixes**: Comprehensive error recovery for MPS issues
+- **Cache Management**: Automatic MPS cache clearing before inference
+- **Memory Optimization**: Enhanced model memory management for long training runs
 
 ### Realistic Timeline
 - **SSL Algorithm Validation**: 1-2 weeks (high priority)
