@@ -11,6 +11,10 @@ pytest>=7.0.0
 fastapi>=0.110.0
 httpx>=0.28.0
 
+# Optional dependencies for enhanced visualization (benchmarks)
+seaborn>=0.11.0  # For statistical plots in benchmark results
+plotly>=5.0.0    # For interactive plots in benchmark results
+
 # Development dependencies for CI/CD and code quality
 isort>=5.12.0
 mypy>=1.5.0
