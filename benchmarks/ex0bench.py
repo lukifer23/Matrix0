@@ -126,12 +126,13 @@ class EX0Bench:
                 return None
 
         # Create test scenarios (both colors for each engine)
+        games_per_color = max(1, games // 2)  # Ensure at least 1 game per color
         for i, (eng1, eng2) in enumerate([(engine1, engine2), (engine2, engine1)]):
             scenario = {
                 "name": f"{eng1}_vs_{eng2}_external_game_{i+1}",
                 "engine": eng1,
                 "opponent": eng2,
-                "num_games": games // 2,  # Split games between colors
+                "num_games": games_per_color if i == 0 else max(1, games - games_per_color),  # First scenario gets the remainder
                 "time_control": time_control,
                 "concurrency": 2,
                 "max_moves": 200,
@@ -230,6 +231,8 @@ class EX0Bench:
         import chess.pgn
         import json
         from pathlib import Path
+        import psutil
+        import time as time_module
         from types import SimpleNamespace
 
         # Helper function to create config object from dict
@@ -241,6 +244,11 @@ class EX0Bench:
                 options=options or {}
             )
 
+        # Performance tracking
+        benchmark_start_time = time_module.time()
+        cpu_usage_samples = []
+        memory_usage_samples = []
+
         results = {
             "benchmark_name": config["name"],
             "description": config["description"],
@@ -250,6 +258,12 @@ class EX0Bench:
                 "white_wins": 0,
                 "black_wins": 0,
                 "draws": 0
+            },
+            "performance": {
+                "total_time": 0,
+                "avg_cpu_percent": 0,
+                "avg_memory_mb": 0,
+                "peak_memory_mb": 0
             }
         }
 
@@ -299,12 +313,23 @@ class EX0Bench:
                     engine1.new_game()
                     engine2.new_game()
 
+                    # Performance sampling
+                    game_start_time = time_module.time()
+
                     # Play game
                     board = chess.Board()
                     moves = []
                     game_result = None
 
                     while not board.is_game_over() and len(moves) < scenario["max_moves"]:
+                        # Performance sampling (every 10 moves)
+                        if len(moves) % 10 == 0:
+                            try:
+                                cpu_usage_samples.append(psutil.cpu_percent(interval=None))
+                                memory_usage_samples.append(psutil.virtual_memory().used / (1024 * 1024))  # MB
+                            except:
+                                pass  # Ignore sampling errors
+
                         # Determine whose turn it is
                         if board.turn:  # White to move
                             current_engine = engine1
@@ -338,18 +363,29 @@ class EX0Bench:
                             break
 
                     # Determine result
+                    game_end_time = time_module.time()
+                    game_duration = game_end_time - game_start_time
+
                     if board.is_checkmate():
                         if board.turn:  # Black just moved and checkmated white
                             game_result = "0-1"  # Black wins
                             results["summary"]["black_wins"] += 1
+                            winner = engine2_name
                         else:  # White just moved and checkmated black
                             game_result = "1-0"  # White wins
                             results["summary"]["white_wins"] += 1
+                            winner = engine1_name
                     elif board.is_stalemate() or board.is_insufficient_material() or board.is_seventyfive_moves():
                         game_result = "1/2-1/2"  # Draw
                         results["summary"]["draws"] += 1
+                        winner = "Draw"
+                    elif len(moves) >= scenario["max_moves"]:
+                        game_result = "1/2-1/2"  # Draw by move limit
+                        results["summary"]["draws"] += 1
+                        winner = "Draw (move limit)"
                     else:
                         game_result = "*"  # Game interrupted
+                        winner = "Unknown"
 
                     # Record game
                     game_data = {
@@ -357,7 +393,9 @@ class EX0Bench:
                         "white_engine": engine1_name,
                         "black_engine": engine2_name,
                         "result": game_result,
+                        "winner": winner,
                         "moves": len(moves),
+                        "duration": round(game_duration, 2),
                         "pgn": str(chess.pgn.Game.from_board(board))
                     }
                     results["games"].append(game_data)
@@ -380,7 +418,7 @@ class EX0Bench:
                     with open(pgn_file, 'w') as f:
                         f.write(str(pgn_game))
 
-                    logger.info(f"Game {game_idx + 1} completed: {game_result} ({len(moves)} moves)")
+                    logger.info(f"Game {game_idx + 1} completed: {winner} ({len(moves)} moves, {game_duration:.1f}s)")
 
                 finally:
                     # Clean up engines
@@ -390,13 +428,103 @@ class EX0Bench:
                     except:
                         pass
 
+        # Calculate performance metrics
+        benchmark_end_time = time_module.time()
+        total_time = benchmark_end_time - benchmark_start_time
+
+        if cpu_usage_samples:
+            results["performance"]["avg_cpu_percent"] = round(sum(cpu_usage_samples) / len(cpu_usage_samples), 1)
+        if memory_usage_samples:
+            results["performance"]["avg_memory_mb"] = round(sum(memory_usage_samples) / len(memory_usage_samples), 1)
+            results["performance"]["peak_memory_mb"] = round(max(memory_usage_samples), 1)
+        results["performance"]["total_time"] = round(total_time, 2)
+
         # Save results
         results_file = output_dir / f"ex0bench_external_results.json"
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
 
+        # Display comprehensive results
+        self._display_benchmark_results(results)
+
         logger.info(f"External benchmark completed! Results saved to {results_file}")
         return results
+
+    def _display_benchmark_results(self, results: Dict[str, Any]) -> None:
+        """Display benchmark results in a nice TUI-style format."""
+        print("\n" + "="*80)
+        print("🎯 EX0BENCH EXTERNAL ENGINE BENCHMARK RESULTS")
+        print("="*80)
+
+        # Benchmark info
+        print(f"📊 Benchmark: {results['benchmark_name']}")
+        print(f"📝 Description: {results['description']}")
+        print(f"🎮 Total Games: {results['total_games']}")
+        print()
+
+        # Performance metrics
+        perf = results.get("performance", {})
+        print("⚡ PERFORMANCE METRICS:")
+        print(f"   ⏱️  Total Time: {perf.get('total_time', 0):.1f}s")
+        if perf.get('avg_cpu_percent', 0) > 0:
+            print(f"   🖥️  Avg CPU Usage: {perf.get('avg_cpu_percent', 0)}%")
+        if perf.get('avg_memory_mb', 0) > 0:
+            print(f"   🧠 Avg Memory: {perf.get('avg_memory_mb', 0):.0f}MB")
+            print(f"   🔺 Peak Memory: {perf.get('peak_memory_mb', 0):.0f}MB")
+        print()
+
+        # Results table
+        summary = results.get("summary", {})
+        print("🏆 RESULTS SUMMARY:")
+        print(f"   ✅ {summary.get('white_wins', 0):2d} White Wins")
+        print(f"   ⚫ {summary.get('black_wins', 0):2d} Black Wins")
+        print(f"   🤝 {summary.get('draws', 0):2d} Draws")
+        print()
+
+        # Detailed game results
+        if results.get("games"):
+            print("📋 INDIVIDUAL GAME RESULTS:")
+            print("-" * 75)
+            print(f"{'Game':<4} {'White':<12} {'Black':<12} {'Result':<8} {'Winner':<15} {'Moves':<5} {'Time':<6}")
+            print("-" * 75)
+
+            for game in results["games"]:
+                white = game.get("white_engine", "")[:10]
+                black = game.get("black_engine", "")[:10]
+                result = game.get("result", "")
+                winner = game.get("winner", "")[:14]
+                moves = game.get("moves", 0)
+                duration = game.get("duration", 0)
+
+                print(f"{game.get('game_id', 0):<4} {white:<12} {black:<12} {result:<8} {winner:<15} {moves:<5} {duration:<6.1f}s")
+            print("-" * 75)
+            print()
+
+        # Overall statistics
+        total_games = results.get("total_games", 0)
+        if total_games > 0:
+            white_win_rate = (summary.get('white_wins', 0) / total_games) * 100
+            black_win_rate = (summary.get('black_wins', 0) / total_games) * 100
+            draw_rate = (summary.get('draws', 0) / total_games) * 100
+
+            print("📊 STATISTICS:")
+            print(f"   🏆 White Win Rate: {white_win_rate:.1f}%")
+            print(f"   🏆 Black Win Rate: {black_win_rate:.1f}%")
+            print(f"   🤝 Draw Rate: {draw_rate:.1f}%")
+            # Determine overall winner
+            if summary.get('white_wins', 0) > summary.get('black_wins', 0):
+                overall_winner = f"{results['games'][0].get('white_engine', 'White')}"
+            elif summary.get('black_wins', 0) > summary.get('white_wins', 0):
+                overall_winner = f"{results['games'][0].get('black_engine', 'Black')}"
+            else:
+                overall_winner = "Draw"
+
+            print(f"🏅 Overall Winner: {overall_winner}")
+        print()
+
+        print("🎮 PGN files saved to: benchmarks/results/pgns_external/")
+        print("📄 JSON results saved to: benchmarks/results/ex0bench_external_results.json")
+        print("="*80)
 
     def run_benchmark(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Run the benchmark using the existing Matrix0 benchmarking infrastructure."""
