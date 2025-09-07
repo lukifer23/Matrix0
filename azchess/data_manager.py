@@ -74,6 +74,9 @@ class DataManager:
         # Warn-once flags to avoid log spam each step
         self._warned_missing_tactical = False
         self._warned_missing_openings = False
+        self._warned_teacher_portion_failure = False
+        # Track failed SSL teacher files to avoid repeated warnings
+        self._failed_ssl_teacher_files = set()
         
     def _connect(self) -> sqlite3.Connection:
         """Create a SQLite connection with WAL and busy timeout enabled."""
@@ -780,7 +783,10 @@ class DataManager:
                     logger.debug(f"Loaded {take_samples} samples from {os.path.basename(file_path)}")
 
             except Exception as e:
-                logger.warning(f"Failed to load from {file_path}: {e}")
+                # Only warn once per failed file to avoid log spam
+                if file_path not in self._failed_ssl_teacher_files:
+                    self._failed_ssl_teacher_files.add(file_path)
+                    logger.warning(f"Failed to load SSL teacher data from {os.path.basename(file_path)}: {e}")
                 continue
 
         if not collected_data['s']:
@@ -845,7 +851,9 @@ class DataManager:
                             d["legal_mask"] = lm
                         parts.append(d)
             except Exception as e:
-                logger.warning(f"Failed to load teacher portion: {e}")
+                if not self._warned_teacher_portion_failure:
+                    self._warned_teacher_portion_failure = True
+                    logger.warning(f"Failed to load teacher portion: {e}")
 
         # 2) Stockfish portion fills the rest of external half
         remaining = ext_half - (parts[0]['s'].shape[0] if parts else 0)
