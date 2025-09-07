@@ -102,18 +102,23 @@ def _check_contiguous(outputs: dict):
             continue
 
 
-def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
-    """Mask policy logits using the provided target distribution.
+def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tensor = None) -> torch.Tensor:
+    """Mask policy logits using actual legal moves from the board.
 
-    Any logits corresponding to zero-probability entries in ``pi`` are set to a
-    large negative value.  If masking fails for any reason the original logits
-    are returned and the error is logged.
+    Any logits corresponding to illegal moves are set to a large negative value.
+    If no legal_mask is provided, falls back to pi > 0 for compatibility.
     """
     try:
         with torch.no_grad():
-            legal_mask = pi > 0
-            valid_rows = legal_mask.any(dim=1, keepdim=True)
-            keep_mask = valid_rows & legal_mask
+            if legal_mask is not None:
+                # Use actual board legal moves
+                mask_to_use = legal_mask.bool()
+            else:
+                # Fallback to target policy (legacy behavior)
+                mask_to_use = pi > 0
+
+            valid_rows = mask_to_use.any(dim=1, keepdim=True)
+            keep_mask = valid_rows & mask_to_use
         return torch.where(keep_mask, p, torch.full_like(p, -1e9))
     except Exception as e:
         logger.error(f"Policy masking failed: {e}")
@@ -410,10 +415,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 if current_step % 100 == 0:
                     logger.info("EXTERNAL_DATA: Using one-hot policy targets without masking (already correct)")
             else:
-                # Self-play data: apply policy masking for soft MCTS distributions
-                p_for_loss = apply_policy_mask(p, pi)
+                # Self-play data: apply policy masking using actual board legal moves
+                p_for_loss = apply_policy_mask(p, pi, legal_mask_t)
                 if current_step % 100 == 0:
-                    logger.info("SELFPLAY_DATA: Applying policy masking for soft MCTS distributions")
+                    logger.info("SELFPLAY_DATA: Applying policy masking using board legal moves")
         else:
             p_for_loss = p
 
