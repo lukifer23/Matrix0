@@ -71,6 +71,9 @@ class DataManager:
 
         # Version tracking
         self.version = "1.0.0"
+        # Warn-once flags to avoid log spam each step
+        self._warned_missing_tactical = False
+        self._warned_missing_openings = False
         
     def _connect(self) -> sqlite3.Connection:
         """Create a SQLite connection with WAL and busy timeout enabled."""
@@ -435,7 +438,9 @@ class DataManager:
         """Get batch from tactical training data."""
         tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
         if not tactical_path.exists():
-            logger.warning("Tactical training data not found")
+            if not self._warned_missing_tactical:
+                logger.warning("Tactical training data not found")
+                self._warned_missing_tactical = True
             return None
         
         try:
@@ -475,7 +480,9 @@ class DataManager:
         """Get batch from openings training data."""
         openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
         if not openings_path.exists():
-            logger.warning("Openings training data not found")
+            if not self._warned_missing_openings:
+                logger.warning("Openings training data not found")
+                self._warned_missing_openings = True
             return None
         
         try:
@@ -530,6 +537,20 @@ class DataManager:
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
 
+        # Handle SSL targets
+        ssl_keys_tactical = [k for k in tactical_batch.keys() if k.startswith('ssl_')]
+        ssl_keys_openings = [k for k in openings_batch.keys() if k.startswith('ssl_')]
+
+        if ssl_keys_tactical and ssl_keys_openings:
+            for ssl_key in ssl_keys_tactical:
+                if ssl_key in openings_batch:
+                    try:
+                        combined_batch[ssl_key] = np.concatenate([
+                            tactical_batch[ssl_key], openings_batch[ssl_key]
+                        ], axis=0)
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate SSL target {ssl_key}: {e}")
+
         # Shuffle the combined batch
         indices = np.random.permutation(len(combined_batch['s']))
         for key in ['s', 'pi', 'z']:
@@ -543,6 +564,11 @@ class DataManager:
             except Exception:
                 if 'legal_mask' in combined_batch:
                     del combined_batch['legal_mask']
+
+        # Shuffle SSL targets
+        for key in list(combined_batch.keys()):
+            if key.startswith('ssl_'):
+                combined_batch[key] = combined_batch[key][indices]
 
         # CRITICAL: Explicit cleanup to prevent memory accumulation
         # The original batches contain potentially 10K+ samples each
@@ -584,6 +610,21 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 openings_batch[key], tactical_batch[key]
             ], axis=0)
+
+        # Handle SSL targets
+        ssl_keys_openings = [k for k in openings_batch.keys() if k.startswith('ssl_')]
+        ssl_keys_tactical = [k for k in tactical_batch.keys() if k.startswith('ssl_')]
+
+        if ssl_keys_openings and ssl_keys_tactical:
+            for ssl_key in ssl_keys_openings:
+                if ssl_key in tactical_batch:
+                    try:
+                        combined_batch[ssl_key] = np.concatenate([
+                            openings_batch[ssl_key], tactical_batch[ssl_key]
+                        ], axis=0)
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate SSL target {ssl_key}: {e}")
+
         if ('legal_mask' in openings_batch) and ('legal_mask' in tactical_batch):
             try:
                 lm = np.concatenate([openings_batch['legal_mask'], tactical_batch['legal_mask']], axis=0)
@@ -591,6 +632,16 @@ class DataManager:
             except Exception:
                 if 'legal_mask' in combined_batch:
                     del combined_batch['legal_mask']
+
+        # Shuffle SSL targets
+        indices = np.random.permutation(len(combined_batch['s']))
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = combined_batch[key][indices]
+        if 'legal_mask' in combined_batch:
+            combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
+        for key in list(combined_batch.keys()):
+            if key.startswith('ssl_'):
+                combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum openings'):
             return None
         return combined_batch
@@ -615,6 +666,21 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
+
+        # Handle SSL targets
+        ssl_keys_tactical = [k for k in tactical_batch.keys() if k.startswith('ssl_')]
+        ssl_keys_openings = [k for k in openings_batch.keys() if k.startswith('ssl_')]
+
+        if ssl_keys_tactical and ssl_keys_openings:
+            for ssl_key in ssl_keys_tactical:
+                if ssl_key in openings_batch:
+                    try:
+                        combined_batch[ssl_key] = np.concatenate([
+                            tactical_batch[ssl_key], openings_batch[ssl_key]
+                        ], axis=0)
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate SSL target {ssl_key}: {e}")
+
         if ('legal_mask' in tactical_batch) and ('legal_mask' in openings_batch):
             try:
                 lm = np.concatenate([tactical_batch['legal_mask'], openings_batch['legal_mask']], axis=0)
@@ -622,10 +688,135 @@ class DataManager:
             except Exception:
                 if 'legal_mask' in combined_batch:
                     del combined_batch['legal_mask']
+
+        # Shuffle SSL targets
+        indices = np.random.permutation(len(combined_batch['s']))
+        for key in ['s', 'pi', 'z']:
+            combined_batch[key] = combined_batch[key][indices]
+        if 'legal_mask' in combined_batch:
+            combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
+        for key in list(combined_batch.keys()):
+            if key.startswith('ssl_'):
+                combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum tactics'):
             return None
         return combined_batch
     
+    def _load_ssl_teacher_data(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
+        """Load teacher data that contains SSL targets."""
+        import glob
+
+        # Find all teacher NPZ files
+        teacher_pattern = os.path.join(self.base_dir, "teacher_games", "**", "*.npz")
+        teacher_files = glob.glob(teacher_pattern, recursive=True)
+
+        # Filter for files that contain SSL targets
+        ssl_teacher_files = []
+        for file_path in teacher_files:
+            try:
+                with np.load(file_path, mmap_mode='r') as data:
+                    ssl_keys = [k for k in data.keys() if k.startswith('ssl_')]
+                    if ssl_keys:
+                        ssl_teacher_files.append((file_path, ssl_keys))
+            except Exception:
+                continue
+
+        if not ssl_teacher_files:
+            logger.debug("No SSL-enabled teacher files found")
+            return None
+
+        # Shuffle and select files to get the required batch size
+        np.random.shuffle(ssl_teacher_files)
+
+        collected_data = {k: [] for k in ['s', 'pi', 'z']}
+        collected_ssl = {}
+        collected_legal_mask = []
+
+        samples_needed = batch_size
+
+        for file_path, ssl_keys in ssl_teacher_files:
+            if samples_needed <= 0:
+                break
+
+            try:
+                with np.load(file_path, mmap_mode='r') as data:
+                    available_samples = len(data['s'])
+                    take_samples = min(samples_needed, available_samples)
+
+                    # Load basic data
+                    for key in ['s', 'pi', 'z']:
+                        collected_data[key].append(data[key][:take_samples])
+
+                    # Load legal mask if present
+                    if 'legal_mask' in data:
+                        collected_legal_mask.append(data['legal_mask'][:take_samples])
+
+                    # Load SSL targets
+                    for ssl_key in ssl_keys:
+                        if ssl_key not in collected_ssl:
+                            collected_ssl[ssl_key] = []
+
+                        ssl_data = data[ssl_key][:take_samples]
+
+                        # Convert control task from single-channel to 3-channel format
+                        if ssl_key == 'ssl_control':
+                            # Convert from (batch, 8, 8) with values [-1, 0, 1]
+                            # to (batch, 3, 8, 8) with one-hot encoding
+                            batch_size = ssl_data.shape[0]
+                            control_3d = np.zeros((batch_size, 3, 8, 8), dtype=np.float32)
+
+                            # Channel 0: black control (where data == -1)
+                            control_3d[:, 0, :, :] = (ssl_data == -1).astype(np.float32)
+                            # Channel 1: neutral (where data == 0)
+                            control_3d[:, 1, :, :] = (ssl_data == 0).astype(np.float32)
+                            # Channel 2: white control (where data == 1)
+                            control_3d[:, 2, :, :] = (ssl_data == 1).astype(np.float32)
+
+                            collected_ssl[ssl_key].append(control_3d)
+                        else:
+                            collected_ssl[ssl_key].append(ssl_data)
+
+                    samples_needed -= take_samples
+                    logger.debug(f"Loaded {take_samples} samples from {os.path.basename(file_path)}")
+
+            except Exception as e:
+                logger.warning(f"Failed to load from {file_path}: {e}")
+                continue
+
+        if not collected_data['s']:
+            return None
+
+        # Concatenate all collected data
+        result = {}
+        for key in ['s', 'pi', 'z']:
+            result[key] = np.concatenate(collected_data[key], axis=0)
+
+        if collected_legal_mask:
+            result['legal_mask'] = np.concatenate(collected_legal_mask, axis=0)
+
+        # Concatenate SSL targets
+        for ssl_key, ssl_arrays in collected_ssl.items():
+            result[ssl_key] = np.concatenate(ssl_arrays, axis=0)
+
+        # Shuffle the final batch
+        if len(result['s']) > 1:
+            indices = np.random.permutation(len(result['s']))
+            for key in result:
+                result[key] = result[key][indices]
+
+        # Trim to exact batch size if we got more than requested
+        actual_size = len(result['s'])
+        if actual_size > batch_size:
+            for key in result:
+                result[key] = result[key][:batch_size]
+        elif actual_size < batch_size:
+            logger.debug(f"Only loaded {actual_size} samples, less than requested {batch_size}")
+            # Don't return partial batches that are too small
+            return None
+
+        logger.debug(f"Loaded SSL teacher batch with {len(result['s'])} samples, SSL targets: {[k for k in result.keys() if k.startswith('ssl_')]}")
+        return result
+
     def _get_curriculum_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
         """Get curriculum batch with balanced mix and self-play + external (Stockfish + Teacher) data.
 
@@ -639,16 +830,22 @@ class DataManager:
         teacher_take = max(0, int(round(ext_half * 0.6)))
         if teacher_take > 0:
             try:
-                gen_t = self.get_training_batch_by_source_prefixes(teacher_take, ["teacher:"])
-                bt = next(gen_t, None)
-                if bt is not None:
-                    s, pi, z, lm = bt if len(bt) == 4 else (*bt, None)
-                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
-                    if lm is not None:
-                        d["legal_mask"] = lm
-                    parts.append(d)
-            except Exception:
-                pass
+                # Try to load teacher data with SSL targets directly
+                teacher_data = self._load_ssl_teacher_data(teacher_take)
+                if teacher_data:
+                    parts.append(teacher_data)
+                else:
+                    # Fallback to original method if SSL loading fails
+                    gen_t = self.get_training_batch_by_source_prefixes(teacher_take, ["teacher:"])
+                    bt = next(gen_t, None)
+                    if bt is not None:
+                        s, pi, z, lm = bt if len(bt) == 4 else (*bt, None)
+                        d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
+                        if lm is not None:
+                            d["legal_mask"] = lm
+                        parts.append(d)
+            except Exception as e:
+                logger.warning(f"Failed to load teacher portion: {e}")
 
         # 2) Stockfish portion fills the rest of external half
         remaining = ext_half - (parts[0]['s'].shape[0] if parts else 0)
@@ -685,6 +882,18 @@ class DataManager:
             external_batch = {}
             for key in ['s', 'pi', 'z']:
                 external_batch[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
+
+            # Handle SSL targets in external parts
+            ssl_keys_by_part = [[k for k in p.keys() if k.startswith('ssl_')] for p in parts]
+            if all(ssl_keys_by_part) and len(set(tuple(k) for k in ssl_keys_by_part)) == 1:
+                # All parts have the same SSL keys
+                ssl_keys = ssl_keys_by_part[0]
+                for ssl_key in ssl_keys:
+                    try:
+                        external_batch[ssl_key] = np.concatenate([p[ssl_key] for p in parts], axis=0)
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate external SSL target {ssl_key}: {e}")
+
             if all('legal_mask' in p for p in parts):
                 try:
                     external_batch['legal_mask'] = np.concatenate([p['legal_mask'] for p in parts], axis=0)
@@ -717,27 +926,71 @@ class DataManager:
         
         # Combine external and self-play data
         combined_batch = {}
+
+        # Concatenate basic fields
         for key in ['s', 'pi', 'z']:
             combined_batch[key] = np.concatenate([
                 external_batch[key], sp_dict[key]
             ], axis=0)
+
+        # Handle SSL targets - check if both sources have SSL targets
+        ssl_keys_external = [k for k in external_batch.keys() if k.startswith('ssl_')]
+        ssl_keys_selfplay = [k for k in sp_dict.keys() if k.startswith('ssl_')]
+
+        if ssl_keys_external and ssl_keys_selfplay:
+            # Both have SSL targets - concatenate them
+            for ssl_key in ssl_keys_external:
+                if ssl_key in sp_dict:
+                    try:
+                        combined_batch[ssl_key] = np.concatenate([
+                            external_batch[ssl_key], sp_dict[ssl_key]
+                        ], axis=0)
+                        logger.debug(f"Concatenated SSL target: {ssl_key}")
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate SSL target {ssl_key}: {e}")
+        elif ssl_keys_external and not ssl_keys_selfplay:
+            # Only external has SSL targets - keep them (selfplay samples will get SSL targets generated on-demand)
+            for ssl_key in ssl_keys_external:
+                combined_batch[ssl_key] = external_batch[ssl_key]
+                logger.debug(f"Preserved SSL target from external data: {ssl_key}")
+        elif not ssl_keys_external and ssl_keys_selfplay:
+            # Only selfplay has SSL targets - this shouldn't happen but handle it
+            for ssl_key in ssl_keys_selfplay:
+                combined_batch[ssl_key] = sp_dict[ssl_key]
+                logger.debug(f"Preserved SSL target from selfplay data: {ssl_key}")
+
         # Include legal_mask only if present in both sources for full coverage
         if ('legal_mask' in external_batch) and ('legal_mask' in sp_dict):
             try:
                 combined_batch['legal_mask'] = np.concatenate([
                     external_batch['legal_mask'], sp_dict['legal_mask']
                 ], axis=0)
-            except Exception:
+            except Exception as e:
                 # If concatenation fails due to shape mismatch, drop mask to remain robust
+                logger.warning(f"Legal mask concatenation failed: {e}")
                 if 'legal_mask' in combined_batch:
                     del combined_batch['legal_mask']
-        
+
+        # Ensure all arrays have the same length before shuffling
+        batch_size = len(combined_batch['s'])
+
+        # Find the minimum length across all arrays to ensure consistency
+        min_length = batch_size
+        for key in combined_batch.keys():
+            min_length = min(min_length, len(combined_batch[key]))
+
+        # Trim all arrays to the minimum length
+        if min_length != batch_size:
+            logger.warning(f"Arrays have different lengths, trimming all to {min_length}")
+            for key in list(combined_batch.keys()):
+                combined_batch[key] = combined_batch[key][:min_length]
+            batch_size = min_length
+
         # Shuffle the combined batch
-        indices = np.random.permutation(len(combined_batch['s']))
-        for key in ['s', 'pi', 'z']:
-            combined_batch[key] = combined_batch[key][indices]
-        if 'legal_mask' in combined_batch:
-            combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
+        if batch_size > 1:
+            indices = np.random.permutation(batch_size)
+            for key in list(combined_batch.keys()):
+                combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum mixed'):
             return None
         return combined_batch
@@ -783,6 +1036,17 @@ class DataManager:
             combined: Dict[str, np.ndarray] = {}
             for key in ["s", "pi", "z"]:
                 combined[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
+
+            # Handle SSL targets
+            ssl_keys_by_part = [[k for k in p.keys() if k.startswith('ssl_')] for p in parts]
+            if all(ssl_keys_by_part) and len(set(tuple(k) for k in ssl_keys_by_part)) == 1:
+                ssl_keys = ssl_keys_by_part[0]
+                for ssl_key in ssl_keys:
+                    try:
+                        combined[ssl_key] = np.concatenate([p[ssl_key] for p in parts], axis=0)
+                    except Exception as e:
+                        logger.warning(f"Failed to concatenate SSL target {ssl_key}: {e}")
+
             if all("legal_mask" in p for p in parts):
                 try:
                     combined["legal_mask"] = np.concatenate([p["legal_mask"] for p in parts], axis=0)
@@ -795,6 +1059,10 @@ class DataManager:
                 combined[key] = combined[key][idx]
             if "legal_mask" in combined:
                 combined["legal_mask"] = combined["legal_mask"][idx]
+            # Shuffle SSL targets
+            for key in list(combined.keys()):
+                if key.startswith('ssl_'):
+                    combined[key] = combined[key][idx]
 
             if not self._validate_shapes(combined['s'], combined['pi'], combined['z'], self.expected_planes, 'stockfish mixed'):
                 return None
@@ -1219,6 +1487,8 @@ class DataManager:
         """Yield training batches constrained to shards whose source matches any prefix.
 
         Prefix example: ["stockfish:openings/", "stockfish:king_safety/"]
+
+        Note: SSL targets are loaded when present but returned as separate dicts for compatibility.
         """
         shard_paths = self._get_valid_shard_paths_by_source_prefixes(prefixes)
         if not shard_paths:
@@ -1231,6 +1501,11 @@ class DataManager:
                     policies = data['pi']
                     values = data['z']
                     legal_mask_all = data.get('legal_mask', None)
+
+                    # Check if this is SSL-enabled data
+                    ssl_keys = [k for k in data.keys() if k.startswith('ssl_')]
+                    # Note: SSL filtering will be handled at a higher level if needed
+
                     if values.ndim == 2 and values.shape[1] == 1:
                         values = values.reshape(values.shape[0])
                     if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
@@ -1244,12 +1519,45 @@ class DataManager:
                                 legal_mask_all = legal_mask_all.astype(np.uint8, copy=False)
                         except Exception:
                             legal_mask_all = None
+
+                    # Load SSL targets if present
+                    ssl_targets = {}
+                    for ssl_key in ssl_keys:
+                        try:
+                            ssl_data = data[ssl_key]
+
+                            # Convert control task from single-channel to 3-channel format
+                            if ssl_key == 'ssl_control':
+                                # Convert from (batch, 8, 8) with values [-1, 0, 1]
+                                # to (batch, 3, 8, 8) with one-hot encoding
+                                batch_size = ssl_data.shape[0]
+                                control_3d = np.zeros((batch_size, 3, 8, 8), dtype=np.float32)
+
+                                # Channel 0: black control (where data == -1)
+                                control_3d[:, 0, :, :] = (ssl_data == -1).astype(np.float32)
+                                # Channel 1: neutral (where data == 0)
+                                control_3d[:, 1, :, :] = (ssl_data == 0).astype(np.float32)
+                                # Channel 2: white control (where data == 1)
+                                control_3d[:, 2, :, :] = (ssl_data == 1).astype(np.float32)
+
+                                ssl_targets[ssl_key] = control_3d
+                            else:
+                                ssl_targets[ssl_key] = ssl_data
+
+                        except Exception as e:
+                            logger.warning(f"Failed to load SSL target {ssl_key}: {e}")
+
                     indices = np.random.permutation(len(states))
                     states = states[indices]
                     policies = policies[indices]
                     values = values[indices]
                     if legal_mask_all is not None:
                         legal_mask_all = legal_mask_all[indices]
+
+                    # Shuffle SSL targets
+                    for ssl_key in ssl_targets:
+                        ssl_targets[ssl_key] = ssl_targets[ssl_key][indices]
+
                     for i in range(0, len(states), batch_size):
                         batch_states = states[i:i+batch_size]
                         batch_policies = policies[i:i+batch_size]
@@ -1263,6 +1571,15 @@ class DataManager:
                                     batch_legal = np.logical_or(batch_legal.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
                             except Exception:
                                 pass
+
+                        # Extract batch SSL targets and store in class variable for retrieval
+                        batch_ssl_targets = {}
+                        for ssl_key in ssl_targets:
+                            batch_ssl_targets[ssl_key] = ssl_targets[ssl_key][i:i+batch_size]
+
+                        # Store SSL targets in class variable for the calling code to retrieve
+                        self._current_ssl_targets = batch_ssl_targets
+
                         if not batch_states.flags['C_CONTIGUOUS']:
                             batch_states = np.ascontiguousarray(batch_states)
                         if not batch_policies.flags['C_CONTIGUOUS']:

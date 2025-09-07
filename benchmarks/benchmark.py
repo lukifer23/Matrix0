@@ -17,6 +17,7 @@ from multiprocessing import Event as MPEvent, Process
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import threading
 
 import chess
 import chess.pgn
@@ -109,6 +110,13 @@ class BenchmarkRunner:
                 dev_str = "mps" if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else "cpu"
             self.device = torch.device(dev_str)
             logger.info(f"Using device: {self.device}")
+
+            # Apply MPS environment settings for stability (matching training system)
+            if str(self.device) == "mps":
+                os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+                os.environ.setdefault('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '0.8')
+                os.environ.setdefault('PYTORCH_MPS_LOW_WATERMARK_RATIO', '0.6')
+                logger.info("Applied MPS environment settings for stability")
         else:
             self.device = torch.device("cpu")
             logger.warning("PyTorch not available, using CPU")
@@ -228,17 +236,44 @@ class BenchmarkRunner:
                 enable_entropy_noise=False,
             )
 
-            # Safety: avoid multi-threaded MPS in-process inference; will override if shared inference is enabled
+            # Extensive MPS stability measures (matching training system)
             if str(self.device) == "mps":
                 mcts_kwargs.update(num_threads=1, parallel_simulations=False)
-                logger.info("MPS detected — forcing single-threaded MCTS for stability (will enable batching if shared inference)")
+                logger.info("MPS detected — forcing single-threaded MCTS for stability")
+
+                # Apply MPS stability measures from training system
+                try:
+                    # Clear MPS cache before starting
+                    torch.mps.empty_cache()
+                    logger.info("Cleared MPS cache before benchmark start")
+
+                    # Set MPS memory ratios for stability
+                    os.environ.setdefault('PYTORCH_MPS_HIGH_WATERMARK_RATIO', '0.8')
+                    os.environ.setdefault('PYTORCH_MPS_LOW_WATERMARK_RATIO', '0.6')
+                    os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+                    logger.info("Set MPS memory ratios for stability")
+
+                    # Enable model memory optimizations if available
+                    if hasattr(self.model, 'enable_memory_optimization'):
+                        self.model.enable_memory_optimization()
+                        logger.info("Enabled model memory optimizations for MPS")
+
+                    # Log MPS memory status
+                    try:
+                        allocated_memory = torch.mps.current_allocated_memory() / (1024**3)
+                        logger.info(".2f")
+                    except Exception:
+                        logger.info("MPS memory status unavailable")
+
+                except Exception as e:
+                    logger.warning(f"Could not apply MPS stability measures: {e}")
+                    logger.info("Falling back to basic MPS handling")
 
             # Optional shared inference server (mirrors orchestrator stability path)
             inference_backend = None
             if self.shared_infer_enabled and str(self.device) != "cpu":
                 try:
-                    import os as _os
-                    _os.environ.setdefault("MATRIX0_COMPACT_LOG", "1")
+                    os.environ.setdefault("MATRIX0_COMPACT_LOG", "1")
                     # Derive planes/policy_size robustly
                     planes = 19
                     policy_size = 4672
@@ -262,8 +297,7 @@ class BenchmarkRunner:
                             state_for_server_cpu = {}
                             for k, v in state_for_server.items():
                                 try:
-                                    import torch as _torch
-                                    if _torch.is_tensor(v):
+                                    if torch.is_tensor(v):
                                         state_for_server_cpu[k] = v.detach().to('cpu')
                                     else:
                                         state_for_server_cpu[k] = v
@@ -696,8 +730,44 @@ class BenchmarkRunner:
                 # Run MCTS with configured simulations per move for Matrix0
                 num_simulations = int(self.cli_sims) if self.cli_sims is not None else int(getattr(self.mcts.cfg, 'num_simulations', 200))
                 logger.info(f"🧠 Running MCTS with {num_simulations} simulations...")
-                # Ensure MCTS uses the same device as the model
-                visits, policy, value = self.mcts.run(board, num_simulations=num_simulations)
+
+                # MPS-specific error recovery for MCTS
+                mps_retry_count = 0
+                max_mps_retries = 3
+
+                while mps_retry_count < max_mps_retries:
+                    try:
+                        # Ensure MCTS uses the same device as the model
+                        visits, policy, value = self.mcts.run(board, num_simulations=num_simulations)
+                        break  # Success, exit retry loop
+
+                    except Exception as mcts_error:
+                        error_str = str(mcts_error).lower()
+
+                        # Check if this is an MPS-specific error
+                        if str(self.device) == "mps" and any(keyword in error_str for keyword in [
+                            'commandbuffer', 'metal', 'mps', 'scheduled handler', 'commit call'
+                        ]):
+                            mps_retry_count += 1
+                            logger.warning(f"MPS error in MCTS (attempt {mps_retry_count}/{max_mps_retries}): {mcts_error}")
+
+                            if mps_retry_count < max_mps_retries:
+                                # Apply MPS recovery measures
+                                try:
+                                    torch.mps.empty_cache()
+                                    logger.info("Cleared MPS cache after error")
+
+                                    # Small delay before retry
+                                    time.sleep(0.5)
+                                    continue
+                                except Exception as cache_error:
+                                    logger.warning(f"Could not clear MPS cache: {cache_error}")
+                            else:
+                                logger.error("Maximum MPS retries exceeded, re-raising error")
+                                raise mcts_error
+                        else:
+                            # Not an MPS error, re-raise immediately
+                            raise mcts_error
 
                 mcts_time = time.time() - mcts_start
                 logger.info(f"🧠 MCTS completed in {mcts_time:.1f}s ({num_simulations} simulations)")

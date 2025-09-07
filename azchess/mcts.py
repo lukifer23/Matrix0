@@ -832,12 +832,54 @@ class MCTS:
                                 if input_tensor.device != self.device:
                                     input_tensor = input_tensor.to(self.device)
 
+                                # MPS-specific stability measures before inference
+                                if self.device.type == "mps":
+                                    try:
+                                        # Clear MPS cache before inference
+                                        torch.mps.empty_cache()
+                                        # Small delay to ensure MPS operations complete
+                                        time.sleep(0.01)
+                                    except Exception:
+                                        pass
+
                                 try:
                                     policy_logits, value_tensor = self.model(input_tensor)
                                     policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
                                     value = value_tensor.cpu().numpy().flatten()
                                 except RuntimeError as e:
-                                    if "device" in str(e) and self.device.type == "mps":
+                                    error_str = str(e).lower()
+                                    # Check for MPS-specific errors
+                                    if self.device.type == "mps" and any(keyword in error_str for keyword in [
+                                        'commandbuffer', 'metal', 'mps', 'encoder', 'commit', 'scheduled handler'
+                                    ]):
+                                        logger.warning(f"MPS command buffer error, attempting recovery: {e}")
+
+                                        # MPS recovery attempts
+                                        for recovery_attempt in range(3):
+                                            try:
+                                                # Clear cache and wait
+                                                torch.mps.empty_cache()
+                                                time.sleep(0.05 * (recovery_attempt + 1))
+
+                                                # Retry inference
+                                                policy_logits, value_tensor = self.model(input_tensor)
+                                                policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
+                                                value = value_tensor.cpu().numpy().flatten()
+
+                                                logger.info(f"MPS recovery successful on attempt {recovery_attempt + 1}")
+                                                break
+
+                                            except Exception as recovery_error:
+                                                logger.warning(f"MPS recovery attempt {recovery_attempt + 1} failed: {recovery_error}")
+                                                if recovery_attempt == 2:  # Last attempt failed
+                                                    logger.warning("MPS recovery failed, falling back to CPU")
+                                                    break
+
+                                        else:
+                                            # All MPS recovery attempts failed, fall back to CPU
+                                            pass
+
+                                    if self._cpu_model is None or not hasattr(self, '_cpu_model'):
                                         logger.warning(f"MPS device error, falling back to CPU: {e}")
                                         # Fallback to CPU if MPS fails at runtime
                                         if self._cpu_model is None:

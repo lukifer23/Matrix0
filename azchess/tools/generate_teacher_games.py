@@ -15,6 +15,13 @@ Saved NPZ shard keys:
   - legal_mask: (N, policy_size) uint8 legal move mask
   - meta_cp_before, meta_cp_best, meta_cp_after, meta_cp_swing: (N,) float32
   - meta_topk_hit: (N,) uint8 (1 if model move in teacher top-K)
+  - ssl_piece: (N, 13, 8, 8) float32 piece recognition targets
+  - ssl_threat: (N, 8, 8) float32 threat detection targets
+  - ssl_pin: (N, 8, 8) float32 pin detection targets
+  - ssl_fork: (N, 8, 8) float32 fork detection targets
+  - ssl_control: (N, 8, 8) float32 square control targets
+  - ssl_pawn_structure: (N, 8, 8) float32 pawn structure targets
+  - ssl_king_safety: (N, 8, 8) float32 king safety targets
 
 DB source tag: "teacher:<scenario>"
 Output layout: data/teacher_games/<scenario>/teacher_<scenario>_*.npz
@@ -39,9 +46,17 @@ from azchess.config import Config, select_device
 from azchess.encoding import encode_board, move_to_index
 from azchess.model import PolicyValueNet
 from azchess.data_manager import DataManager
+from azchess.ssl_algorithms import ChessSSLAlgorithms
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class GamePosition:
+    """Tracks a position collected during a game."""
+    position_data: Dict[str, np.ndarray]
+    side_to_move: bool  # True if white to move, False if black to move
+    game_index: int
 
 @dataclass
 class TeacherConfig:
@@ -104,12 +119,18 @@ def _collect_position(board: chess.Board,
                       depth: Optional[int],
                       cp_swing_mid: int,
                       cp_swing_end: int,
-                      teacher_adv_thresh: int) -> Optional[Dict[str, np.ndarray]]:
+                      teacher_adv_thresh: int,
+                      ssl_algorithms: ChessSSLAlgorithms) -> Optional[Dict[str, np.ndarray]]:
     # Encode board
     enc = encode_board(board)
     if enc is None:
         return None
     s = torch.from_numpy(enc[None, ...]).to(model.device)
+
+    # Generate SSL targets
+    ssl_targets_raw = ssl_algorithms.create_enhanced_ssl_targets(s.cpu())
+    # Add ssl_ prefix to all SSL target keys and convert to numpy
+    ssl_targets = {f'ssl_{k}': v.detach().cpu().numpy() for k, v in ssl_targets_raw.items()}
     with torch.no_grad():
         out = model(s, return_ssl=False)
         # Handle both (p,v) and (p,v,ssl_out)
@@ -211,15 +232,17 @@ def _collect_position(board: chess.Board,
         except Exception:
             return None
 
-    # Value target from teacher cp_before
-    z = np.array([_cp_to_value(cp_before)], dtype=np.float32)
+    # Note: Value target (z) will be set later based on actual game outcome
+    # For now, we include a placeholder that's not used
+    z_placeholder = np.array([0.0], dtype=np.float32)
 
     return {
         's': enc.astype(np.float32, copy=False),
         'pi': pi,
-        'z': z,
+        'z': z_placeholder,  # Will be corrected based on game outcome
         'legal_mask': legal_mask,
-        'meta': np.array([model_entropy, cp_before, teacher_cp_best, cp_after, cp_swing, float(topk_hit)], dtype=np.float32)
+        'meta': np.array([model_entropy, cp_before, teacher_cp_best, cp_after, cp_swing, float(topk_hit)], dtype=np.float32),
+        **ssl_targets  # Include all SSL targets
     }
 
 
@@ -254,6 +277,9 @@ def run(cfg: TeacherConfig):
     out_root = Path(cfg.output_dir) / cfg.scenario
     out_root.mkdir(parents=True, exist_ok=True)
 
+    # Initialize SSL algorithms
+    ssl_algorithms = ChessSSLAlgorithms()
+
     collected: List[Dict[str, np.ndarray]] = []
     sample_meta: List[np.ndarray] = []
     accepted = 0
@@ -262,22 +288,29 @@ def run(cfg: TeacherConfig):
     try:
         for g in range(1, cfg.games + 1):
             board = chess.Board()
+            game_positions: List[GamePosition] = []  # Track positions for this game
 
             for ply in range(cfg.max_moves):
                 if board.is_game_over():
                     break
+
+                # Collect position data (temporarily with placeholder value target)
                 rec = _collect_position(
                     board, engine, model, policy_size,
                     cfg.topk, cfg.multipv, cfg.movetime_ms, cfg.depth,
-                    cfg.cp_swing_mid, cfg.cp_swing_end, cfg.teacher_adv_thresh
+                    cfg.cp_swing_mid, cfg.cp_swing_end, cfg.teacher_adv_thresh,
+                    ssl_algorithms
                 )
-                if rec is not None:
-                    collected.append({'s': rec['s'], 'pi': rec['pi'], 'z': rec['z'], 'legal_mask': rec['legal_mask']})
-                    sample_meta.append(rec['meta'])
-                    accepted += 1
 
-                # Make the actual move: follow model's greedy policy (consistent with selection above)
-                # We recompute here to avoid side-effects from previous rec call.
+                if rec is not None:
+                    # Store position data for later value target correction
+                    game_positions.append(GamePosition(
+                        position_data=rec,
+                        side_to_move=board.turn,  # True for white, False for black
+                        game_index=g
+                    ))
+
+                # Make the actual move: follow model's greedy policy
                 enc = encode_board(board)
                 if enc is None:
                     break
@@ -301,6 +334,35 @@ def run(cfg: TeacherConfig):
                 legals.sort(key=lambda x: x[2], reverse=True)
                 board.push(legals[0][0])
 
+            # Determine game outcome and correct value targets
+            game_result = board.result()  # Returns "1-0", "0-1", or "1/2-1/2"
+
+            # Convert game result to value targets for each position
+            for pos in game_positions:
+                if game_result == "1-0":  # White wins
+                    z_value = 1.0 if pos.side_to_move else -1.0
+                elif game_result == "0-1":  # Black wins
+                    z_value = -1.0 if pos.side_to_move else 1.0
+                else:  # Draw
+                    z_value = 0.0
+
+                # Create final entry with corrected value target
+                entry = {
+                    's': pos.position_data['s'],
+                    'pi': pos.position_data['pi'],
+                    'z': np.array([z_value], dtype=np.float32),
+                    'legal_mask': pos.position_data['legal_mask']
+                }
+
+                # Include all SSL targets
+                for key, value in pos.position_data.items():
+                    if key.startswith('ssl_'):
+                        entry[key] = value
+
+                collected.append(entry)
+                sample_meta.append(pos.position_data['meta'])
+                accepted += 1
+
             # Heartbeat
             if cfg.hb_every and accepted - last_hb >= cfg.hb_every:
                 logger.info(f"HB: accepted={accepted} games_done={g}/{cfg.games}")
@@ -313,11 +375,27 @@ def run(cfg: TeacherConfig):
                 z = np.concatenate([x['z'] for x in collected], axis=0)
                 lm = np.stack([x['legal_mask'] for x in collected], axis=0)
                 meta = np.stack(sample_meta, axis=0)
+
+                # Extract SSL targets
+                ssl_data = {}
+                ssl_task_names = ['piece', 'threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
+                for task in ssl_task_names:
+                    ssl_key = f'ssl_{task}'
+                    if collected and ssl_key in collected[0]:  # Check if SSL task exists in data
+                        ssl_data[ssl_key] = np.stack([x[ssl_key] for x in collected], axis=0)
+
                 ts = time.strftime('%Y%m%d_%H%M%S')
                 out_path = out_root / f"teacher_{cfg.scenario}_{ts}_{accepted}.npz"
-                np.savez_compressed(out_path, s=s, pi=pi, z=z, legal_mask=lm,
-                                    meta=meta,
-                                    meta_keys=np.array(['entropy','cp_before','cp_best','cp_after','cp_swing','topk_hit']))
+
+                # Save with SSL targets
+                save_dict = {
+                    's': s, 'pi': pi, 'z': z, 'legal_mask': lm,
+                    'meta': meta,
+                    'meta_keys': np.array(['entropy','cp_before','cp_best','cp_after','cp_swing','topk_hit'])
+                }
+                save_dict.update(ssl_data)
+
+                np.savez_compressed(out_path, **save_dict)
                 logger.info(f"Saved teacher shard: {out_path.name} (N={accepted})")
                 # Register in DB
                 try:

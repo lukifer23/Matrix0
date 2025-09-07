@@ -18,7 +18,7 @@ model:
   aux_policy_move_type: true       # Auxiliary move-type prediction
   ssl_curriculum: true             # Self-supervised learning curriculum
   self_supervised: true            # Enable SSL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
@@ -46,7 +46,7 @@ training:
   accum_steps: 2                   # Effective batch 192
   progress_interval: 100           # Reduce per-step logging overhead
   grad_clip_norm: 0.5              # Stable
-  ssl_weight: 0.15                 # Increased for better SSL learning contribution
+  ssl_weight: 0.15                 # SSL learning contribution
   ssl_warmup_steps: 1000           # Faster warmup for SSL integration
   ssl_every_n: 1                   # Compute SSL every step for consistent learning
   ssl_chunk_size: 128              # Larger chunks for better efficiency
@@ -55,14 +55,11 @@ training:
   data_mode: "mixed"               # Use mixed mode to access external data
   dataloader_workers: 2            # Maintain parallel loading
   prefetch_factor: 2               # Maintain prefetching
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All SSL tasks enabled
   ssl_piece_weight: 1.0            # Weight for piece recognition
   ssl_threat_weight: 0.8           # Weight for threat detection
   ssl_pin_weight: 0.7              # Weight for pin detection
   ssl_fork_weight: 0.6             # Weight for fork detection
   ssl_control_weight: 0.5          # Weight for square control
-  ssl_pawn_structure_weight: 0.4   # Weight for pawn structure
-  ssl_king_safety_weight: 0.4      # Weight for king safety
   # removed duplicate ssl_chunk_size key
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
@@ -70,8 +67,6 @@ training:
   memory_limit_gb: 14              # MPS limit
   gradient_checkpointing_strategy: "adaptive"    # Enable only if memory is high
   steps_per_epoch: 12000           # Train over more samples per cycle
-  dataloader_workers: 2            # Improve IO throughput
-  prefetch_factor: 2               # Prefetch for DataLoader workers
   use_curriculum: true
   curriculum_phases:
     - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
@@ -106,7 +101,6 @@ tablebases:
 
 eval:
   games: 4                         # Light orchestrator eval; use enhanced_eval for deep
-  num_simulations: 200             # Reduced from 800 for faster evaluation cycles
   max_moves: 160                   # Avoid early auto-draws
   external_engines: ["stockfish"]  # Compare against Stockfish
   tournament_rounds: 4             # More tournament rounds
@@ -114,17 +108,13 @@ eval:
 
 engines:
   stockfish:
-    path: /usr/local/bin/stockfish
     parameters:
       Threads: 2
       Hash: 256
       MultiPV: 1
     time_control: 100ms
-    enabled: true
   matrix0:
     type: internal
-    checkpoint: checkpoints/best.pt
-    enabled: true
 
 mcts:
   num_simulations: 200              # Increased from 96 for better accuracy
@@ -158,7 +148,6 @@ mcts:
   memory_cleanup_threshold_mb: 512
   max_tree_nodes: 70000
   # FIXED: Parallel MCTS with robust error handling and deadlock prevention
-  num_threads: 4                   # Increased from 2 for better CPU utilization
   parallel_simulations: true
   simulation_batch_size: 16        # Increased from 8 for better throughput
   tree_parallelism: true

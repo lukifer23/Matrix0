@@ -572,15 +572,30 @@ def orchestrate(
                                 continue
                             # Any message counts as progress for stall detection
                             last_msg_time = time.time()
-                            # Heartbeat updates (update in-place; don't print new lines)
+                            # Heartbeat updates (update table so HB/move shows without waiting for a game end)
                             if isinstance(msg, dict) and msg.get("type") == "heartbeat":
                                 wid = int(msg.get("proc", -1))
                                 if wid in per_worker:
                                     per_worker[wid]["moves"] = int(msg.get("moves", 0))
                                     per_worker[wid]["hb_ts"] = time.perf_counter()
+                                # Rebuild a lightweight table for live refresh
                                 try:
-                                    # bump a dummy heartbeat task to redraw if present
-                                    progress.update(hb_task, completed=0)
+                                    new_table = Table(title=mem_title())
+                                    new_table.add_column("Worker", justify="left")
+                                    new_table.add_column("Done/Total", justify="right")
+                                    new_table.add_column("Avg ms/move", justify="right")
+                                    new_table.add_column("Avg sims", justify="right")
+                                    new_table.add_column("Moves", justify="right")
+                                    new_table.add_column("HB(s)", justify="right")
+                                    new_table.add_column("W/L/D", justify="right")
+                                    new_table.add_column("Res W/B", justify="right")
+                                    for i in range(workers):
+                                        w = per_worker[i]
+                                        hb_age = 0.0 if w["hb_ts"] == 0 else max(0.0, time.perf_counter() - w["hb_ts"])
+                                        new_table.add_row(
+                                            f"W{i}", f"{w['done']}/{games_per_worker}", f"{w['avg_ms']:.1f}", f"{w['avg_sims']:.1f}", f"{w['moves']}", f"{hb_age:.0f}", f"{stats['win']}/{stats['loss']}/{stats['draw']}", f"{stats['res_w']}/{stats['res_b']}"
+                                        )
+                                    live.update(new_table)
                                 except Exception:
                                     pass
                                 # Emit lightweight heartbeat for WebUI worker summary

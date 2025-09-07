@@ -1107,6 +1107,8 @@ def train_comprehensive(
     updates_done = 0   # total optimizer updates completed
 
     try:
+        # Warn-once flag for curriculum fallback spam control
+        warned_curriculum_fallback = False
         while current_step < total_steps:
             # Handle curriculum learning phase transitions
             if use_curriculum and curriculum_phases:
@@ -1129,7 +1131,9 @@ def train_comprehensive(
                     # Curriculum learning - use phase-specific data
                     batch_dict = data_manager.get_curriculum_batch(batch_size, current_phase)
                     if batch_dict is None:
-                        logger.warning(f"No data available for phase {current_phase}, falling back to mixed")
+                        if not warned_curriculum_fallback:
+                            logger.warning(f"No data available for phase {current_phase}, falling back to mixed")
+                            warned_curriculum_fallback = True
                         batch_dict = data_manager.get_curriculum_batch(batch_size, "mixed")
                     
                     if batch_dict is None:
