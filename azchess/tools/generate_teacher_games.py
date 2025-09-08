@@ -20,8 +20,6 @@ Saved NPZ shard keys:
   - ssl_pin: (N, 8, 8) float32 pin detection targets
   - ssl_fork: (N, 8, 8) float32 fork detection targets
   - ssl_control: (N, 8, 8) float32 square control targets
-  - ssl_pawn_structure: (N, 8, 8) float32 pawn structure targets
-  - ssl_king_safety: (N, 8, 8) float32 king safety targets
 
 DB source tag: "teacher:<scenario>"
 Output layout: data/teacher_games/<scenario>/teacher_<scenario>_*.npz
@@ -129,8 +127,8 @@ def _collect_position(board: chess.Board,
 
     # Generate SSL targets
     ssl_targets_raw = ssl_algorithms.create_enhanced_ssl_targets(s.cpu())
-    # Add ssl_ prefix to all SSL target keys and convert to numpy
-    ssl_targets = {f'ssl_{k}': v.detach().cpu().numpy() for k, v in ssl_targets_raw.items()}
+    # Add ssl_ prefix to all SSL target keys and convert to numpy (squeeze batch dim)
+    ssl_targets = {f'ssl_{k}': v.detach().cpu().numpy().squeeze(0) for k, v in ssl_targets_raw.items()}
     with torch.no_grad():
         out = model(s, return_ssl=False)
         # Handle both (p,v) and (p,v,ssl_out)
@@ -378,7 +376,7 @@ def run(cfg: TeacherConfig):
 
                 # Extract SSL targets
                 ssl_data = {}
-                ssl_task_names = ['piece', 'threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
+                ssl_task_names = ['piece', 'threat', 'pin', 'fork', 'control']
                 for task in ssl_task_names:
                     ssl_key = f'ssl_{task}'
                     if collected and ssl_key in collected[0]:  # Check if SSL task exists in data

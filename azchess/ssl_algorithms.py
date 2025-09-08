@@ -505,11 +505,11 @@ class ChessSSLAlgorithms:
         # Square control
         targets['control'] = self.calculate_square_control_batch(board_states)
 
-        # Pawn structure analysis (placeholder - returns zeros for now)
-        targets['pawn_structure'] = torch.zeros(board_states.size(0), 8, 8, device=board_states.device, dtype=torch.float32)
+        # Pawn structure analysis - REMOVED (not in config)
+        # targets['pawn_structure'] = torch.zeros(board_states.size(0), 8, 8, device=board_states.device, dtype=torch.float32)
 
-        # King safety analysis (placeholder - returns zeros for now)
-        targets['king_safety'] = torch.zeros(board_states.size(0), 8, 8, device=board_states.device, dtype=torch.float32)
+        # King safety analysis - REMOVED (not in config)
+        # targets['king_safety'] = torch.zeros(board_states.size(0), 8, 8, device=board_states.device, dtype=torch.float32)
 
         return targets
 

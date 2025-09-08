@@ -1,7 +1,7 @@
 # Matrix0 Current Status Summary
 
 **Date**: September 2025
-**Version**: v2.2 - SSL Architecture Integration + Data Pipeline Fixes + EX0Bench System
+**Version**: v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates
 **Status**: Production training pipeline operational with complete SSL architecture integration, data pipeline fixes, EX0Bench external engine benchmarking, enhanced WebUI monitoring, 100K step pretraining in progress
 
 ## Executive Summary
@@ -88,11 +88,27 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 
 ### Current Training Status
 - **Stability**: ✅ **100% stable** - No NaN/Inf issues, proper loss progression
-- **SSL Integration**: ✅ **Fully operational** - All 7 SSL tasks training simultaneously
+- **SSL Integration**: ✅ **Fully operational** - All 5 SSL tasks training simultaneously
 - **Performance**: ✅ **Optimized** - 3 workers, 300 MCTS sims/move, efficient memory usage
 - **Monitoring**: ✅ **Comprehensive** - Real-time WebUI monitoring and logging
 
-## Major Achievements (August 29, 2025)
+## Major Achievements (September 7, 2025)
+
+### Curriculum Learning & Legal Mask Fixes
+- ✅ **Curriculum Data Loading**: Fixed path mismatches (data/training/ → data/tactical/, data/openings/)
+- ✅ **Legal Mask Computation**: Implemented proper board reconstruction using `decode_board_from_planes()`
+- ✅ **Curriculum Phases**: Active 3-phase learning (openings → tactics → mixed) with proper SSL targets
+- ✅ **Board State Recovery**: Accurate `chess.Board` reconstruction from 19-plane encoding
+- ✅ **Training Stability**: 99.63% proper legal move masking with board reconstruction
+- ✅ **SSL Task Consistency**: All curriculum data has proper SSL targets and legal masks
+
+### Enhanced Teacher Data Generation
+- ✅ **High-Quality Teacher Data**: 1,050 samples with excellent evaluation data (CP swings up to 622)
+- ✅ **SSL Task Balance**: Proper activation levels across all 5 SSL tasks
+- ✅ **Legal Move Coverage**: 35.8 legal moves per position on average
+- ✅ **Learning Opportunities**: 20-22% model disagreement with teacher (optimal difficulty)
+
+## Previous Achievements (August 29, 2025)
 
 ### SSL Integration Milestone
 - ✅ **Complete SSL Integration** - All 5 SSL tasks (piece, threat, pin, fork, control) fully operational

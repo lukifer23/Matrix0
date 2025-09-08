@@ -5,13 +5,13 @@
 [![Training Pipeline Test](https://github.com/lukifer23/Matrix0/workflows/Training%20Pipeline%20Test/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Bugbot Review](https://img.shields.io/badge/Bugbot-Review%20Ready-blue?logo=bug)](https://bugbot.dev)
 
-Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **7 specialized tasks**.
+Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **5 specialized tasks**.
 
 ## Project Overview
 
 Matrix0 implements **cutting-edge multi-task learning** combining reinforcement learning from AlphaZero with advanced SSL (Self-Supervised Learning) for chess pattern recognition, optimized for Apple Silicon (MPS). The project delivers:
 
-- **🔥 SSL Architecture Integration**: **ARCHITECTURE READY** - 7 specialized SSL heads for piece, threat, pin, fork, control, pawn structure, and king safety detection
+- **🔥 SSL Architecture Integration**: **ARCHITECTURE READY** - 5 specialized SSL heads for piece, threat, pin, fork, and control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
 - **🏗️ Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
 - **🍎 Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
@@ -29,6 +29,8 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 ### SSL Integration (COMPLETE)
 - **5 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
+- **Curriculum Learning**: Structured learning phases (openings → tactics → mixed)
+- **Legal Mask Computation**: Proper board reconstruction for accurate legal move masking
 - **Dedicated SSL Parameters**: SSL capacity with weighted loss functions
 - **Real-Time SSL Monitoring**: WebUI dashboard with SSL head performance tracking
 

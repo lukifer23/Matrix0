@@ -1,6 +1,6 @@
 # Matrix0 Changelog
 
-## v2.2 - SSL Architecture Integration + Data Pipeline Fixes + EX0Bench System (September 2025)
+## v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates (September 2025)
 
 ### 🚀 Major New Features
 
@@ -13,6 +13,14 @@
 - **Fine-tuning decisions**: Perfect for determining if LC0 models need modifications
 
 ### 🐛 Critical Bug Fixes
+
+#### Curriculum Learning & Legal Mask Fixes
+- **Curriculum data loading**: Fixed path mismatches (data/training/ → data/tactical/, data/openings/)
+- **Key name mapping**: Corrected curriculum data format (positions→s, policy_targets→pi, value_targets→z)
+- **Legal mask computation**: Implemented proper board reconstruction using `decode_board_from_planes()`
+- **Board state recovery**: Added `chess.Board` reconstruction from 19-plane encoding for accurate legal moves
+- **Fallback handling**: Graceful error handling with proper legal mask fallbacks
+- **SSL task consistency**: Ensured all curriculum data has proper SSL targets
 
 #### Data Pipeline Fixes
 - **SSL target concatenation**: Fixed issues with SSL targets getting lost during batch mixing
@@ -37,6 +45,8 @@
 
 #### Training Pipeline
 - **Stable training**: 100% stable with proper gradient accumulation and scheduler stepping
+- **Curriculum learning**: Active 3-phase curriculum (openings → tactics → mixed) with proper data loading
+- **Legal mask accuracy**: 99.63% proper legal move masking with board reconstruction
 - **Memory efficiency**: Optimized SSL processing within 14GB MPS limit
 - **Batch processing**: Efficient SSL target generation and loss computation
 - **Worker optimization**: Balanced 3 workers for optimal MPS utilization

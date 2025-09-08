@@ -117,6 +117,7 @@ engines:
     type: internal
 
 mcts:
+  num_threads: 3                    # Match worker count for optimal MPS performance
   num_simulations: 200              # Increased from 96 for better accuracy
   cpuct: 2.2
   cpuct_start: 2.8

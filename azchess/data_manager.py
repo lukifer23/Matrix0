@@ -15,8 +15,11 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
+import chess
 
 from .utils import clear_memory_cache, get_memory_usage, safe_config_get
+from .training.ssl_targets import decode_board_from_planes
+from .encoding import move_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +442,7 @@ class DataManager:
     
     def _get_tactical_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
         """Get batch from tactical training data."""
-        tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
+        tactical_path = Path(self.base_dir) / "tactical" / "tactical_positions.npz"
         if not tactical_path.exists():
             if not self._warned_missing_tactical:
                 logger.warning("Tactical training data not found")
@@ -449,31 +452,35 @@ class DataManager:
         try:
             with np.load(tactical_path, allow_pickle=True) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
-                batch_states = data['positions'][indices]
-                batch_policies = data['policy_targets'][indices]
-                batch_values = data['value_targets'][indices]
+                batch_states = data['positions'][indices]  # curriculum format: (N, 19, 8, 8)
+                batch_policies = data['policy_targets'][indices]  # curriculum format: (N, 4672)
+                batch_values = data['value_targets'][indices]  # curriculum format: (N,)
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, tactical_path):
                     return None
                 out: Dict[str, np.ndarray] = {
-                    's': batch_states,
-                    'pi': batch_policies,
-                    'z': batch_values
+                    's': batch_states,  # Map 'positions' -> 's'
+                    'pi': batch_policies,  # Map 'policy_targets' -> 'pi'
+                    'z': batch_values  # Map 'value_targets' -> 'z'
                 }
-                # Include legal_mask if present
-                if 'legal_mask' in data:
-                    lm = data['legal_mask']
-                    # Normalize to (N, 4672)
-                    if lm.ndim > 2:
-                        lm = lm.reshape(lm.shape[0], -1)
-                    lm_sel = lm[indices]
-                    # Ensure the one-hot target index is never masked out (handles misaligned masks)
+                # Generate legal_mask for curriculum data using proper board reconstruction
+                legal_masks = []
+                for i in range(len(batch_states)):
                     try:
-                        target_mask = (batch_policies > 0)
-                        if target_mask.shape == lm_sel.shape:
-                            lm_sel = np.logical_or(lm_sel.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
-                    except Exception:
-                        pass
-                    out['legal_mask'] = lm_sel
+                        # Convert board encoding back to chess.Board for legal move computation
+                        board_encoding = batch_states[i]  # (19, 8, 8) - channels first
+                        board = decode_board_from_planes(board_encoding)
+
+                        # Get proper legal move mask using the move encoder
+                        legal_mask = move_encoder.get_legal_actions(board).astype(np.uint8)
+
+                        legal_masks.append(legal_mask)
+                    except Exception as e:
+                        logger.warning(f"Failed to compute legal mask for tactical sample {i}: {e}")
+                        # Fallback: mark all moves as potentially legal (will be filtered by policy masking)
+                        legal_mask = np.ones(4672, dtype=np.uint8)
+                        legal_masks.append(legal_mask)
+
+                out['legal_mask'] = np.array(legal_masks)
                 return out
         except Exception as e:
             logger.error(f"Error loading tactical data: {e}")
@@ -481,7 +488,7 @@ class DataManager:
     
     def _get_openings_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
         """Get batch from openings training data."""
-        openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
+        openings_path = Path(self.base_dir) / "openings" / "openings_positions.npz"
         if not openings_path.exists():
             if not self._warned_missing_openings:
                 logger.warning("Openings training data not found")
@@ -491,30 +498,35 @@ class DataManager:
         try:
             with np.load(openings_path, allow_pickle=True) as data:
                 indices = np.random.choice(len(data['positions']), batch_size, replace=False)
-                batch_states = data['positions'][indices]
-                batch_policies = data['policy_targets'][indices]
-                batch_values = data['value_targets'][indices]
+                batch_states = data['positions'][indices]  # curriculum format: (N, 19, 8, 8)
+                batch_policies = data['policy_targets'][indices]  # curriculum format: (N, 4672)
+                batch_values = data['value_targets'][indices]  # curriculum format: (N,)
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, openings_path):
                     return None
                 out: Dict[str, np.ndarray] = {
-                    's': batch_states,
-                    'pi': batch_policies,
-                    'z': batch_values
+                    's': batch_states,  # Map 'positions' -> 's'
+                    'pi': batch_policies,  # Map 'policy_targets' -> 'pi'
+                    'z': batch_values  # Map 'value_targets' -> 'z'
                 }
-                # Include legal_mask if present
-                if 'legal_mask' in data:
-                    lm = data['legal_mask']
-                    if lm.ndim > 2:
-                        lm = lm.reshape(lm.shape[0], -1)
-                    lm_sel = lm[indices]
-                    # Ensure the one-hot target index is never masked out (handles misaligned masks)
+                # Generate legal_mask for curriculum data using proper board reconstruction
+                legal_masks = []
+                for i in range(len(batch_states)):
                     try:
-                        target_mask = (batch_policies > 0)
-                        if target_mask.shape == lm_sel.shape:
-                            lm_sel = np.logical_or(lm_sel.astype(np.uint8), target_mask.astype(np.uint8)).astype(np.uint8)
-                    except Exception:
-                        pass
-                    out['legal_mask'] = lm_sel
+                        # Convert board encoding back to chess.Board for legal move computation
+                        board_encoding = batch_states[i]  # (19, 8, 8) - channels first
+                        board = decode_board_from_planes(board_encoding)
+
+                        # Get proper legal move mask using the move encoder
+                        legal_mask = move_encoder.get_legal_actions(board).astype(np.uint8)
+
+                        legal_masks.append(legal_mask)
+                    except Exception as e:
+                        logger.warning(f"Failed to compute legal mask for openings sample {i}: {e}")
+                        # Fallback: mark all moves as potentially legal (will be filtered by policy masking)
+                        legal_mask = np.ones(4672, dtype=np.uint8)
+                        legal_masks.append(legal_mask)
+
+                out['legal_mask'] = np.array(legal_masks)
                 return out
         except Exception as e:
             logger.error(f"Error loading openings data: {e}")
