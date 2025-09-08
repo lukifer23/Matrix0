@@ -5,32 +5,27 @@
 [![Training Pipeline Test](https://github.com/lukifer23/Matrix0/workflows/Training%20Pipeline%20Test/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Bugbot Review](https://img.shields.io/badge/Bugbot-Review%20Ready-blue?logo=bug)](https://bugbot.dev)
 
-Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **5 specialized tasks**.
+Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **five specialized tasks**: piece, threat, pin, fork, and control.
 
 ## Project Overview
 
 Matrix0 implements **cutting-edge multi-task learning** combining reinforcement learning from AlphaZero with advanced SSL (Self-Supervised Learning) for chess pattern recognition, optimized for Apple Silicon (MPS). The project delivers:
 
-- **🔥 SSL Architecture Integration**: **ARCHITECTURE READY** - 5 specialized SSL heads for piece, threat, pin, fork, and control detection
+- **SSL Architecture Integration**: **ARCHITECTURE READY** - five specialized SSL heads for piece, threat, pin, fork, and control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
-- **🏗️ Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
-- **🍎 Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
-- **📊 Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
-- **🏆 Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
+- **Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
+- **Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
+- **Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
+- **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## Project Status
-**ACTIVE DEVELOPMENT** - **SSL architecture integration achieved**, training pipeline fully operational with SSL framework, **EX0Bench external engine benchmarking system** deployed. See the
-[comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the
-[EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the
-[development roadmap](docs/roadmap.md) for current achievements and next steps.
+**ACTIVE DEVELOPMENT** – SSL architecture integration, training pipeline, and EX0Bench benchmarking are in place. For detailed status and progress, see the [comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the [development roadmap](docs/roadmap.md).
 
 ## ✨ Key Features
 
 ### SSL Integration (COMPLETE)
 - **5 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
-- **Curriculum Learning**: Structured learning phases (openings → tactics → mixed)
-- **Legal Mask Computation**: Proper board reconstruction for accurate legal move masking
 - **Dedicated SSL Parameters**: SSL capacity with weighted loss functions
 - **Real-Time SSL Monitoring**: WebUI dashboard with SSL head performance tracking
 
@@ -69,7 +64,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Mixed Precision Training**: FP16 optimization with MPS compatibility
 - **Performance Monitoring**: Real-time MPS utilization and memory tracking
 
-### 🔧 Enterprise Features
+### Enterprise Features
 - **Robust Data Management**: SQLite metadata, corruption detection, automatic backup
 - **External Engine Integration**: Stockfish and LC0 support for competitive evaluation
 - **Comprehensive Logging**: Structured logging with SSL performance metrics
@@ -91,7 +86,7 @@ Matrix0/
 │   ├── data_manager.py        # SQLite metadata and backup system
 │   ├── orchestrator.py        # Main training coordinator
 │   └── config.py              # Configuration management
-├── config.yaml                 # Main configuration (SSL enabled, 7 SSL tasks, 3 workers)
+├── config.yaml                 # Main configuration (SSL enabled, 5 SSL tasks, 3 workers)
 ├── data/                       # Training data and replays
 │   ├── backups/               # Automatic backup system
 │   ├── selfplay/              # SSL-enhanced self-play game data
@@ -247,21 +242,11 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 - [External engine integration](docs/EXTERNAL_ENGINES.md)
 - [Full documentation index](docs/index.md)
 
-## 🔧 Current Training Status
+## Current Training Status
 
-**Latest Update**: September 2025 - SSL Architecture Integration Complete + Data Pipeline Fixes
-- **Training Progress**: **FULLY OPERATIONAL** with SSL architecture integration and data pipeline fixes
-- **Training Speed**: ~1.58-2.5 seconds per step (optimized for SSL processing)
-- **Model Size**: 53M parameter ResNet-24 with SSL heads
-- **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **5 SSL heads**
-- **SSL Status**: **ARCHITECTURE INTEGRATED** - All 5 SSL tasks integrated (piece, threat, pin, fork, control) - optimized data pipeline
-- **Large-Scale Training**: 100K step pretraining run in progress using enhanced_best.pt checkpoint
-- **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
-- **Training Stability**: 100% stable with proper gradient accumulation and scheduler stepping
-- **Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
-- **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, EX0Bench external engine battles, data pipeline fixes, MPS stability improvements, CoreML export
+The project runs a 53M parameter ResNet‑24 with five SSL heads and an optimized data pipeline. Training metrics and update history are tracked in [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md).
 
-## 🔧 Development
+## Development
 
 ### Testing & Validation
 The project includes comprehensive validation and monitoring:
@@ -289,7 +274,7 @@ python -m azchess.tools.bench_inference
 python -m azchess.tools.bench_mcts
 ```
 
-## 🤝 Contributing
+## Contributing
 Contributions are welcome! Current focus areas include:
 
 ### High Priority
@@ -311,50 +296,21 @@ Contributions are welcome! Current focus areas include:
 - Use type hints and docstrings for all functions
 - Ensure MPS compatibility for all new features
 
-## 📄 License
+## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 **Note**: This is a research project. No third-party model weights are included.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 - Inspired by AlphaZero, Leela Chess Zero, and modern chess AI research
 - Built with PyTorch and optimized for Apple Silicon MPS architecture
 - Advanced SSL concepts from recent computer vision and NLP research
 - Community contributions and feedback
 - **Bugbot**: Code review and quality assurance via [Bugbot](https://bugbot.dev) (14-day trial via Cursor)
 
-## 📈 Current Achievements & Next Steps
+## Current Achievements & Next Steps
 
-### ✅ Major Milestones Completed (September 2025)
-- **SSL Architecture Integration**: All 5 SSL tasks (piece, threat, pin, fork, control) integrated with optimized data pipeline
-- **Data Pipeline Fixes**: Resolved SSL target concatenation issues, fixed control shape mismatches, corrected value targets
-- **Multi-Task Learning**: Simultaneous training of policy, value, and SSL optimization working perfectly
-- **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) for fine-tuning decisions
-- **Enhanced WebUI**: Complete monitoring platform with real-time SSL and training analytics
-- **Training Stability**: 100% stable training with proper scheduler stepping and gradient management
-- **MPS Stability Fixes**: Resolved Metal command buffer issues with comprehensive error recovery
-- **Advanced Checkpoint Management**: SSL-preserving checkpoint creation and merging tools
-- **Production Architecture**: 53M parameter ResNet-24 with complete SSL foundation
-- **Apple Silicon Optimization**: 14GB MPS limit with SSL processing optimization
-- **Real-Time Monitoring**: Live training status, SSL performance, and model analysis
-- **Tournament System**: Advanced multi-format tournament system with Glicko-2 ratings
-- **CoreML Export**: Apple Silicon optimization via CoreML for enhanced inference
-- **GitHub Actions CI/CD**: Comprehensive testing with SSL validation and security scanning
-- **Syzygy Tablebase Integration**: Complete 6-piece endgame tablebases for perfect play
-
-### Active Development Priorities
-- **SSL Performance Validation**: Comprehensive measurement of SSL learning effectiveness
-- **SSL Task Balancing**: Optimization of loss weights for balanced multi-task learning
-- **Enhanced Evaluation**: Multi-engine tournaments with SSL-aware strength estimation
-- **SSL Visualization**: Advanced heatmaps and decision explanation tools
-
-### 🎯 Immediate Next Steps
-1. **SSL Learning Validation**: Measure effectiveness of all 5 SSL tasks
-2. **Performance Benchmarking**: Establish SSL contribution baselines with EX0Bench
-3. **WebUI Enhancement**: Add SSL-specific visualization features
-4. **Model Analysis**: Deep-dive into SSL learning patterns and effectiveness
-
-See [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md), [docs/webui.md](docs/webui.md), and [docs/roadmap.md](docs/roadmap.md) for detailed development plans.
+Major milestones, active priorities, and planned work are documented in [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md) and [docs/roadmap.md](docs/roadmap.md). Refer to those documents for up‑to‑date progress and future tasks.
 
 ---
 
