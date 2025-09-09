@@ -1,0 +1,356 @@
+# GRPO Experiment Configurations
+# Different setups for testing GRPO with various architectures
+
+# Base configuration
+base_config:
+  device: "mps"
+  random_seed: 42
+  experiment_name: "grpo_base"
+
+# Small ResNet + GRPO (Quick iteration)
+small_resnet_grpo:
+  model:
+    type: "small_resnet"
+    input_channels: 19
+    base_channels: 64
+    num_blocks: 4
+
+  grpo:
+    group_size: 4
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 1e-4
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+
+  training:
+    num_games_per_epoch: 50
+    max_epochs: 10
+    eval_games: 20
+    checkpoint_freq: 5
+
+# Medium ResNet + GRPO (More capacity)
+medium_resnet_grpo:
+  model:
+    type: "small_resnet"
+    input_channels: 19
+    base_channels: 128
+    num_blocks: 6
+
+  grpo:
+    group_size: 6
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 8e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 48
+
+  training:
+    num_games_per_epoch: 75
+    max_epochs: 10
+    eval_games: 30
+    checkpoint_freq: 5
+
+# Small Transformer + GRPO (Novel architecture)
+small_transformer_grpo:
+  model:
+    type: "chess_transformer"
+    variant: "small"
+    input_channels: 19
+    d_model: 128
+    nhead: 4
+    num_layers: 4
+    dim_feedforward: 512
+
+  grpo:
+    group_size: 4
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 1e-4
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+
+  training:
+    num_games_per_epoch: 50
+    max_epochs: 10
+    eval_games: 20
+    checkpoint_freq: 5
+
+# Medium Transformer + GRPO (More capacity)
+medium_transformer_grpo:
+  model:
+    type: "chess_transformer"
+    variant: "medium"
+    input_channels: 19
+    d_model: 256
+    nhead: 8
+    num_layers: 6
+    dim_feedforward: 1024
+
+  grpo:
+    group_size: 6
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 8e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 48
+
+  training:
+    num_games_per_epoch: 75
+    max_epochs: 10
+    eval_games: 30
+    checkpoint_freq: 5
+
+# Ablation: Different group sizes
+grpo_group_ablation:
+  model:
+    type: "small_resnet"
+    input_channels: 19
+    base_channels: 64
+    num_blocks: 4
+
+  experiments:
+    group_2:
+      grpo:
+        group_size: 2
+        clip_epsilon: 0.2
+        learning_rate: 1e-4
+      training:
+        num_games_per_epoch: 40
+        max_epochs: 5
+
+    group_4:
+      grpo:
+        group_size: 4
+        clip_epsilon: 0.2
+        learning_rate: 1e-4
+      training:
+        num_games_per_epoch: 40
+        max_epochs: 5
+
+    group_8:
+      grpo:
+        group_size: 8
+        clip_epsilon: 0.2
+        learning_rate: 1e-4
+      training:
+        num_games_per_epoch: 40
+        max_epochs: 5
+
+# Large Transformer + GRPO (Main experiment)
+large_transformer_grpo:
+  model:
+    type: "large_transformer"
+    input_channels: 19
+    d_model: 512
+    nhead: 8
+    num_layers: 8
+    dim_feedforward: 2048
+
+  grpo:
+    group_size: 6
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 5e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 48
+    num_workers: 3
+    mcts_simulations: 200
+
+  training:
+    num_games_per_epoch: 100
+    max_epochs: 20
+    eval_games: 30
+    checkpoint_freq: 5
+
+  meta_learning:
+    enabled: true
+
+  reward_shaping:
+    enabled: true
+    adaptive: true
+
+# Medium Transformer + GRPO (Faster iteration)
+medium_transformer_grpo:
+  model:
+    type: "medium_transformer"
+    input_channels: 19
+    d_model: 384
+    nhead: 6
+    num_layers: 6
+    dim_feedforward: 1536
+
+  grpo:
+    group_size: 4
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 8e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+    num_workers: 3
+    mcts_simulations: 150
+
+  training:
+    num_games_per_epoch: 75
+    max_epochs: 15
+    eval_games: 25
+    checkpoint_freq: 5
+
+  meta_learning:
+    enabled: false
+
+  reward_shaping:
+    enabled: true
+    adaptive: false
+
+# Small ResNet baseline (For comparison)
+small_resnet_baseline:
+  model:
+    type: "small_resnet"
+    input_channels: 19
+    base_channels: 64
+    num_blocks: 4
+
+  grpo:
+    group_size: 4
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 1e-4
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+    num_workers: 3
+    mcts_simulations: 150
+
+  training:
+    num_games_per_epoch: 75
+    max_epochs: 15
+    eval_games: 25
+    checkpoint_freq: 5
+
+  meta_learning:
+    enabled: false
+
+  reward_shaping:
+    enabled: false
+
+# Ablation: Group sizes
+group_size_ablation:
+  model:
+    type: "medium_transformer"
+    input_channels: 19
+    d_model: 384
+    nhead: 6
+    num_layers: 6
+    dim_feedforward: 1536
+
+  grpo:
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 8e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+
+  training:
+    num_games_per_epoch: 50
+    max_epochs: 8
+    eval_games: 20
+    checkpoint_freq: 10
+
+  ablation_configs:
+    group_2:
+      grpo:
+        group_size: 2
+    group_4:
+      grpo:
+        group_size: 4
+    group_8:
+      grpo:
+        group_size: 8
+
+# Meta-learning experiment
+meta_learning_experiment:
+  model:
+    type: "large_transformer"
+    input_channels: 19
+    d_model: 512
+    nhead: 8
+    num_layers: 8
+    dim_feedforward: 2048
+
+  grpo:
+    group_size: 6
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 5e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 48
+
+  training:
+    num_games_per_epoch: 80
+    max_epochs: 12
+    eval_games: 25
+    checkpoint_freq: 4
+
+  meta_learning:
+    enabled: true
+
+  reward_shaping:
+    enabled: true
+    adaptive: true
+
+# Reward shaping ablation
+reward_shaping_ablation:
+  model:
+    type: "medium_transformer"
+    input_channels: 19
+    d_model: 384
+    nhead: 6
+    num_layers: 6
+    dim_feedforward: 1536
+
+  grpo:
+    group_size: 4
+    clip_epsilon: 0.2
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+    learning_rate: 8e-5
+    max_grad_norm: 0.5
+    ppo_epochs: 4
+    batch_size: 32
+
+  training:
+    num_games_per_epoch: 60
+    max_epochs: 10
+    eval_games: 20
+    checkpoint_freq: 5
+
+  ablation_configs:
+    no_shaping:
+      reward_shaping:
+        enabled: false
+    basic_shaping:
+      reward_shaping:
+        enabled: true
+        adaptive: false
+    adaptive_shaping:
+      reward_shaping:
+        enabled: true
+        adaptive: true

@@ -119,10 +119,10 @@ engines:
 mcts:
   num_threads: 3                    # Match worker count for optimal MPS performance
   num_simulations: 200              # Increased from 96 for better accuracy
-  cpuct: 2.2
-  cpuct_start: 2.8
-  cpuct_end: 1.8
-  cpuct_plies: 40
+  cpuct: 2.2                      # Restore original exploration level
+  cpuct_start: 2.8                  # Restore original early exploration
+  cpuct_end: 1.8                    # Restore original late exploitation
+  cpuct_plies: 40                   # Restore original schedule length
   cpuct_c_base: 19652
   cpuct_c_init: 1.25
   dirichlet_alpha: 0.3
@@ -132,27 +132,27 @@ mcts:
   fpu: 0.2
   fpu_reduction: 0.15
   draw_penalty: -0.5
-  tt_capacity: 1000000
-  tt_cleanup_frequency: 500
+  tt_capacity: 2000000             # Increased from 1M to 2M for better hit rates (conservative)
+  tt_cleanup_frequency: 750         # Reduced cleanup frequency to maintain more entries
   tt_memory_limit_mb: 1024
-  batch_size: 16                    # Increased from 8 for better MPS utilization
+  batch_size: 24                    # Increased from 16 to 24 for better MPS utilization
   encoder_cache: true
   legal_softmax: true               # Softmax over legal moves only for priors
-  max_children: 0
-  min_child_prior: 0.0
+  max_children: 0                   # Restore unlimited branching for full exploration
+  min_child_prior: 0.0              # Restore original prior threshold
   no_instant_backtrack: true
   parent_q_init: true
   tt_cleanup_interval_s: 5
   value_from_white: true            # Use side-to-move value consistently
-  virtual_loss: 2.0
+  virtual_loss: 2.0                 # Restore original virtual loss level
   enable_memory_cleanup: true
+  # Throughput optimizations
+  simulation_batch_size: 24         # Match batch_size for consistent processing
+  parallel_simulations: true        # Enable parallel simulation processing
+  tree_parallelism: true           # Enable tree-level parallelism
   memory_cleanup_threshold_mb: 512
   max_tree_nodes: 70000
-  # FIXED: Parallel MCTS with robust error handling and deadlock prevention
-  parallel_simulations: true
-  simulation_batch_size: 16        # Increased from 8 for better throughput
-  tree_parallelism: true
-  playout_random_frac: 0.3
+  playout_random_frac: 0.15         # Conservative randomization for diversity
   enable_entropy_noise: true
 
 presets:
