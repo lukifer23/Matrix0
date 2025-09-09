@@ -95,13 +95,13 @@ class GRPOTrainer:
 
         if len(trajectories) < self.config.group_size:
             logger.warning(f"Only {len(trajectories)} trajectories, need at least {self.config.group_size}")
-            return {}
+            # Use all trajectories as a single group if we don't have enough
+            groups = [trajectories]
+        else:
+            # Form groups for reward normalization
+            groups = self._form_groups(trajectories)
 
-        logger.info(f"Starting GRPO training on {len(trajectories)} trajectories")
-
-        # Form groups for reward normalization
-        groups = self._form_groups(trajectories)
-        logger.info(f"Formed {len(groups)} groups for training")
+        logger.info(f"Starting GRPO training on {len(trajectories)} trajectories in {len(groups)} groups")
 
         total_policy_loss = 0.0
         total_value_loss = 0.0
@@ -143,7 +143,7 @@ class GRPOTrainer:
         # Form groups of group_size
         for i in range(0, len(sorted_trajectories), self.config.group_size):
             group = sorted_trajectories[i:i + self.config.group_size]
-            if len(group) >= self.config.group_size // 2:  # Allow partial groups
+            if len(group) > 0:  # Include all groups, even partial ones
                 groups.append(group)
 
         logger.info(f"Formed {len(groups)} groups from {len(trajectories)} trajectories")
@@ -159,11 +159,6 @@ class GRPOTrainer:
         Returns:
             Training metrics for this group
         """
-        # Extract rewards for group normalization
-        group_rewards = [t.total_reward for t in group]
-        reward_mean = np.mean(group_rewards)
-        reward_std = np.std(group_rewards) + 1e-8  # Avoid division by zero
-
         # Process trajectories to compute advantages
         all_advantages = []
         all_returns = []
@@ -179,21 +174,35 @@ class GRPOTrainer:
             actions = [step.action for step in trajectory.steps]
 
             advantages, returns = self.compute_gae(rewards, values, self.config.gamma, self.config.gae_lambda)
-            
-            # Normalize advantages within the group
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
             all_advantages.append(advantages)
             all_returns.append(returns)
             all_log_probs.extend(log_probs)
             all_states.extend(states)
             all_actions.extend(actions)
 
+        if not all_states:
+            logger.warning("No states found in group")
+            return {'policy_loss': 0.0, 'value_loss': 0.0, 'entropy_loss': 0.0}
+
+        # Concatenate all data
         advantages_tensor = torch.cat(all_advantages).to(self.device)
         returns_tensor = torch.cat(all_returns).to(self.device)
         old_log_probs_tensor = torch.tensor(all_log_probs, device=self.device)
         states_tensor = torch.cat(all_states).to(self.device)
         actions_tensor = torch.tensor(all_actions, device=self.device)
+
+        # Group-based reward normalization (GRPO core)
+        group_rewards = [t.total_reward for t in group]
+        reward_mean = np.mean(group_rewards)
+        reward_std = np.std(group_rewards) + 1e-8
+        
+        # Normalize advantages within the group
+        advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
+
+        # Store losses for averaging
+        policy_losses = []
+        value_losses = []
+        entropy_losses = []
 
         for _ in range(self.config.ppo_epochs):
             for i in range(0, len(states_tensor), self.config.batch_size):
@@ -208,7 +217,7 @@ class GRPOTrainer:
                 new_policy = F.softmax(new_policy_logits, dim=-1)
                 new_log_probs = torch.log(new_policy.gather(1, batch_actions.unsqueeze(1)).squeeze(1) + 1e-8)
 
-                # Policy loss
+                # GRPO Policy loss with group normalization
                 ratio = torch.exp(new_log_probs - batch_old_log_probs)
                 clipped_ratio = torch.clamp(ratio, 1 - self.config.clip_epsilon, 1 + self.config.clip_epsilon)
                 policy_loss = -torch.min(ratio * batch_advantages, clipped_ratio * batch_advantages).mean()
@@ -228,10 +237,15 @@ class GRPOTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
                 self.optimizer.step()
 
+                # Store losses
+                policy_losses.append(policy_loss.item())
+                value_losses.append(value_loss.item())
+                entropy_losses.append(entropy.item())
+
         return {
-            'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item(),
-            'entropy_loss': entropy.item()
+            'policy_loss': np.mean(policy_losses) if policy_losses else 0.0,
+            'value_loss': np.mean(value_losses) if value_losses else 0.0,
+            'entropy_loss': np.mean(entropy_losses) if entropy_losses else 0.0
         }
 
     def compute_gae(self, rewards: List[float], values: List[float], gamma: float, gae_lambda: float) -> Tuple[torch.Tensor, torch.Tensor]:

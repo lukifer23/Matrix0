@@ -89,54 +89,45 @@ class ChessMoveEncoder(nn.Module):
         except (StopIteration, RuntimeError):
             device = 'cpu'
 
-        # Create move embeddings
+        # Create legal move mask
+        legal_mask = torch.zeros(self.max_moves, device=device)
+        for move in legal_moves:
+            move_idx = self._move_to_index(move)
+            if 0 <= move_idx < self.max_moves:
+                legal_mask[move_idx] = 1.0
+
+        # Create move embeddings for legal moves only
         move_embeddings = []
-        attention_mask = torch.zeros(self.max_moves, device=device)
-
-        for i, move in enumerate(legal_moves):
-            if i >= self.max_moves:
-                break
-
+        for move in legal_moves:
             embedding = self.encode_move(move, board)
             move_embeddings.append(embedding)
 
-            # Set attention mask for legal moves
-            move_idx = self._move_to_index(move)
-            if move_idx < self.max_moves:
-                attention_mask[move_idx] = 1.0
-
-        # Pad to max_moves
+        # Pad to max_moves if needed
         while len(move_embeddings) < self.max_moves:
             move_embeddings.append(torch.zeros(self.d_model, device=device))
 
         move_embeddings = torch.stack(move_embeddings)
 
-        # Generate attention weights using the mask
+        # Generate attention weights using the legal mask
         attention_weights = self.attention_mask_generator(move_embeddings.mean(dim=0))
-        attention_weights = torch.sigmoid(attention_weights) * attention_mask
+        attention_weights = torch.sigmoid(attention_weights) * legal_mask
 
         return move_embeddings, attention_weights
 
     def _move_to_index(self, move: chess.Move) -> int:
-        """Convert chess move to policy index (simplified)"""
+        """Convert chess move to policy index using AlphaZero encoding"""
         from_sq = move.from_square
         to_sq = move.to_square
-        promotion = move.promotion or 0
+        promotion = move.promotion
 
-        # Simple encoding: from_square * 64 + to_square + promotion_offset
-        base_idx = from_sq * 64 + to_sq
-        if promotion:
-            # Add promotion piece offsets
-            if promotion == chess.QUEEN:
-                base_idx += 64 * 64 * 1
-            elif promotion == chess.ROOK:
-                base_idx += 64 * 64 * 2
-            elif promotion == chess.BISHOP:
-                base_idx += 64 * 64 * 3
-            elif promotion == chess.KNIGHT:
-                base_idx += 64 * 64 * 4
+        # Queen moves: 0-4095 (64*64)
+        if not promotion or promotion == chess.QUEEN:
+            return from_sq * 64 + to_sq
 
-        return min(base_idx, self.max_moves - 1)
+        # Underpromotions: 4096-4671 (64*3*3 = 576 moves)
+        # Each from_square can promote to 3 pieces (Knight, Bishop, Rook)
+        promo_offset = {chess.KNIGHT: 0, chess.BISHOP: 1, chess.ROOK: 2}
+        return 4096 + from_sq * 3 + promo_offset[promotion]
 
 
 class AttentionMovePredictor(nn.Module):
@@ -223,9 +214,66 @@ class MagnusMoveIntegration(nn.Module):
 
     def encode_board_for_attention(self, board: chess.Board) -> torch.Tensor:
         """Encode board state for attention mechanisms"""
+        # Convert board to tensor format compatible with transformer
+        board_tensor = self._board_to_tensor(board)
+        
         # This would integrate with the Magnus transformer's board encoding
         # For now, return a placeholder that matches the expected interface
+        # In practice, this would be the output of the transformer's board encoder
         return torch.randn(1, 64, self.move_encoder.d_model)
+
+    def _board_to_tensor(self, board: chess.Board) -> torch.Tensor:
+        """Convert chess board to tensor format compatible with transformer"""
+        # Create 19-channel board representation
+        channels = []
+
+        # Piece channels (12 channels: 6 piece types x 2 colors)
+        for piece_type in range(1, 7):  # 1-6: pawn, knight, bishop, rook, queen, king
+            white_channel = torch.zeros(8, 8)
+            black_channel = torch.zeros(8, 8)
+
+            for square in chess.SQUARES:
+                piece = board.piece_at(square)
+                if piece and piece.piece_type == piece_type:
+                    row, col = divmod(square, 8)
+                    if piece.color == chess.WHITE:
+                        white_channel[row, col] = 1.0
+                    else:
+                        black_channel[row, col] = 1.0
+
+            channels.extend([white_channel, black_channel])
+
+        # Additional channels for game state (7 more to make 19 total)
+        # Side to move
+        side_to_move = torch.ones(8, 8) if board.turn == chess.WHITE else torch.zeros(8, 8)
+        channels.append(side_to_move)
+
+        # Castling rights (4 channels)
+        castling_channels = []
+        for i in range(4):
+            castling_channels.append(torch.zeros(8, 8))
+        if board.has_kingside_castling_rights(chess.WHITE):
+            castling_channels[0].fill_(1.0)
+        if board.has_queenside_castling_rights(chess.WHITE):
+            castling_channels[1].fill_(1.0)
+        if board.has_kingside_castling_rights(chess.BLACK):
+            castling_channels[2].fill_(1.0)
+        if board.has_queenside_castling_rights(chess.BLACK):
+            castling_channels[3].fill_(1.0)
+        channels.extend(castling_channels)
+
+        # En passant (1 channel)
+        en_passant = torch.zeros(8, 8)
+        if board.ep_square:
+            row, col = divmod(board.ep_square, 8)
+            en_passant[row, col] = 1.0
+        channels.append(en_passant)
+
+        # Halfmove clock (1 channel)
+        halfmove = torch.full((8, 8), min(board.halfmove_clock / 100.0, 1.0))
+        channels.append(halfmove)
+
+        return torch.stack(channels, dim=0).unsqueeze(0)  # Add batch dimension
 
 
 # Factory function for easy instantiation

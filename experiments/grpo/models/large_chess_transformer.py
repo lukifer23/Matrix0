@@ -300,7 +300,17 @@ class MagnusChessTransformer(nn.Module):
 
     def set_attention_mask(self, mask):
         """Set attention mask for legal moves"""
-        self.attention_mask = mask
+        if mask is not None:
+            self.attention_mask = mask.to(next(self.parameters()).device)
+        else:
+            self.attention_mask = None
+
+    def to(self, device):
+        """Move model to device and handle attention mask"""
+        super().to(device)
+        if self.attention_mask is not None:
+            self.attention_mask = self.attention_mask.to(device)
+        return self
 
     def forward(self, x, return_aux=False):
         # Convert board to token sequence
@@ -322,9 +332,15 @@ class MagnusChessTransformer(nn.Module):
         # Policy head
         policy_logits = self.policy_head(representation)
 
-        # Apply attention mask if available
+        # Apply attention mask if available (mask illegal moves)
         if self.attention_mask is not None:
-            policy_logits = policy_logits + self.attention_mask
+            # Ensure mask is on the same device and has correct shape
+            mask = self.attention_mask.to(policy_logits.device)
+            if mask.dim() == 1:
+                mask = mask.unsqueeze(0)  # Add batch dimension if needed
+            
+            # Apply mask by setting illegal moves to very negative values
+            policy_logits = policy_logits + (mask - 1) * 1e9
 
         # Value head
         value = self.value_head(representation)

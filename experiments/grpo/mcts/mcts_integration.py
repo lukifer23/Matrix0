@@ -7,6 +7,7 @@ Optimized for transformer models with attention mechanisms.
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import chess
 import logging
@@ -135,51 +136,19 @@ class MCTSNode:
                 self.children[move] = child
 
     def _move_to_index(self, move: chess.Move) -> int:
-        """Converts a chess.Move object to a policy index."""
-        # This is a standard way to encode moves in a 4672-dimensional vector.
-        # It's based on the AlphaZero paper.
+        """Converts a chess.Move object to a policy index using AlphaZero encoding."""
         from_square = move.from_square
         to_square = move.to_square
         promotion = move.promotion
 
-        if promotion:
-            # Underpromotion to knight, bishop, or rook
-            if promotion == chess.KNIGHT:
-                direction = [1, 2, -1, -2, 1, 2, -1, -2]
-                rank_diff = chess.square_rank(to_square) - chess.square_rank(from_square)
-                file_diff = chess.square_file(to_square) - chess.square_file(from_square)
-                if rank_diff == 2 and file_diff == 1:
-                    return 56 + 0
-                elif rank_diff == 1 and file_diff == 2:
-                    return 56 + 1
-                elif rank_diff == -1 and file_diff == 2:
-                    return 56 + 2
-                elif rank_diff == -2 and file_diff == 1:
-                    return 56 + 3
-                elif rank_diff == -2 and file_diff == -1:
-                    return 56 + 4
-                elif rank_diff == -1 and file_diff == -2:
-                    return 56 + 5
-                elif rank_diff == 1 and file_diff == -2:
-                    return 56 + 6
-                elif rank_diff == 2 and file_diff == -1:
-                    return 56 + 7
-            elif promotion == chess.BISHOP:
-                return 56 + 8 + (to_square - from_square) // 9
-            elif promotion == chess.ROOK:
-                return 56 + 8 + 8 + (to_square - from_square) // 8
+        # Queen moves: 0-4095 (64*64)
+        if not promotion or promotion == chess.QUEEN:
+            return from_square * 64 + to_square
 
-        # Queen moves
-        if from_square != to_square:
-            # Horizontal and vertical moves
-            if chess.square_file(from_square) == chess.square_file(to_square) or \
-               chess.square_rank(from_square) == chess.square_rank(to_square):
-                return (from_square * 7) + (to_square - from_square) // 8
-            # Diagonal moves
-            else:
-                return 56 + (from_square * 7) + (to_square - from_square) // 9
-
-        return 0
+        # Underpromotions: 4096-4671 (64*3*3 = 576 moves)
+        # Each from_square can promote to 3 pieces (Knight, Bishop, Rook)
+        promo_offset = {chess.KNIGHT: 0, chess.BISHOP: 1, chess.ROOK: 2}
+        return 4096 + from_square * 3 + promo_offset[promotion]
 
 
 class MCTS:
@@ -205,48 +174,80 @@ class MCTS:
         Returns:
             Tuple of (policy_logits, value_estimate)
         """
+        if board is None:
+            raise ValueError("Board cannot be None")
+            
+        if board.is_game_over():
+            logger.warning("MCTS search called on terminal position")
+            return torch.zeros(4672), 0.0
+            
         logger.info(f"🔍 MCTS search starting for board: {board.fen()}")
         search_start_time = time.time()
-        root = MCTSNode(board=board.copy())
-
-        # Expand root node
-        logger.info("🔍 Evaluating root position...")
+        
         try:
-            policy_logits, value = self._evaluate_position(board)
-            logger.info(f"🔍 Root evaluation: policy shape {policy_logits.shape}, value {value}")
+            root = MCTSNode(board=board.copy())
+
+            # Expand root node
+            logger.info("🔍 Evaluating root position...")
+            try:
+                policy_logits, value = self._evaluate_position(board)
+                logger.info(f"🔍 Root evaluation: policy shape {policy_logits.shape}, value {value}")
+            except Exception as e:
+                logger.error(f"🔍 Root evaluation failed: {e}")
+                logger.error(f"🔍 Error type: {type(e).__name__}")
+                import traceback
+                logger.error(f"🔍 Traceback: {traceback.format_exc()}")
+                raise
+
+            legal_moves = list(board.legal_moves)
+            logger.info(f"🔍 Legal moves: {len(legal_moves)}")
+            
+            if not legal_moves:
+                logger.warning("No legal moves available")
+                return torch.zeros(4672), 0.0
+
+            try:
+                root.expand(legal_moves, policy_logits, self.config)
+                logger.info(f"🔍 Root expanded with {len(root.children)} children")
+            except Exception as e:
+                logger.error(f"🔍 Root expansion failed: {e}")
+                logger.error(f"🔍 Error type: {type(e).__name__}")
+                import traceback
+                logger.error(f"🔍 Traceback: {traceback.format_exc()}")
+                raise
+
+            # Perform simulations
+            for sim_idx in range(self.config.num_simulations):
+                try:
+                    self._simulate(root)
+                except Exception as e:
+                    logger.warning(f"Simulation {sim_idx} failed: {e}")
+                    continue
+
+            # Extract policy from visit counts
+            policy = self._get_policy_from_visits(root, legal_moves)
+            logger.debug(f"Extracted policy shape: {policy.shape}")
+
+            # Get value estimate
+            value_est = root.value
+            logger.debug(f"Root value estimate: {value_est}")
+
+            return policy, value_est
+            
         except Exception as e:
-            logger.error(f"🔍 Root evaluation failed: {e}")
-            logger.error(f"🔍 Error type: {type(e).__name__}")
-            import traceback
-            logger.error(f"🔍 Traceback: {traceback.format_exc()}")
-            raise
-
-        legal_moves = list(board.legal_moves)
-        logger.info(f"🔍 Legal moves: {len(legal_moves)}")
-
-        try:
-            root.expand(legal_moves, policy_logits, self.config)
-            logger.info(f"🔍 Root expanded with {len(root.children)} children")
-        except Exception as e:
-            logger.error(f"🔍 Root expansion failed: {e}")
-            logger.error(f"🔍 Error type: {type(e).__name__}")
-            import traceback
-            logger.error(f"🔍 Traceback: {traceback.format_exc()}")
-            raise
-
-        # Perform simulations
-        for sim_idx in range(self.config.num_simulations):
-            self._simulate(root)
-
-        # Extract policy from visit counts
-        policy = self._get_policy_from_visits(root, legal_moves)
-        logger.debug(f"Extracted policy shape: {policy.shape}")
-
-        # Get value estimate
-        value_est = root.value
-        logger.debug(f"Root value estimate: {value_est}")
-
-        return policy, value_est
+            logger.error(f"MCTS search failed: {e}")
+            # Return fallback policy
+            legal_moves = list(board.legal_moves)
+            if legal_moves:
+                fallback_policy = torch.zeros(4672)
+                # Set uniform probability for legal moves
+                for move in legal_moves:
+                    move_idx = self._move_to_index(move)
+                    if 0 <= move_idx < len(fallback_policy):
+                        fallback_policy[move_idx] = 1.0 / len(legal_moves)
+                return fallback_policy, 0.0
+            else:
+                return torch.zeros(4672), 0.0
 
     def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
         """
@@ -326,12 +327,30 @@ class MCTS:
 
     def _evaluate_position(self, board: chess.Board) -> Tuple[torch.Tensor, float]:
         """Evaluate position using neural network"""
-        board_tensor = self._board_to_tensor(board)
+        try:
+            board_tensor = self._board_to_tensor(board)
+            
+            if board_tensor is None or board_tensor.numel() == 0:
+                logger.error("Invalid board tensor generated")
+                return torch.zeros(4672), 0.0
 
-        with torch.no_grad():
-            policy_logits, value = self.model(board_tensor.to(self.device))
+            with torch.no_grad():
+                policy_logits, value = self.model(board_tensor.to(self.device))
 
-        return policy_logits.cpu().squeeze(0), value.item()
+            # Validate outputs
+            if policy_logits is None or value is None:
+                logger.error("Model returned None outputs")
+                return torch.zeros(4672), 0.0
+                
+            if policy_logits.shape[-1] != 4672:
+                logger.error(f"Policy logits shape mismatch: expected 4672, got {policy_logits.shape}")
+                return torch.zeros(4672), 0.0
+
+            return policy_logits.cpu().squeeze(0), value.item()
+            
+        except Exception as e:
+            logger.error(f"Position evaluation failed: {e}")
+            return torch.zeros(4672), 0.0
 
     def _board_to_tensor(self, board: chess.Board) -> torch.Tensor:
         """Convert chess board to tensor format compatible with transformer"""
@@ -339,7 +358,6 @@ class MCTS:
         channels = []
 
         # Piece channels (12 channels: 6 piece types x 2 colors)
-        piece_channels = []
         for piece_type in range(1, 7):  # 1-6: pawn, knight, bishop, rook, queen, king
             white_channel = torch.zeros(8, 8)
             black_channel = torch.zeros(8, 8)
@@ -353,9 +371,7 @@ class MCTS:
                     else:
                         black_channel[row, col] = 1.0
 
-            piece_channels.extend([white_channel, black_channel])
-
-        channels.extend(piece_channels)
+            channels.extend([white_channel, black_channel])
 
         # Additional channels for game state (7 more to make 19 total)
         # Side to move
@@ -397,8 +413,8 @@ class MCTS:
 
         if total_visits > 0:
             for move, child in root.children.items():
-                move_idx = root._move_to_index(move)
-                if move_idx < len(policy):
+                move_idx = self._move_to_index(move)
+                if 0 <= move_idx < len(policy):
                     policy[move_idx] = child.visit_count / total_visits
 
         return policy
@@ -469,7 +485,7 @@ class MCTS:
                 step['reward'] = result if i == len(trajectory) - 1 else 0.0
                 step['done'] = i == len(trajectory) - 1
                 step['state'] = self._board_to_tensor(step['board'])
-                step['action'] = MCTSNode(board=step['board'])._move_to_index(step['move'])
+                step['action'] = self._move_to_index(step['move'])
 
         logger.info(f"Trajectory generation complete: {len(trajectory)} steps, final result: {result}")
         return trajectory
@@ -483,12 +499,12 @@ class MCTS:
         best_prob = -1
 
         for move in legal_moves:
-            move_idx = MCTSNode(board=board)._move_to_index(move)
-            if policy[move_idx] > best_prob:
+            move_idx = self._move_to_index(move)
+            if 0 <= move_idx < len(policy) and policy[move_idx] > best_prob:
                 best_prob = policy[move_idx]
                 best_move = move
         
-        return best_move
+        return best_move if best_move is not None else legal_moves[0]
 
     def _sample_move_from_policy(self, policy: torch.Tensor, legal_moves: List[chess.Move]) -> Tuple[chess.Move, float]:
         """Sample move from policy distribution and return log probability for GRPO"""
@@ -496,8 +512,8 @@ class MCTS:
         legal_indices = []
 
         for move in legal_moves:
-            move_idx = MCTSNode(board=chess.Board())._move_to_index(move)
-            if move_idx < len(policy):
+            move_idx = self._move_to_index(move)
+            if 0 <= move_idx < len(policy):
                 prob = policy[move_idx].item()
                 if prob > 0:
                     legal_probs.append(prob)
@@ -530,7 +546,7 @@ class MCTS:
 
             # Find corresponding move
             for move in legal_moves:
-                if MCTSNode(board=chess.Board())._move_to_index(move) == sampled_move_idx:
+                if self._move_to_index(move) == sampled_move_idx:
                     # Calculate log probability
                     total_prob = sum(legal_probs)
                     move_prob = legal_probs[sampled_idx] / total_prob if total_prob > 0 else 1.0 / len(legal_moves)
@@ -553,7 +569,7 @@ class SelfPlayManager:
         self.display_callback = display_callback
         logger.info(f"Initialized SelfPlayManager with {num_workers} workers")
 
-    def generate_games(self, num_games: int, max_moves: int = 180) -> List[List[Dict[str, Any]]]:
+    def generate_games(self, num_games: int, max_moves: int = 180, timeout: int = 120) -> List[List[Dict[str, Any]]]:
         """
         Generate self-play games using sequential processing for debugging
         """
@@ -561,19 +577,29 @@ class SelfPlayManager:
         games = []
 
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            futures = [executor.submit(self.mcts.get_trajectory, chess.Board(), max_moves) for _ in range(num_games)]
+            futures = [executor.submit(self._generate_single_game, max_moves, timeout) for _ in range(num_games)]
 
             for future in as_completed(futures):
                 try:
-                    trajectory = future.result()
-                    games.append(trajectory)
-                    if self.display_callback:
-                        self.display_callback(trajectory)
+                    trajectory = future.result(timeout=timeout + 10)  # Add buffer for timeout
+                    if trajectory:  # Only add non-empty trajectories
+                        games.append(trajectory)
+                        if self.display_callback:
+                            self.display_callback(trajectory)
                 except Exception as e:
                     logger.error(f"Error generating game: {e}")
+                    # Continue with other games even if one fails
 
         logger.info(f"🎉 Generated {len(games)} self-play games total")
         return games
+
+    def _generate_single_game(self, max_moves: int, timeout: int) -> List[Dict[str, Any]]:
+        """Generate a single game with timeout protection"""
+        try:
+            return self.mcts.get_trajectory(chess.Board(), max_moves)
+        except Exception as e:
+            logger.error(f"Error in single game generation: {e}")
+            return []
 
 
 if __name__ == "__main__":

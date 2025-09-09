@@ -169,10 +169,10 @@ class ChessRewardShaper:
 
     def _calculate_piece_activity(self, board: chess.Board, move: Optional[chess.Move]) -> float:
         """Calculate piece activity and mobility"""
-        if move is None:
+        if board is None:
             return 0.0
 
-        # Simple mobility calculation - number of legal moves
+        # Count legal moves for both sides
         white_moves = len(list(board.legal_moves)) if board.turn == chess.WHITE else 0
 
         # Switch turn to count black moves
@@ -180,12 +180,31 @@ class ChessRewardShaper:
         board_copy.turn = chess.BLACK
         black_moves = len(list(board_copy.legal_moves))
 
+        # Calculate piece activity based on piece mobility
+        white_activity = 0
+        black_activity = 0
+        
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                # Count squares this piece can move to
+                piece_moves = [m for m in board.legal_moves if m.from_square == square]
+                activity = len(piece_moves)
+                
+                if piece.color == chess.WHITE:
+                    white_activity += activity
+                else:
+                    black_activity += activity
+
         # Return advantage normalized
-        advantage = white_moves - black_moves
-        return advantage / 50.0  # Normalize by reasonable maximum
+        advantage = (white_moves + white_activity) - (black_moves + black_activity)
+        return advantage / 100.0  # Normalize by reasonable maximum
 
     def _calculate_pawn_structure(self, board: chess.Board) -> float:
         """Calculate pawn structure advantage"""
+        if board is None:
+            return 0.0
+            
         white_pawn_score = 0
         black_pawn_score = 0
 
@@ -201,7 +220,26 @@ class ChessRewardShaper:
                 # Advanced pawns are better
                 advancement_bonus = row / 7.0 if piece.color == chess.WHITE else (6 - row) / 7.0
 
-                score = center_bonus + advancement_bonus
+                # Pawn chain bonus (pawns supporting each other)
+                chain_bonus = 0
+                if piece.color == chess.WHITE:
+                    # Check for supporting pawns
+                    for offset in [-1, 1]:
+                        if 0 <= col + offset < 8 and row > 0:
+                            support_square = chess.square(col + offset, row - 1)
+                            support_piece = board.piece_at(support_square)
+                            if support_piece and support_piece.piece_type == chess.PAWN and support_piece.color == chess.WHITE:
+                                chain_bonus += 0.2
+                else:
+                    # Check for supporting pawns
+                    for offset in [-1, 1]:
+                        if 0 <= col + offset < 8 and row < 7:
+                            support_square = chess.square(col + offset, row + 1)
+                            support_piece = board.piece_at(support_square)
+                            if support_piece and support_piece.piece_type == chess.PAWN and support_piece.color == chess.BLACK:
+                                chain_bonus += 0.2
+
+                score = center_bonus + advancement_bonus + chain_bonus
 
                 if piece.color == chess.WHITE:
                     white_pawn_score += score
@@ -228,23 +266,43 @@ class ChessRewardShaper:
 
     def _calculate_development(self, board: chess.Board) -> float:
         """Calculate development advantage"""
+        if board is None:
+            return 0.0
+            
         white_developed = 0
         black_developed = 0
 
         # Check if pieces have moved from starting squares
-        white_start_squares = [chess.B1, chess.G1, chess.B8, chess.G8]  # Knights
-        black_start_squares = [chess.B8, chess.G8, chess.B1, chess.G1]
-
-        for square in white_start_squares:
-            if not board.piece_at(square) or board.piece_at(square).piece_type != chess.KNIGHT:
+        # Knights
+        white_knight_squares = [chess.B1, chess.G1]
+        black_knight_squares = [chess.B8, chess.G8]
+        
+        for square in white_knight_squares:
+            piece = board.piece_at(square)
+            if not piece or piece.piece_type != chess.KNIGHT or piece.color != chess.WHITE:
                 white_developed += 1
 
-        for square in black_start_squares:
-            if not board.piece_at(square) or board.piece_at(square).piece_type != chess.KNIGHT:
+        for square in black_knight_squares:
+            piece = board.piece_at(square)
+            if not piece or piece.piece_type != chess.KNIGHT or piece.color != chess.BLACK:
+                black_developed += 1
+
+        # Bishops
+        white_bishop_squares = [chess.C1, chess.F1]
+        black_bishop_squares = [chess.C8, chess.F8]
+        
+        for square in white_bishop_squares:
+            piece = board.piece_at(square)
+            if not piece or piece.piece_type != chess.BISHOP or piece.color != chess.WHITE:
+                white_developed += 1
+
+        for square in black_bishop_squares:
+            piece = board.piece_at(square)
+            if not piece or piece.piece_type != chess.BISHOP or piece.color != chess.BLACK:
                 black_developed += 1
 
         advantage = white_developed - black_developed
-        return advantage / 4.0  # Normalize
+        return advantage / 8.0  # Normalize by total pieces checked
 
     def _calculate_tempo_advantage(self, board: chess.Board) -> float:
         """Calculate tempo advantage (side to move)"""

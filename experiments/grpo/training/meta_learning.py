@@ -190,20 +190,64 @@ class GameAnalyzer:
 
     def _calculate_material_imbalance(self, board) -> float:
         """Calculate material imbalance from white's perspective"""
-        # This would integrate with the chess board state
-        # For now, return a placeholder
-        return np.random.normal(0, 1)  # Placeholder
+        if board is None:
+            return 0.0
+            
+        white_material = 0
+        black_material = 0
+        
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                value = self.material_values.get(piece.piece_type, 0)
+                if piece.color == chess.WHITE:
+                    white_material += value
+                else:
+                    black_material += value
+        
+        # Return advantage from white's perspective (normalized)
+        advantage = white_material - black_material
+        return advantage / 100.0  # Normalize by typical material values
 
     def _calculate_complexity_score(self, board_history, move_history) -> float:
         """Calculate game complexity based on tactics and variations"""
-        # Simple complexity based on game length and material changes
+        if not board_history or not move_history:
+            return 0.5
+            
+        # Length complexity
         length_complexity = min(1.0, len(move_history) / 100.0)
-        return length_complexity
+        
+        # Material change complexity
+        material_changes = 0
+        for i in range(1, len(board_history)):
+            prev_material = self._calculate_material_imbalance(board_history[i-1])
+            curr_material = self._calculate_material_imbalance(board_history[i])
+            if abs(curr_material - prev_material) > 0.1:  # Significant material change
+                material_changes += 1
+        
+        material_complexity = min(1.0, material_changes / len(move_history))
+        
+        # Combine factors
+        return (length_complexity + material_complexity) / 2.0
 
     def _estimate_win_probability(self, final_board) -> float:
         """Estimate win probability from final position"""
-        # Simple estimation based on material
-        return 0.5  # Placeholder - would be more sophisticated
+        if final_board is None:
+            return 0.5
+            
+        # Check for terminal positions
+        if final_board.is_checkmate():
+            return 1.0 if final_board.turn == chess.BLACK else 0.0
+        elif final_board.is_stalemate() or final_board.is_insufficient_material():
+            return 0.5
+            
+        # Estimate based on material advantage
+        material_advantage = self._calculate_material_imbalance(final_board)
+        
+        # Convert material advantage to win probability
+        # Sigmoid function: 0.5 + 0.5 * tanh(material_advantage)
+        win_prob = 0.5 + 0.5 * np.tanh(material_advantage)
+        return win_prob
 
     def _determine_game_phase(self, board, game_length) -> str:
         """Determine game phase"""
@@ -216,12 +260,47 @@ class GameAnalyzer:
 
     def _calculate_tactical_intensity(self, move_history) -> float:
         """Calculate tactical intensity of the game"""
-        # Simple measure based on game length
-        return min(1.0, len(move_history) / 80.0)
+        if not move_history:
+            return 0.0
+            
+        # Count captures and checks (tactical moves)
+        tactical_moves = 0
+        for move in move_history:
+            if hasattr(move, 'capture') and move.capture:  # Capture move
+                tactical_moves += 1
+            # Note: Checking for checks would require board state analysis
+        
+        # Normalize by game length
+        intensity = tactical_moves / len(move_history) if move_history else 0.0
+        return min(1.0, intensity)
 
     def _calculate_positional_complexity(self, board_history) -> float:
         """Calculate positional complexity"""
-        return 0.5  # Placeholder
+        if not board_history:
+            return 0.5
+            
+        # Analyze piece mobility and position diversity
+        position_diversity = 0
+        total_positions = len(board_history)
+        
+        for i in range(1, total_positions):
+            prev_board = board_history[i-1]
+            curr_board = board_history[i]
+            
+            # Count piece position changes
+            changes = 0
+            for square in chess.SQUARES:
+                prev_piece = prev_board.piece_at(square)
+                curr_piece = curr_board.piece_at(square)
+                if prev_piece != curr_piece:
+                    changes += 1
+            
+            # Normalize by board size
+            position_diversity += changes / 64.0
+        
+        # Average position diversity
+        avg_diversity = position_diversity / max(1, total_positions - 1)
+        return min(1.0, avg_diversity)
 
 
 class MetaGRPOTrainer:

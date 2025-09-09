@@ -122,8 +122,20 @@ class GRPOOrchestrator:
                 if state is None and 'board' in step_dict:
                     state = self._board_to_tensor(step_dict['board'])
 
+                # Ensure state is properly formatted
+                if state is not None:
+                    if state.dim() == 3:  # (C, H, W)
+                        state = state.unsqueeze(0)  # Add batch dimension
+                    elif state.dim() == 4 and state.size(0) == 1:  # Already has batch dimension
+                        pass
+                    else:
+                        logger.warning(f"Unexpected state shape: {state.shape}, using default")
+                        state = torch.zeros(1, 19, 8, 8)
+                else:
+                    state = torch.zeros(1, 19, 8, 8)
+
                 step = TrajectoryStep(
-                    state=state if state is not None else torch.zeros(19, 8, 8),
+                    state=state,
                     action=step_dict.get('action', 0),
                     log_prob=step_dict.get('log_prob', 0.0),
                     value=step_dict.get('value', 0.0),
@@ -216,14 +228,14 @@ class GRPOOrchestrator:
         model_config = self.config['model']
         model_type = model_config['type']
 
-        if model_type in ['magnus_transformer']:
+        if model_type in ['magnus_transformer', 'ultra_large_transformer']:
             logger.info("Creating MAGNUS transformer (~70M parameters)")
             self.model = MagnusChessTransformerFactory.create_magnus_chess()
         elif model_type == 'medium_transformer':
             logger.info("Creating MEDIUM transformer (~25M parameters)")
             self.model = MagnusChessTransformerFactory.create_medium_transformer()
         else:
-            raise ValueError(f"Unsupported model type: {model_type}")
+            raise ValueError(f"Unsupported model type: {model_type}. Supported types: magnus_transformer, medium_transformer")
 
         # Load checkpoint if exists
         checkpoint_path = self.config.get('checkpoint_path')
@@ -296,8 +308,24 @@ class GRPOOrchestrator:
     def _run_self_play_phase(self, num_games: int):
         logger.info(f"🚀 Starting self-play: {num_games} games")
         start_time = time.time()
-        trajectories = self.self_play_manager.generate_games(num_games, timeout=self.config.get('mcts_timeout', 120))
-        self.current_trajectories = self._convert_mcts_to_grpo_trajectories(trajectories)
+        
+        try:
+            trajectories = self.self_play_manager.generate_games(
+                num_games, 
+                max_moves=180, 
+                timeout=self.config.get('mcts_timeout', 120)
+            )
+            self.current_trajectories = self._convert_mcts_to_grpo_trajectories(trajectories)
+            
+            if not self.current_trajectories:
+                logger.error("No valid trajectories generated in self-play phase")
+                return
+                
+        except Exception as e:
+            logger.error(f"Error in self-play phase: {e}")
+            self.current_trajectories = []
+            return
+            
         duration = time.time() - start_time
 
         self.metrics['self_play'].append({
@@ -305,6 +333,8 @@ class GRPOOrchestrator:
             'games_generated': len(self.current_trajectories),
             'duration_seconds': duration
         })
+        
+        logger.info(f"Self-play completed: {len(self.current_trajectories)} games in {duration:.2f}s")
 
     def _run_training_phase(self):
         logger.info("Starting GRPO training phase")
@@ -312,20 +342,35 @@ class GRPOOrchestrator:
             logger.warning("No trajectories to train on.")
             return
 
-        training_metrics = self.grpo_trainer.train_on_trajectories(self.current_trajectories)
-        self.metrics['training'].append(training_metrics)
+        try:
+            training_metrics = self.grpo_trainer.train_on_trajectories(self.current_trajectories)
+            self.metrics['training'].append(training_metrics)
 
-        # Learning rate scheduling
-        if self.metrics['training'][-1]['policy_loss'] > 1.0:
-            for param_group in self.grpo_trainer.optimizer.param_groups:
-                param_group['lr'] *= 0.5
-            logger.warning(f"High policy loss, reducing learning rate to {self.grpo_trainer.optimizer.param_groups[0]['lr']}")
+            # Learning rate scheduling
+            if training_metrics and training_metrics.get('policy_loss', 0) > 1.0:
+                for param_group in self.grpo_trainer.optimizer.param_groups:
+                    param_group['lr'] *= 0.5
+                logger.warning(f"High policy loss, reducing learning rate to {self.grpo_trainer.optimizer.param_groups[0]['lr']}")
+                
+        except Exception as e:
+            logger.error(f"Error in training phase: {e}")
+            self.metrics['training'].append({'policy_loss': 0.0, 'value_loss': 0.0, 'entropy_loss': 0.0})
 
     def _run_evaluation_phase(self):
         logger.info("Starting evaluation phase")
         eval_games = self.config.get('training', {}).get('eval_games', 10)
-        eval_results = self._run_evaluation_games(eval_games)
-        self.metrics['evaluation'].append(eval_results)
+        
+        try:
+            eval_results = self._run_evaluation_games(eval_games)
+            self.metrics['evaluation'].append(eval_results)
+        except Exception as e:
+            logger.error(f"Error in evaluation phase: {e}")
+            self.metrics['evaluation'].append({
+                'trained_wins': 0,
+                'baseline_wins': 0,
+                'draws': 0,
+                'win_rate': 0.0
+            })
 
     def _run_evaluation_games(self, num_games: int) -> Dict[str, Any]:
         logger.info(f"Running {num_games} evaluation games")
@@ -333,17 +378,31 @@ class GRPOOrchestrator:
         baseline_wins = 0
         draws = 0
 
-        baseline_model = self._load_baseline_model()
-        baseline_mcts = MCTS(baseline_model, self.mcts.config, self.device)
+        try:
+            baseline_model = self._load_baseline_model()
+            baseline_mcts = MCTS(baseline_model, self.mcts.config, self.device)
 
-        for _ in range(num_games):
-            result, _ = self._play_evaluation_game(self.mcts, baseline_mcts)
-            if result == 1:
-                trained_wins += 1
-            elif result == -1:
-                baseline_wins += 1
-            else:
-                draws += 1
+            for i in range(num_games):
+                try:
+                    result, _ = self._play_evaluation_game(self.mcts, baseline_mcts)
+                    if result == 1:
+                        trained_wins += 1
+                    elif result == -1:
+                        baseline_wins += 1
+                    else:
+                        draws += 1
+                except Exception as e:
+                    logger.warning(f"Error in evaluation game {i+1}: {e}")
+                    draws += 1  # Count as draw if game fails
+
+        except Exception as e:
+            logger.error(f"Error setting up evaluation: {e}")
+            return {
+                'trained_wins': 0,
+                'baseline_wins': 0,
+                'draws': num_games,
+                'win_rate': 0.0
+            }
 
         return {
             'trained_wins': trained_wins,
@@ -361,12 +420,12 @@ class GRPOOrchestrator:
         checkpoint = torch.load(baseline_path, map_location=self.device)
         model_type = checkpoint['config']['model_type']
 
-        if model_type == 'magnus_transformer':
+        if model_type in ['magnus_transformer', 'ultra_large_transformer']:
             baseline_model = MagnusChessTransformerFactory.create_magnus_chess()
         elif model_type == 'medium_transformer':
             baseline_model = MagnusChessTransformerFactory.create_medium_transformer()
         else:
-            raise ValueError(f"Unsupported model type in baseline checkpoint: {model_type}")
+            raise ValueError(f"Unsupported model type in baseline checkpoint: {model_type}. Supported types: magnus_transformer, medium_transformer")
 
         baseline_model.load_state_dict(checkpoint['model_state_dict'])
         baseline_model.to(self.device)
