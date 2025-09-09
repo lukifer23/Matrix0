@@ -10,6 +10,7 @@ import torch
 import numpy as np
 import chess
 import logging
+import time
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -203,6 +204,7 @@ class MCTS:
             Tuple of (policy_logits, value_estimate)
         """
         logger.debug(f"MCTS search starting for board: {board.fen()}")
+        search_start_time = time.time()
         root = MCTSNode(board=board.copy())
 
         # Expand root node
@@ -541,7 +543,10 @@ class SelfPlayManager:
 
                 # Update display in real-time
                 if self.display_callback:
-                    self.display_callback(games)
+                    logger.debug(f"Calling display callback with trajectory of {len(trajectory)} steps")
+                    self.display_callback(trajectory)
+                else:
+                    logger.warning("No display callback set!")
             except Exception as e:
                 logger.error(f"❌ Error generating game {game_idx + 1}: {e}")
                 logger.error(f"Error type: {type(e).__name__}")
