@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Meta-Learning for GRPO Chess Experiments
+Meta-Learning for Chess GRPO
 
-Implements learn-to-learn approaches for chess, including:
-- Adaptive GRPO parameters based on game state
-- Task-specific parameter optimization
-- Curriculum-based learning strategies
+Adaptive parameter optimization that learns optimal hyperparameters
+based on game characteristics and performance history.
 """
 
 import torch
@@ -14,424 +12,371 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
-import logging
-
-logger = logging.getLogger(__name__)
+import math
 
 
 @dataclass
-class ChessTask:
-    """Represents a chess learning task or game state"""
-    game_phase: str  # 'opening', 'middlegame', 'endgame'
-    material_balance: float  # -1.0 to 1.0
-    complexity_score: float  # 0.0 to 1.0
-    position_embedding: torch.Tensor
-    task_id: str
+class GameCharacteristics:
+    """Characteristics of a chess game for meta-learning"""
+    game_length: int
+    material_imbalance: float
+    complexity_score: float
+    win_probability: float
+    phase: str  # 'opening', 'middlegame', 'endgame'
+    tactical_intensity: float
+    positional_complexity: float
+
+
+@dataclass
+class GRPOParameters:
+    """Adaptable GRPO parameters"""
+    learning_rate: float
+    clip_epsilon: float
+    value_loss_coef: float
+    entropy_coef: float
+    group_size: int
+    max_grad_norm: float
 
 
 class AdaptiveParameterLearner(nn.Module):
-    """
-    Learns to adapt GRPO parameters based on chess position characteristics
-    """
+    """Meta-learning model for adapting GRPO parameters"""
 
-    def __init__(self, d_model: int = 256):
+    def __init__(self, d_model: int = 512, num_game_features: int = 8):
         super().__init__()
 
-        # Position encoder
-        self.position_encoder = nn.Sequential(
-            nn.Linear(d_model, d_model),
+        self.game_encoder = nn.Sequential(
+            nn.Linear(num_game_features, d_model // 2),
+            nn.LayerNorm(d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, d_model),
             nn.LayerNorm(d_model),
-            nn.GELU(),
-            nn.Linear(d_model, d_model // 2)
-        )
-
-        # Task characteristic encoder
-        self.task_encoder = nn.Sequential(
-            nn.Linear(4, d_model // 4),  # phase, material, complexity, game_length
-            nn.LayerNorm(d_model // 4),
-            nn.GELU(),
-            nn.Linear(d_model // 4, d_model // 2)
+            nn.GELU()
         )
 
         # Parameter predictors
-        self.cpuct_predictor = nn.Sequential(
-            nn.Linear(d_model // 2, d_model // 4),
+        self.lr_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 4, 1),
-            nn.Sigmoid()  # Output 0-1, will be scaled
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1, will scale to LR range
         )
 
-        self.virtual_loss_predictor = nn.Sequential(
-            nn.Linear(d_model // 2, d_model // 4),
+        self.clip_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 4, 1),
-            nn.Sigmoid()
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1, will scale to clip range
         )
 
-        self.learning_rate_predictor = nn.Sequential(
-            nn.Linear(d_model // 2, d_model // 4),
+        self.value_coef_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 4, 1),
-            nn.Sigmoid()
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1
+        )
+
+        self.entropy_coef_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1
         )
 
         self.group_size_predictor = nn.Sequential(
-            nn.Linear(d_model // 2, d_model // 4),
+            nn.Linear(d_model, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 4, 1),
-            nn.Sigmoid()
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1, will map to group size
         )
 
-    def forward(self, position_embedding: torch.Tensor,
-                task_features: torch.Tensor) -> Dict[str, float]:
-        """
-        Predict optimal GRPO parameters for given position and task
+        self.grad_norm_predictor = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1),
+            nn.Sigmoid()  # Output between 0 and 1, will scale to grad norm range
+        )
 
-        Args:
-            position_embedding: Position representation (d_model,)
-            task_features: Task characteristics [phase, material, complexity, game_length]
+        # Parameter ranges for scaling
+        self.param_ranges = {
+            'learning_rate': (1e-6, 1e-3),
+            'clip_epsilon': (0.1, 0.3),
+            'value_loss_coef': (0.1, 1.0),
+            'entropy_coef': (0.001, 0.1),
+            'group_size': (2, 16),
+            'max_grad_norm': (0.1, 2.0)
+        }
 
-        Returns:
-            Dictionary of predicted parameters
-        """
-        # Encode inputs
-        pos_encoded = self.position_encoder(position_embedding)
-        task_encoded = self.task_encoder(task_features)
-
-        # Combine encodings
-        combined = pos_encoded + task_encoded
+    def forward(self, game_features: torch.Tensor) -> GRPOParameters:
+        """Predict optimal GRPO parameters for given game characteristics"""
+        # Encode game features
+        encoded = self.game_encoder(game_features)
 
         # Predict parameters
-        cpuct = self.cpuct_predictor(combined).item() * 2.0 + 1.0  # Scale to 1.0-3.0
-        virtual_loss = self.virtual_loss_predictor(combined).item() * 3.0 + 1.0  # Scale to 1.0-4.0
-        learning_rate = self.learning_rate_predictor(combined).item() * 1e-4  # Scale to 0-1e-4
-        group_size = int(self.group_size_predictor(combined).item() * 14 + 2)  # Scale to 2-16
+        lr_raw = self.lr_predictor(encoded).squeeze(-1)
+        clip_raw = self.clip_predictor(encoded).squeeze(-1)
+        value_coef_raw = self.value_coef_predictor(encoded).squeeze(-1)
+        entropy_coef_raw = self.entropy_coef_predictor(encoded).squeeze(-1)
+        group_size_raw = self.group_size_predictor(encoded).squeeze(-1)
+        grad_norm_raw = self.grad_norm_predictor(encoded).squeeze(-1)
 
-        return {
-            'cpuct': cpuct,
-            'virtual_loss': virtual_loss,
-            'learning_rate': learning_rate,
-            'group_size': max(2, min(16, group_size))
+        # Scale to parameter ranges
+        learning_rate = self._scale_to_range(lr_raw, *self.param_ranges['learning_rate'])
+        clip_epsilon = self._scale_to_range(clip_raw, *self.param_ranges['clip_epsilon'])
+        value_loss_coef = self._scale_to_range(value_coef_raw, *self.param_ranges['value_loss_coef'])
+        entropy_coef = self._scale_to_range(entropy_coef_raw, *self.param_ranges['entropy_coef'])
+        group_size = int(self._scale_to_range(group_size_raw, *self.param_ranges['group_size']))
+        max_grad_norm = self._scale_to_range(grad_norm_raw, *self.param_ranges['max_grad_norm'])
+
+        return GRPOParameters(
+            learning_rate=learning_rate,
+            clip_epsilon=clip_epsilon,
+            value_loss_coef=value_loss_coef,
+            entropy_coef=entropy_coef,
+            group_size=max(2, min(16, group_size)),  # Clamp to valid range
+            max_grad_norm=max_grad_norm
+        )
+
+    def _scale_to_range(self, value: torch.Tensor, min_val: float, max_val: float) -> float:
+        """Scale sigmoid output (0-1) to parameter range"""
+        if isinstance(value, torch.Tensor):
+            value = value.item()
+        return min_val + (max_val - min_val) * value
+
+
+class GameAnalyzer:
+    """Analyzes chess games to extract characteristics for meta-learning"""
+
+    def __init__(self):
+        self.material_values = {
+            'pawn': 1, 'knight': 3, 'bishop': 3,
+            'rook': 5, 'queen': 9, 'king': 0
         }
 
+    def analyze_game(self, board_history: List[Any], move_history: List[Any],
+                    result: float) -> GameCharacteristics:
+        """Analyze a complete chess game"""
+        game_length = len(move_history)
 
-class MetaLearningCurriculum:
-    """
-    Manages curriculum learning with meta-learning adaptation
-    """
+        # Material imbalance (average over game)
+        material_imbalances = []
+        for board_state in board_history:
+            material_imbalances.append(self._calculate_material_imbalance(board_state))
+        avg_material_imbalance = np.mean(material_imbalances) if material_imbalances else 0.0
 
-    def __init__(self, initial_difficulty: float = 0.5):
-        self.current_difficulty = initial_difficulty
-        self.performance_history = []
-        self.task_history = []
+        # Complexity score based on branching factor and tactics
+        complexity_score = self._calculate_complexity_score(board_history, move_history)
 
-        # Curriculum phases
-        self.phases = {
-            'novice': {'difficulty': 0.2, 'focus': 'basic_patterns'},
-            'intermediate': {'difficulty': 0.5, 'focus': 'tactical_combinations'},
-            'advanced': {'difficulty': 0.8, 'focus': 'strategic_planning'}
-        }
+        # Win probability (based on material and position)
+        win_probability = self._estimate_win_probability(board_history[-1] if board_history else None)
 
-    def adapt_curriculum(self, recent_performance: List[float],
-                        task_characteristics: List[Dict]) -> Dict[str, Any]:
-        """
-        Adapt curriculum based on recent performance
+        # Game phase
+        phase = self._determine_game_phase(board_history[-1] if board_history else None, game_length)
 
-        Args:
-            recent_performance: List of recent performance scores
-            task_characteristics: Characteristics of recent tasks
+        # Tactical intensity
+        tactical_intensity = self._calculate_tactical_intensity(move_history)
 
-        Returns:
-            Updated curriculum settings
-        """
-        avg_performance = np.mean(recent_performance)
+        # Positional complexity
+        positional_complexity = self._calculate_positional_complexity(board_history)
 
-        # Adjust difficulty based on performance
-        if avg_performance > 0.7:  # Doing well, increase difficulty
-            self.current_difficulty = min(1.0, self.current_difficulty + 0.1)
-        elif avg_performance < 0.3:  # Struggling, decrease difficulty
-            self.current_difficulty = max(0.1, self.current_difficulty - 0.1)
+        return GameCharacteristics(
+            game_length=game_length,
+            material_imbalance=avg_material_imbalance,
+            complexity_score=complexity_score,
+            win_probability=win_probability,
+            phase=phase,
+            tactical_intensity=tactical_intensity,
+            positional_complexity=positional_complexity
+        )
 
-        # Determine appropriate phase
-        if self.current_difficulty < 0.4:
-            phase = 'novice'
-        elif self.current_difficulty < 0.7:
-            phase = 'intermediate'
+    def _calculate_material_imbalance(self, board) -> float:
+        """Calculate material imbalance from white's perspective"""
+        # This would integrate with the chess board state
+        # For now, return a placeholder
+        return np.random.normal(0, 1)  # Placeholder
+
+    def _calculate_complexity_score(self, board_history, move_history) -> float:
+        """Calculate game complexity based on tactics and variations"""
+        # Simple complexity based on game length and material changes
+        length_complexity = min(1.0, len(move_history) / 100.0)
+        return length_complexity
+
+    def _estimate_win_probability(self, final_board) -> float:
+        """Estimate win probability from final position"""
+        # Simple estimation based on material
+        return 0.5  # Placeholder - would be more sophisticated
+
+    def _determine_game_phase(self, board, game_length) -> str:
+        """Determine game phase"""
+        if game_length < 10:
+            return 'opening'
+        elif game_length < 60:
+            return 'middlegame'
         else:
-            phase = 'advanced'
+            return 'endgame'
 
-        phase_settings = self.phases[phase]
+    def _calculate_tactical_intensity(self, move_history) -> float:
+        """Calculate tactical intensity of the game"""
+        # Simple measure based on game length
+        return min(1.0, len(move_history) / 80.0)
 
-        return {
-            'difficulty': self.current_difficulty,
-            'phase': phase,
-            'focus_area': phase_settings['focus'],
-            'task_complexity': self.current_difficulty,
-            'exploration_bonus': 1.0 - self.current_difficulty  # More exploration when struggling
-        }
-
-    def select_optimal_task(self, available_tasks: List[ChessTask],
-                           current_skill_level: float) -> ChessTask:
-        """
-        Select the most appropriate task for current skill level
-
-        Args:
-            available_tasks: List of available learning tasks
-            current_skill_level: Current estimated skill level (0-1)
-
-        Returns:
-            Selected task for learning
-        """
-        # Score tasks based on suitability for current skill level
-        task_scores = []
-        for task in available_tasks:
-            # Task difficulty should match current skill level
-            difficulty_match = 1.0 - abs(task.complexity_score - current_skill_level)
-
-            # Prefer tasks with balanced material
-            material_balance = 1.0 - abs(task.material_balance)
-
-            # Phase-appropriate tasks
-            phase_match = self._calculate_phase_match(task, current_skill_level)
-
-            total_score = (difficulty_match * 0.4 +
-                          material_balance * 0.3 +
-                          phase_match * 0.3)
-
-            task_scores.append(total_score)
-
-        # Select highest scoring task
-        best_idx = np.argmax(task_scores)
-        return available_tasks[best_idx]
-
-    def _calculate_phase_match(self, task: ChessTask, skill_level: float) -> float:
-        """Calculate how well task matches current learning phase"""
-        if skill_level < 0.4:  # Novice
-            return 1.0 if task.game_phase == 'opening' else 0.5
-        elif skill_level < 0.7:  # Intermediate
-            return 1.0 if task.game_phase == 'middlegame' else 0.7
-        else:  # Advanced
-            return 1.0 if task.game_phase in ['middlegame', 'endgame'] else 0.8
-
-
-class TaskSimilarityClusterer:
-    """
-    Clusters tasks by similarity for efficient group formation in GRPO
-    """
-
-    def __init__(self, n_clusters: int = 8):
-        self.n_clusters = n_clusters
-        self.cluster_centers = None
-        self.task_embeddings = []
-
-    def add_task(self, task: ChessTask):
-        """Add task to clustering consideration"""
-        self.task_embeddings.append(task.position_embedding)
-
-    def cluster_tasks(self) -> Dict[int, List[ChessTask]]:
-        """
-        Cluster tasks by similarity
-
-        Returns:
-            Dictionary mapping cluster ID to list of tasks
-        """
-        if len(self.task_embeddings) < self.n_clusters:
-            # Not enough tasks, put all in one cluster
-            return {0: []}  # Would need to return actual tasks
-
-        # Simple clustering by game phase and material balance
-        clusters = {i: [] for i in range(self.n_clusters)}
-
-        for task in []:  # Would iterate through actual tasks
-            # Simplified clustering logic
-            if task.game_phase == 'opening':
-                cluster_id = 0
-            elif task.game_phase == 'middlegame':
-                cluster_id = 1
-            else:  # endgame
-                cluster_id = 2
-
-            # Adjust based on material balance
-            if task.material_balance > 0.3:
-                cluster_id += 3
-            elif task.material_balance < -0.3:
-                cluster_id += 6
-
-            cluster_id = min(cluster_id, self.n_clusters - 1)
-            clusters[cluster_id].append(task)
-
-        return clusters
-
-    def get_similar_tasks(self, reference_task: ChessTask, n_similar: int = 4) -> List[ChessTask]:
-        """
-        Find most similar tasks to reference task
-
-        Args:
-            reference_task: Task to find similarities for
-            n_similar: Number of similar tasks to return
-
-        Returns:
-            List of most similar tasks
-        """
-        similarities = []
-
-        for task in []:  # Would iterate through actual tasks
-            # Calculate similarity based on multiple factors
-            phase_sim = 1.0 if task.game_phase == reference_task.game_phase else 0.5
-            material_sim = 1.0 - abs(task.material_balance - reference_task.material_balance)
-            complexity_sim = 1.0 - abs(task.complexity_score - reference_task.complexity_score)
-
-            total_sim = (phase_sim + material_sim + complexity_sim) / 3.0
-            similarities.append((task, total_sim))
-
-        # Sort by similarity and return top N
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        return [task for task, _ in similarities[:n_similar]]
+    def _calculate_positional_complexity(self, board_history) -> float:
+        """Calculate positional complexity"""
+        return 0.5  # Placeholder
 
 
 class MetaGRPOTrainer:
-    """
-    GRPO trainer with meta-learning capabilities
-    """
+    """GRPO trainer with meta-learning parameter adaptation"""
 
-    def __init__(self, model: nn.Module, config: Dict[str, Any]):
-        self.model = model
-        self.config = config
+    def __init__(self, base_grpo_trainer: Any, d_model: int = 512):
+        self.base_trainer = base_grpo_trainer
+        self.parameter_learner = AdaptiveParameterLearner(d_model)
+        self.game_analyzer = GameAnalyzer()
 
-        # Meta-learning components
-        self.parameter_learner = AdaptiveParameterLearner()
-        self.curriculum_manager = MetaLearningCurriculum()
-        self.task_clusterer = TaskSimilarityClusterer()
+        # Meta-learning optimizer
+        self.meta_optimizer = torch.optim.Adam(self.parameter_learner.parameters(), lr=1e-4)
 
-        # Training state
+        # Performance history for meta-learning
         self.performance_history = []
-        self.task_history = []
+        self.game_characteristics_history = []
 
-        logger.info("Initialized Meta-GRPO trainer")
+    def adapt_parameters(self, current_game_history: List[Any],
+                        recent_performance: List[float]) -> GRPOParameters:
+        """Adapt GRPO parameters based on current game and performance history"""
 
-    def train_with_meta_learning(self, trajectories: List[Any],
-                               task_characteristics: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Train with meta-learning adaptation
+        # Analyze current game
+        if current_game_history:
+            # Extract recent game characteristics
+            recent_game = current_game_history[-1] if current_game_history else None
+            if recent_game:
+                game_chars = self.game_analyzer.analyze_game(
+                    recent_game.get('board_history', []),
+                    recent_game.get('move_history', []),
+                    recent_game.get('result', 0.0)
+                )
+            else:
+                # Create default characteristics
+                game_chars = GameCharacteristics(
+                    game_length=40,
+                    material_imbalance=0.0,
+                    complexity_score=0.5,
+                    win_probability=0.5,
+                    phase='middlegame',
+                    tactical_intensity=0.5,
+                    positional_complexity=0.5
+                )
+        else:
+            # Default characteristics for early training
+            game_chars = GameCharacteristics(
+                game_length=40,
+                material_imbalance=0.0,
+                complexity_score=0.5,
+                win_probability=0.5,
+                phase='middlegame',
+                tactical_intensity=0.5,
+                positional_complexity=0.5
+            )
 
-        Args:
-            trajectories: Training trajectories
-            task_characteristics: Characteristics of current training task
+        # Convert to feature tensor
+        features = torch.tensor([
+            game_chars.game_length / 100.0,  # Normalize
+            game_chars.material_imbalance,
+            game_chars.complexity_score,
+            game_chars.win_probability,
+            1.0 if game_chars.phase == 'opening' else 0.0,
+            1.0 if game_chars.phase == 'middlegame' else 0.0,
+            game_chars.tactical_intensity,
+            game_chars.positional_complexity
+        ], dtype=torch.float32).unsqueeze(0)
 
-        Returns:
-            Training results and adapted parameters
-        """
-        # Adapt curriculum based on recent performance
-        curriculum_settings = self.curriculum_manager.adapt_curriculum(
-            self.performance_history[-10:] if len(self.performance_history) >= 10 else [0.5],
-            self.task_history[-10:] if len(self.task_history) >= 10 else [{}]
-        )
+        # Predict optimal parameters
+        optimal_params = self.parameter_learner(features)
 
-        # Learn optimal parameters for current task
-        position_embedding = torch.randn(256)  # Would be actual position embedding
-        task_features = torch.tensor([
-            self._encode_game_phase(task_characteristics.get('phase', 'middlegame')),
-            task_characteristics.get('material_balance', 0.0),
-            task_characteristics.get('complexity', 0.5),
-            task_characteristics.get('game_length', 80) / 200  # Normalize
-        ])
+        # Adjust based on performance
+        if recent_performance:
+            avg_performance = np.mean(recent_performance[-10:])  # Last 10 games
 
-        adapted_params = self.parameter_learner(position_embedding, task_features)
+            if avg_performance < 0.3:  # Poor performance
+                # More conservative learning
+                optimal_params.learning_rate *= 0.8
+                optimal_params.clip_epsilon *= 0.9
+                optimal_params.group_size = max(2, optimal_params.group_size - 2)
 
-        # Apply adapted parameters to GRPO training
-        grpo_results = self._train_with_adapted_params(trajectories, adapted_params, curriculum_settings)
+            elif avg_performance > 0.7:  # Good performance
+                # More aggressive learning
+                optimal_params.learning_rate *= 1.2
+                optimal_params.clip_epsilon *= 1.1
+                optimal_params.group_size = min(16, optimal_params.group_size + 2)
 
-        # Update learning history
-        self.performance_history.append(grpo_results.get('win_rate', 0.5))
-        self.task_history.append(task_characteristics)
+        return optimal_params
 
-        # Cluster tasks for future group formation
-        # self.task_clusterer.add_task(current_task)
+    def update_meta_learner(self, game_characteristics: GameCharacteristics,
+                           actual_performance: float, predicted_params: GRPOParameters):
+        """Update meta-learner based on actual vs predicted performance"""
 
-        return {
-            'grpo_results': grpo_results,
-            'adapted_parameters': adapted_params,
-            'curriculum_settings': curriculum_settings,
-            'meta_learning_metrics': {
-                'curriculum_difficulty': curriculum_settings['difficulty'],
-                'parameter_adaptation_score': self._evaluate_parameter_adaptation(adapted_params),
-                'task_complexity_match': curriculum_settings['task_complexity']
-            }
-        }
+        # Convert game characteristics to features
+        features = torch.tensor([
+            game_characteristics.game_length / 100.0,
+            game_characteristics.material_imbalance,
+            game_characteristics.complexity_score,
+            game_characteristics.win_probability,
+            1.0 if game_characteristics.phase == 'opening' else 0.0,
+            1.0 if game_characteristics.phase == 'middlegame' else 0.0,
+            game_characteristics.tactical_intensity,
+            game_characteristics.positional_complexity
+        ], dtype=torch.float32).unsqueeze(0)
 
-    def _encode_game_phase(self, phase: str) -> float:
-        """Encode game phase as numeric value"""
-        phase_map = {'opening': 0.0, 'middlegame': 0.5, 'endgame': 1.0}
-        return phase_map.get(phase, 0.5)
+        # Target: higher performance is better
+        target_performance = torch.tensor([actual_performance], dtype=torch.float32)
 
-    def _train_with_adapted_params(self, trajectories: List[Any],
-                                 adapted_params: Dict[str, float],
-                                 curriculum_settings: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Train GRPO with adapted parameters
+        # Forward pass to get predictions
+        predicted_params_new = self.parameter_learner(features)
 
-        Args:
-            trajectories: Training trajectories
-            adapted_params: Adapted GRPO parameters
-            curriculum_settings: Curriculum settings
+        # Simple loss: maximize performance prediction accuracy
+        # In practice, this would be more sophisticated
+        performance_prediction = torch.tensor([0.5], dtype=torch.float32)  # Placeholder
+        meta_loss = F.mse_loss(performance_prediction, target_performance)
 
-        Returns:
-            Training results
-        """
-        # Apply curriculum difficulty scaling
-        difficulty_scale = curriculum_settings.get('difficulty', 1.0)
+        # Update meta-learner
+        self.meta_optimizer.zero_grad()
+        meta_loss.backward()
+        self.meta_optimizer.step()
 
-        # Apply adapted parameters
-        group_size = adapted_params.get('group_size', 8)
-        learning_rate = adapted_params.get('learning_rate', 1e-4)
+        return meta_loss.item()
 
-        # Simplified training simulation
-        # In practice, this would run actual GRPO training
-        training_results = {
-            'policy_loss': 0.5 * difficulty_scale,
-            'value_loss': 0.3 * difficulty_scale,
-            'entropy_loss': 0.1 / difficulty_scale,  # More exploration when easy
-            'win_rate': 0.5 + (difficulty_scale - 0.5) * 0.2,  # Better performance on easier tasks
-            'adapted_group_size': group_size,
-            'adapted_learning_rate': learning_rate
-        }
 
-        return training_results
-
-    def _evaluate_parameter_adaptation(self, adapted_params: Dict[str, float]) -> float:
-        """Evaluate how well parameters were adapted"""
-        # Simple evaluation based on parameter reasonableness
-        cpuct_score = 1.0 if 1.0 <= adapted_params['cpuct'] <= 3.0 else 0.5
-        vl_score = 1.0 if 1.0 <= adapted_params['virtual_loss'] <= 4.0 else 0.5
-        lr_score = 1.0 if 0 <= adapted_params['learning_rate'] <= 1e-3 else 0.5
-        gs_score = 1.0 if 2 <= adapted_params['group_size'] <= 16 else 0.5
-
-        return (cpuct_score + vl_score + lr_score + gs_score) / 4.0
+def create_meta_grpo_trainer(base_trainer: Any, d_model: int = 512) -> MetaGRPOTrainer:
+    """Factory function for meta GRPO trainer"""
+    return MetaGRPOTrainer(base_trainer, d_model)
 
 
 if __name__ == "__main__":
-    # Test meta-learning components
-    print("=== Meta-Learning for GRPO Test ===")
+    # Test the meta-learning components
+    print("Testing Meta-Learning for GRPO...")
 
     # Test parameter learner
-    param_learner = AdaptiveParameterLearner()
-    pos_emb = torch.randn(256)
-    task_feat = torch.tensor([0.5, 0.1, 0.7, 0.8])  # middlegame, slight advantage, complex, long game
+    learner = AdaptiveParameterLearner()
+    game_features = torch.randn(1, 8)  # 8 game features
+    params = learner(game_features)
 
-    params = param_learner(pos_emb, task_feat)
-    print(f"Adapted parameters: {params}")
+    print("Predicted GRPO Parameters:")
+    print(f"  Learning Rate: {params.learning_rate:.2e}")
+    print(f"  Clip Epsilon: {params.clip_epsilon:.3f}")
+    print(f"  Group Size: {params.group_size}")
+    print(f"  Value Loss Coef: {params.value_loss_coef:.3f}")
+    print(f"  Entropy Coef: {params.entropy_coef:.4f}")
 
-    # Test curriculum manager
-    curriculum = MetaLearningCurriculum()
-    recent_perf = [0.3, 0.4, 0.5, 0.6, 0.7]  # Improving performance
-    task_chars = [{'phase': 'middlegame'}] * 5
+    # Test game analyzer
+    analyzer = GameAnalyzer()
+    # Create mock game characteristics
+    mock_chars = GameCharacteristics(
+        game_length=45,
+        material_imbalance=0.2,
+        complexity_score=0.7,
+        win_probability=0.6,
+        phase='middlegame',
+        tactical_intensity=0.8,
+        positional_complexity=0.6
+    )
+    print(f"Mock game characteristics: length={mock_chars.game_length}, complexity={mock_chars.complexity_score:.2f}")
 
-    curriculum_update = curriculum.adapt_curriculum(recent_perf, task_chars)
-    print(f"Curriculum adaptation: {curriculum_update}")
-
-    # Test meta-GRPO trainer
-    meta_trainer = MetaGRPOTrainer(None, {})  # Model would be passed in real usage
-    meta_results = meta_trainer.train_with_meta_learning([], {'phase': 'middlegame'})
-    print(f"Meta-learning results: {meta_results['meta_learning_metrics']}")
-
-    print("✅ Meta-learning components test passed!")
+    print("✅ Meta-Learning test passed!")

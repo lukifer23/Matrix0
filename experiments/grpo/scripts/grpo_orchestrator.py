@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import json
 import numpy as np
+import yaml
 
 import torch
 import torch.nn as nn
@@ -33,19 +34,13 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.columns import Columns
 
-# Import our experiment components
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
+# Add the experiments directory to Python path
+experiments_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(experiments_dir))
 
-try:
-    from models.large_chess_transformer import LargeChessTransformerFactory
-    from training.grpo_trainer import GRPOTrainer, GRPOConfig
-    from training.reward_shaping import ChessRewardShaper
-    from mcts.mcts_integration import MCTS, MCTSConfig, SelfPlayManager
-except ImportError as e:
-    print(f"❌ Import error: {e}")
-    print("Make sure you're running from the experiments/grpo directory")
-    sys.exit(1)
+from models.large_chess_transformer import MagnusChessTransformerFactory
+from training.grpo_trainer import GRPOTrainer, GRPOConfig, Trajectory, TrajectoryStep
+from mcts.mcts_integration import MCTS, MCTSConfig, SelfPlayManager
 
 # Setup logging
 logging.basicConfig(
@@ -72,7 +67,6 @@ class GRPOOrchestrator:
         self.mcts = None
         self.grpo_trainer = None
         self.self_play_manager = None
-        self.reward_shaper = None
 
         # Experiment state
         self.epoch = 0
@@ -109,37 +103,133 @@ class GRPOOrchestrator:
         self._initialize_components()
         logger.info("GRPO Orchestrator initialized")
 
+    def _convert_mcts_to_grpo_trajectories(self, mcts_trajectories):
+        """
+        Convert MCTS trajectory format (list of dicts) to GRPO Trajectory objects
+        """
+        grpo_trajectories = []
+
+        for mcts_traj in mcts_trajectories:
+            if not mcts_traj:
+                continue
+
+            # Convert each step to TrajectoryStep
+            trajectory_steps = []
+            total_reward = 0.0
+
+            for step_dict in mcts_traj:
+                state = step_dict.get('state')
+                if state is None and 'board' in step_dict:
+                    state = self._board_to_tensor(step_dict['board'])
+
+                step = TrajectoryStep(
+                    state=state if state is not None else torch.zeros(19, 8, 8),
+                    action=step_dict.get('action', 0),
+                    log_prob=step_dict.get('log_prob', 0.0),
+                    value=step_dict.get('value', 0.0),
+                    reward=step_dict.get('reward', 0.0),
+                    done=step_dict.get('done', False),
+                    legal_mask=step_dict.get('legal_mask')
+                )
+                trajectory_steps.append(step)
+                total_reward += step.reward
+
+            if trajectory_steps:
+                game_result = 0.0
+                if trajectory_steps:
+                    final_reward = trajectory_steps[-1].reward
+                    if final_reward > 0:
+                        game_result = 1.0
+                    elif final_reward < 0:
+                        game_result = -1.0
+
+                trajectory = Trajectory(
+                    steps=trajectory_steps,
+                    total_reward=total_reward,
+                    length=len(trajectory_steps),
+                    game_result=game_result
+                )
+                grpo_trajectories.append(trajectory)
+
+        logger.info(f"Converted {len(mcts_trajectories)} MCTS trajectories to {len(grpo_trajectories)} GRPO trajectories")
+        return grpo_trajectories
+
+    def _board_to_tensor(self, board):
+        """Convert chess board to tensor format (copied from MCTS)"""
+        # Create 19-channel board representation
+        channels = []
+
+        # Piece channels (12 channels: 6 piece types x 2 colors)
+        piece_channels = []
+        for piece_type in range(1, 7):  # 1-6: pawn, knight, bishop, rook, queen, king
+            white_channel = torch.zeros(8, 8)
+            black_channel = torch.zeros(8, 8)
+
+            for square in chess.SQUARES:
+                piece = board.piece_at(square)
+                if piece and piece.piece_type == piece_type:
+                    row, col = divmod(square, 8)
+                    if piece.color == chess.WHITE:
+                        white_channel[row, col] = 1.0
+                    else:
+                        black_channel[row, col] = 1.0
+
+            piece_channels.extend([white_channel, black_channel])
+
+        channels.extend(piece_channels)
+
+        # Additional channels for game state (7 more to make 19 total)
+        # Side to move
+        side_to_move = torch.ones(8, 8) if board.turn == chess.WHITE else torch.zeros(8, 8)
+        channels.append(side_to_move)
+
+        # Castling rights (4 channels)
+        castling_channels = []
+        for i in range(4):
+            castling_channels.append(torch.zeros(8, 8))
+        if board.has_kingside_castling_rights(chess.WHITE):
+            castling_channels[0].fill_(1.0)
+        if board.has_queenside_castling_rights(chess.WHITE):
+            castling_channels[1].fill_(1.0)
+        if board.has_kingside_castling_rights(chess.BLACK):
+            castling_channels[2].fill_(1.0)
+        if board.has_queenside_castling_rights(chess.BLACK):
+            castling_channels[3].fill_(1.0)
+        channels.extend(castling_channels)
+
+        # En passant (1 channel)
+        en_passant = torch.zeros(8, 8)
+        if board.ep_square:
+            row, col = divmod(board.ep_square, 8)
+            en_passant[row, col] = 1.0
+        channels.append(en_passant)
+
+        # Halfmove clock (1 channel)
+        halfmove = torch.full((8, 8), min(board.halfmove_clock / 100.0, 1.0))
+        channels.append(halfmove)
+
+        return torch.stack(channels, dim=0).unsqueeze(0)  # Add batch dimension
+
     def _initialize_components(self):
         """Initialize all experiment components"""
         # Load model
         model_config = self.config['model']
-        if model_config['type'] == 'medium_transformer':
-            self.model = LargeChessTransformerFactory.create_medium_large()
+        model_type = model_config['type']
+
+        if model_type in ['magnus_transformer']:
+            logger.info("Creating MAGNUS transformer (~70M parameters)")
+            self.model = MagnusChessTransformerFactory.create_magnus_chess()
+        elif model_type == 'medium_transformer':
+            logger.info("Creating MEDIUM transformer (~25M parameters)")
+            self.model = MagnusChessTransformerFactory.create_medium_transformer()
         else:
-            raise ValueError(f"Unsupported model type: {model_config['type']}")
+            raise ValueError(f"Unsupported model type: {model_type}")
 
         # Load checkpoint if exists
         checkpoint_path = self.config.get('checkpoint_path')
         if checkpoint_path and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path)
-
-            # Load state dict with strict=False to handle parameter shape mismatches
-            # (relative_pos_emb changed from [15,6,64] to [64,6,64])
-            missing_keys, unexpected_keys = self.model.load_state_dict(
-                checkpoint['model_state_dict'], strict=False
-            )
-
-            if missing_keys:
-                logger.warning(f"Missing keys in state_dict: {missing_keys}")
-            if unexpected_keys:
-                logger.warning(f"Unexpected keys in state_dict: {unexpected_keys}")
-
-            # Log successful loading
-            if not missing_keys and not unexpected_keys:
-                logger.info("Model state_dict loaded successfully")
-            else:
-                logger.info("Model state_dict loaded with some mismatches (this is expected due to architecture updates)")
-
+            self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             self.epoch = checkpoint.get('epoch', 0)
             logger.info(f"Loaded checkpoint from {checkpoint_path}")
 
@@ -164,40 +254,10 @@ class GRPOOrchestrator:
         )
         self.grpo_trainer = GRPOTrainer(self.model, grpo_cfg, self.device)
 
-        # Initialize reward shaping if enabled
-        if self.config.get('reward_shaping', {}).get('enabled', False):
-            self.reward_shaper = ChessRewardShaper()
-
-        # Create display update callback
         def display_callback(new_trajectory):
-            """Callback to update display with current game progress"""
-            logger.debug(f"Display callback called with trajectory of {len(new_trajectory)} steps")
             self.current_trajectories.append(new_trajectory)
             self.total_games = len(self.current_trajectories)
 
-            # Update performance metrics in real-time
-            if self.current_trajectories:
-                total_moves = sum(len(traj) for traj in self.current_trajectories)
-                self.metrics['performance']['avg_game_length'] = total_moves / self.total_games if self.total_games > 0 else 0
-
-                # Calculate ms/move - use timing from MCTS if available, otherwise estimate
-                if hasattr(self, 'mcts') and hasattr(self.mcts, 'last_search_time'):
-                    # If MCTS tracks timing, use it
-                    search_time_ms = self.mcts.last_search_time * 1000 if self.mcts.last_search_time else 150
-                    self.metrics['performance']['avg_ms_per_move'] = search_time_ms
-                else:
-                    # Estimate based on simulation count
-                    sims = self.config['grpo'].get('mcts_simulations', 150)
-                    estimated_ms = max(50, sims * 0.8)  # Rough estimate: ~0.8ms per simulation
-                    self.metrics['performance']['avg_ms_per_move'] = estimated_ms
-
-            logger.debug(f"Updated: games={self.total_games}, moves={sum(len(traj) for traj in self.current_trajectories)}")
-
-            if hasattr(self, 'live'):
-                self.live.update(self._create_display_content())
-                logger.debug("Display updated")
-
-        # Initialize self-play manager with display callback
         self.self_play_manager = SelfPlayManager(
             self.mcts,
             num_workers=grpo_config.get('num_workers', 3),
@@ -205,266 +265,79 @@ class GRPOOrchestrator:
         )
 
     def run_experiment(self, num_games: int = 30, max_epochs: int = 1):
-        """Run the complete experiment"""
         logger.info(f"Starting GRPO experiment: {num_games} games, {max_epochs} epochs")
 
-        try:
-            # Create initial display content
-            initial_content = self._create_display_content()
+        with Live(self._create_display_content(), refresh_per_second=0.5, console=self.console, transient=False) as live:
+            self.live = live
+            self._start_heartbeat()
 
-            with Live(initial_content, refresh_per_second=0.5, console=self.console, transient=False) as live:
-                self.live = live
+            for epoch in range(max_epochs):
+                self.epoch = epoch + 1
+                self.current_trajectories = []
+                self.total_games = 0
 
-                # Reduce logging level to avoid interfering with display
-                old_level = logging.getLogger().level
-                logging.getLogger().setLevel(logging.WARNING)  # Reduce to WARNING to minimize display interference
+                # Phase 1: Self-play
+                self.current_phase = "Self-Play"
+                self._run_self_play_phase(num_games)
 
-                # Start heartbeat thread
-                self._start_heartbeat()
+                # Phase 2: Training
+                self.current_phase = "Training"
+                self._run_training_phase()
 
-                logger.info("Entering main experiment loop...")
-                for epoch in range(max_epochs):
-                    self.epoch = epoch + 1
-                    logger.info(f"=== Epoch {self.epoch}/{max_epochs} ===")
+                # Phase 3: Evaluation
+                self.current_phase = "Evaluation"
+                self._run_evaluation_phase()
 
-                    # Reset trajectories for new epoch
-                    self.current_trajectories = []
-                    self.total_games = 0
+                # Save checkpoint
+                self._save_checkpoint()
 
-                    # Update display for new epoch
-                    live.update(self._create_display_content())
-
-                    try:
-                        # Phase 1: Self-play
-                        self.current_phase = "Self-Play"
-                        logger.info("About to start self-play phase...")
-                        live.update(self._create_display_content())
-
-                        logger.info("🔄 Calling _run_self_play_phase...")
-                        self._run_self_play_phase(num_games)
-                        logger.info("✅ Self-play phase completed")
-
-                        # Update display after self-play
-                        live.update(self._create_display_content())
-
-                        # Phase 2: Training
-                        self.current_phase = "Training"
-                        logger.info("About to start training phase...")
-                        live.update(self._create_display_content())
-
-                        self._run_training_phase()
-                        logger.info("Training phase completed")
-
-                        # Update display after training
-                        live.update(self._create_display_content())
-
-                        # Phase 3: Evaluation
-                        self.current_phase = "Evaluation"
-                        logger.info("About to start evaluation phase...")
-                        live.update(self._create_display_content())
-
-                        self._run_evaluation_phase()
-                        logger.info("Evaluation phase completed")
-
-                        # Update display after evaluation
-                        live.update(self._create_display_content())
-
-                        # Save checkpoint after training
-                        logger.info("About to save checkpoint...")
-                        self._save_checkpoint()
-                        logger.info("Checkpoint saved")
-
-                        # Evaluate trained model vs baseline
-                        logger.info("About to run evaluation...")
-                        self._run_evaluation_phase()
-                        logger.info("Evaluation completed")
-
-                        # Final display update for epoch completion
-                        live.update(self._create_display_content())
-
-                        logger.info(f"✅ Epoch {self.epoch} completed successfully!")
-
-                    except Exception as epoch_error:
-                        logger.error(f"Error in epoch {self.epoch}: {epoch_error}")
-                        logger.error(f"Error type: {type(epoch_error).__name__}")
-                        import traceback
-                        logger.error(f"Traceback: {traceback.format_exc()}")
-                        # Continue to next epoch rather than failing completely
-
-                logger.info("🎉 Experiment completed successfully!")
-
-        except KeyboardInterrupt:
-            logger.info("Experiment interrupted by user")
-        except Exception as e:
-            logger.error(f"Experiment failed: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise
-        finally:
-            # Restore original logging level
-            logging.getLogger().setLevel(old_level)
-            logger.info("Stopping heartbeat...")
             self._stop_heartbeat()
-            logger.info("Experiment cleanup complete")
 
     def _run_self_play_phase(self, num_games: int):
-        """Run self-play phase to generate training data"""
         logger.info(f"🚀 Starting self-play: {num_games} games")
-
         start_time = time.time()
-        try:
-            logger.info(f"📞 About to call self_play_manager.generate_games({num_games})")
-            trajectories = self.self_play_manager.generate_games(num_games)
-            logger.info(f"📦 Self-play manager returned {len(trajectories)} trajectories")
-
-            # Store trajectories for display
-            self.current_trajectories = trajectories
-
-            # Process trajectories
-            total_positions = sum(len(traj) for traj in trajectories)
-            game_lengths = [len(traj) for traj in trajectories]
-
-            # Calculate basic stats
-            avg_game_length = np.mean(game_lengths) if game_lengths else 0
-            duration = time.time() - start_time
-
-            # Update metrics
-            self.metrics['self_play'].append({
-                'epoch': self.epoch,
-                'games_generated': len(trajectories),
-                'total_positions': total_positions,
-                'avg_game_length': avg_game_length,
-                'duration_seconds': duration,
-                'games_per_second': len(trajectories) / duration if duration > 0 else 0
-            })
-
-            # Update performance metrics for display
-            if trajectories:
-                self.metrics['performance']['avg_game_length'] = avg_game_length
-                self.metrics['performance']['games_per_second'] = len(trajectories) / duration if duration > 0 else 0
-
-            self.total_games += len(trajectories)
-            logger.info(f"Self-play complete: {len(trajectories)} games, {total_positions} positions")
-
-            # Save trajectories to disk for training
-            total_steps = sum(len(traj) for traj in trajectories)
-            logger.info(f"Saving {len(trajectories)} trajectories ({total_steps} total steps) to disk...")
-            self._save_trajectories_to_disk(trajectories)
-            logger.info("✅ Trajectories saved successfully - available for training!")
-
-            # Update display with new metrics
-            if hasattr(self, 'live'):
-                self.live.update(self._create_display_content())
-
-        except Exception as e:
-            logger.error(f"Error in self-play phase: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
-            # Create empty trajectories to continue
-            trajectories = []
-            self.metrics['self_play'].append({
-                'epoch': self.epoch,
-                'games_generated': 0,
-                'total_positions': 0,
-                'avg_game_length': 0,
-                'duration_seconds': time.time() - start_time,
-                'error': str(e)
-            })
-
-    def _run_training_phase(self):
-        """Run GRPO training phase"""
-        logger.info("Starting GRPO training phase")
-
-        # Use actual trajectories from self-play
-        if not self.current_trajectories:
-            logger.warning("No trajectories in memory, attempting to load from disk...")
-            trajectories = self._load_trajectories_from_disk()
-            if not trajectories:
-                logger.warning("No trajectories found on disk, using dummy data")
-                trajectories = self._create_dummy_trajectories()
-        else:
-            trajectories = self.current_trajectories
-            logger.info(f"Using {len(trajectories)} trajectories from current self-play session")
-
-        # Optionally accumulate trajectories from previous epochs for more training data
-        if self.config.get('training', {}).get('accumulate_trajectories', True):
-            all_trajectories = self._load_all_trajectories()
-            if len(all_trajectories) > len(trajectories):
-                logger.info(f"Accumulated {len(all_trajectories)} trajectories from all epochs")
-                trajectories = all_trajectories
-
-        logger.info(f"Training with {len(trajectories)} trajectories ({sum(len(t) for t in trajectories)} total steps)")
-
-        start_time = time.time()
-        training_metrics = self.grpo_trainer.train_on_trajectories(trajectories)
+        trajectories = self.self_play_manager.generate_games(num_games, timeout=self.config.get('mcts_timeout', 120))
+        self.current_trajectories = self._convert_mcts_to_grpo_trajectories(trajectories)
         duration = time.time() - start_time
 
-        # Update metrics
-        training_metrics.update({
+        self.metrics['self_play'].append({
             'epoch': self.epoch,
-            'duration_seconds': duration,
-            'trajectories_used': len(trajectories)
+            'games_generated': len(self.current_trajectories),
+            'duration_seconds': duration
         })
 
+    def _run_training_phase(self):
+        logger.info("Starting GRPO training phase")
+        if not self.current_trajectories:
+            logger.warning("No trajectories to train on.")
+            return
+
+        training_metrics = self.grpo_trainer.train_on_trajectories(self.current_trajectories)
         self.metrics['training'].append(training_metrics)
-        logger.info(f"Training complete: {training_metrics}")
+
+        # Learning rate scheduling
+        if self.metrics['training'][-1]['policy_loss'] > 1.0:
+            for param_group in self.grpo_trainer.optimizer.param_groups:
+                param_group['lr'] *= 0.5
+            logger.warning(f"High policy loss, reducing learning rate to {self.grpo_trainer.optimizer.param_groups[0]['lr']}")
 
     def _run_evaluation_phase(self):
-        """Run evaluation phase"""
         logger.info("Starting evaluation phase")
-
         eval_games = self.config.get('training', {}).get('eval_games', 10)
-
-        # Run evaluation games
         eval_results = self._run_evaluation_games(eval_games)
-
-        # Update performance metrics
-        self.metrics['performance'].update(eval_results)
         self.metrics['evaluation'].append(eval_results)
 
-        logger.info(f"Evaluation: Trained {eval_results.get('trained_wins', 0)}W - {eval_results.get('baseline_wins', 0)}L - {eval_results.get('draws', 0)}D (Win rate: {eval_results['win_rate']:.3f})")
-
     def _run_evaluation_games(self, num_games: int) -> Dict[str, Any]:
-        """Run evaluation games between trained model and baseline"""
         logger.info(f"Running {num_games} evaluation games")
-
         trained_wins = 0
         baseline_wins = 0
         draws = 0
-        total_moves = 0
-        total_time = 0
 
-        for game_idx in range(num_games):
-            logger.debug(f"Running evaluation game {game_idx + 1}/{num_games}")
+        baseline_model = self._load_baseline_model()
+        baseline_mcts = MCTS(baseline_model, self.mcts.config, self.device)
 
-            # Create new MCTS instance for evaluation
-            eval_mcts_config = MCTSConfig(
-                num_simulations=self.config['grpo'].get('mcts_simulations', 25),  # Reduced for faster eval
-                cpuct=self.config['grpo'].get('cpuct', 2.2),
-                virtual_loss=self.config['grpo'].get('virtual_loss', 2.0),
-                max_children=self.config['grpo'].get('max_children', 64),
-                min_child_prior=self.config['grpo'].get('min_child_prior', 0.0001),
-                playout_random_frac=self.config['grpo'].get('playout_random_frac', 0.0),
-                enable_tt_cache=self.config['grpo'].get('enable_tt_cache', False),
-                tt_capacity=self.config['grpo'].get('tt_capacity', 100000)
-            )
-
-            # Load baseline model for comparison
-            baseline_model = self._load_baseline_model()
-            trained_mcts = MCTS(self.model, eval_mcts_config, self.device)
-            baseline_mcts = MCTS(baseline_model, eval_mcts_config, self.device)
-
-            # Play game between trained and baseline
-            game_start = time.time()
-            result, moves = self._play_evaluation_game(trained_mcts, baseline_mcts)
-            game_time = time.time() - game_start
-
-            total_moves += moves
-            total_time += game_time
-
+        for _ in range(num_games):
+            result, _ = self._play_evaluation_game(self.mcts, baseline_mcts)
             if result == 1:
                 trained_wins += 1
             elif result == -1:
@@ -472,69 +345,43 @@ class GRPOOrchestrator:
             else:
                 draws += 1
 
-            logger.debug(f"Game {game_idx + 1}: {'Trained' if result == 1 else 'Baseline' if result == -1 else 'Draw'} ({moves} moves, {game_time:.2f}s)")
-
-        # Calculate metrics
-        total_games = trained_wins + baseline_wins + draws
-        win_rate = trained_wins / total_games if total_games > 0 else 0
-        draw_rate = draws / total_games if total_games > 0 else 0
-        avg_game_length = total_moves / total_games if total_games > 0 else 0
-        avg_ms_per_move = (total_time * 1000) / total_moves if total_moves > 0 else 0
-
         return {
-            'epoch': self.epoch,
-            'games_played': total_games,
             'trained_wins': trained_wins,
             'baseline_wins': baseline_wins,
             'draws': draws,
-            'win_rate': win_rate,
-            'draw_rate': draw_rate,
-            'avg_game_length': avg_game_length,
-            'avg_ms_per_move': avg_ms_per_move
+            'win_rate': trained_wins / num_games if num_games > 0 else 0
         }
 
     def _load_baseline_model(self):
-        """Load baseline model for evaluation"""
-        try:
-            # Load the baseline checkpoint
-            baseline_path = Path(self.config.get('model', {}).get('baseline_checkpoint', 'checkpoints/baseline_medium_transformer_fresh.pt'))
-            if not baseline_path.exists():
-                logger.warning(f"Baseline checkpoint not found at {baseline_path}, using random model")
-                # Return a copy of the current model as baseline
-                return copy.deepcopy(self.model)
-
-            logger.info(f"Loading baseline model from {baseline_path}")
-            checkpoint = torch.load(baseline_path, map_location=self.device, weights_only=False)
-
-            # Create baseline model instance
-            model_cfg = self.config['model']
-            baseline_model = LargeChessTransformerFactory.create_model(model_cfg)
-
-            # Load state dict
-            sd = checkpoint.get('model_state_dict') or checkpoint.get('model') or checkpoint
-            baseline_model.load_state_dict(sd, strict=False)
-            baseline_model.to(self.device)
-            baseline_model.eval()
-
-            return baseline_model
-
-        except Exception as e:
-            logger.error(f"Error loading baseline model: {e}, using random model")
+        baseline_path = Path(self.config.get('model', {}).get('baseline_checkpoint', 'checkpoints/baseline_medium_transformer_fresh.pt'))
+        if not baseline_path.exists():
+            logger.warning(f"Baseline checkpoint not found at {baseline_path}, using a copy of the current model.")
             return copy.deepcopy(self.model)
 
+        checkpoint = torch.load(baseline_path, map_location=self.device)
+        model_type = checkpoint['config']['model_type']
+
+        if model_type == 'magnus_transformer':
+            baseline_model = MagnusChessTransformerFactory.create_magnus_chess()
+        elif model_type == 'medium_transformer':
+            baseline_model = MagnusChessTransformerFactory.create_medium_transformer()
+        else:
+            raise ValueError(f"Unsupported model type in baseline checkpoint: {model_type}")
+
+        baseline_model.load_state_dict(checkpoint['model_state_dict'])
+        baseline_model.to(self.device)
+        baseline_model.eval()
+        return baseline_model
+
     def _play_evaluation_game(self, trained_mcts: MCTS, baseline_mcts: MCTS) -> Tuple[int, int]:
-        """Play a single evaluation game between trained and baseline models"""
         board = chess.Board()
         moves_played = 0
-        max_moves = 200  # Prevent infinite games
+        max_moves = 200
 
         while not board.is_game_over() and moves_played < max_moves:
-            # Alternate between trained (white) and baseline (black)
             if board.turn == chess.WHITE:
-                # Trained model moves
                 move = trained_mcts.get_move(board)
             else:
-                # Baseline model moves
                 move = baseline_mcts.get_move(board)
 
             if move is None:
@@ -543,331 +390,64 @@ class GRPOOrchestrator:
             board.push(move)
             moves_played += 1
 
-        # Determine result
         if board.is_checkmate():
-            if board.turn == chess.BLACK:
-                # White (trained) won
-                return 1, moves_played
-            else:
-                # Black (baseline) won
-                return -1, moves_played
+            return (1, moves_played) if board.turn == chess.BLACK else (-1, moves_played)
         else:
-            # Draw
-            return 0, moves_played
-
-    def _create_dummy_trajectories(self) -> List[Any]:
-        """Create dummy trajectories for testing that match Trajectory dataclass"""
-        # Import here to avoid circular imports
-        sys.path.append(str(Path(__file__).parent.parent))
-        from training.grpo_trainer import Trajectory, TrajectoryStep
-
-        trajectories = []
-        for i in range(4):  # Group size
-            # Create trajectory steps
-            steps = []
-            total_reward = 0.0
-
-            for j in range(10):  # 10 steps
-                step = TrajectoryStep(
-                    state=torch.randn(19, 8, 8),  # Dummy board state
-                    action=j % 4672,  # Dummy action
-                    log_prob=-1.0 + np.random.normal(0, 0.1),  # Dummy log prob
-                    value=np.random.normal(0, 0.5),  # Dummy value
-                    reward=np.random.normal(0, 0.1),  # Dummy reward
-                    done=(j == 9),  # Last step is done
-                    legal_mask=torch.ones(4672) if j < 9 else None
-                )
-                steps.append(step)
-                total_reward += step.reward
-
-            # Create trajectory
-            trajectory = Trajectory(
-                steps=steps,
-                total_reward=total_reward,
-                length=len(steps),
-                game_result=np.random.choice([-1.0, 0.0, 1.0])  # Random game result
-            )
-            trajectories.append(trajectory)
-
-        return trajectories
+            return (0, moves_played)
 
     def _save_checkpoint(self):
-        """Save model checkpoint"""
         checkpoint_dir = Path("results/checkpoints")
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
         checkpoint_path = checkpoint_dir / f"grpo_checkpoint_epoch_{self.epoch}.pt"
-        checkpoint = {
+        torch.save({
             'epoch': self.epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.grpo_trainer.optimizer.state_dict(),
             'metrics': self.metrics,
-            'config': self.config,
-            'timestamp': datetime.now().isoformat()
-        }
-
-        torch.save(checkpoint, checkpoint_path)
+            'config': self.config
+        }, checkpoint_path)
         logger.info(f"Checkpoint saved: {checkpoint_path}")
 
-    def _save_trajectories_to_disk(self, trajectories: List[List[Dict[str, Any]]]):
-        """Save trajectories to disk for training"""
-        data_dir = Path("results/data")
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create filename with timestamp and epoch
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"trajectories_epoch_{self.epoch}_{timestamp}.npz"
-        filepath = data_dir / filename
-
-        # Convert trajectories to format suitable for saving
-        # Each trajectory is a list of steps, each step is a dict
-        trajectory_data = []
-        trajectory_lengths = []
-
-        for traj in trajectories:
-            trajectory_lengths.append(len(traj))
-            # Convert each trajectory to a list of dicts for numpy serialization
-            traj_dicts = []
-            for step in traj:
-                # Convert tensors to lists if present
-                step_dict = {}
-                for key, value in step.items():
-                    if isinstance(value, torch.Tensor):
-                        step_dict[key] = value.tolist()
-                    else:
-                        step_dict[key] = value
-                traj_dicts.append(step_dict)
-            trajectory_data.append(traj_dicts)
-
-        # Save as compressed numpy file
-        np.savez_compressed(filepath, trajectories=trajectory_data, lengths=trajectory_lengths, epoch=self.epoch)
-
-        logger.info(f"Saved {len(trajectories)} trajectories ({sum(trajectory_lengths)} total steps) to {filepath}")
-
-        # Also save a simple metadata file for easy loading
-        metadata = {
-            'epoch': self.epoch,
-            'num_games': len(trajectories),
-            'total_steps': sum(trajectory_lengths),
-            'avg_game_length': np.mean(trajectory_lengths) if trajectory_lengths else 0,
-            'timestamp': datetime.now().isoformat(),
-            'filepath': str(filepath)
-        }
-
-        metadata_path = filepath.with_suffix('.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
-        logger.info(f"Metadata saved to {metadata_path}")
-
-    def _load_trajectories_from_disk(self, epoch: int = None) -> List[List[Dict[str, Any]]]:
-        """Load trajectories from disk for training"""
-        data_dir = Path("results/data")
-        if not data_dir.exists():
-            logger.warning("No data directory found")
-            return []
-
-        # Find trajectory files
-        trajectory_files = list(data_dir.glob("trajectories_epoch_*.npz"))
-        if not trajectory_files:
-            logger.warning("No trajectory files found")
-            return []
-
-        # Sort by modification time (most recent first)
-        trajectory_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-
-        # Load the most recent file or specific epoch
-        if epoch is not None:
-            # Find file for specific epoch
-            epoch_files = [f for f in trajectory_files if f"_epoch_{epoch}_" in f.name]
-            if epoch_files:
-                filepath = epoch_files[0]
-            else:
-                logger.warning(f"No trajectory files found for epoch {epoch}")
-                return []
-        else:
-            filepath = trajectory_files[0]
-
-        logger.info(f"Loading trajectories from {filepath}")
-
-        try:
-            data = np.load(filepath, allow_pickle=True)
-            trajectories_data = data['trajectories']
-            lengths = data['lengths']
-
-            # Convert back to proper format
-            trajectories = []
-            for traj_data in trajectories_data:
-                traj = []
-                for step_data in traj_data:
-                    # Handle the step data properly - it might be a dict or numpy array
-                    if hasattr(step_data, 'item'):
-                        step_dict = step_data.item()
-                    else:
-                        step_dict = step_data
-
-                    # Convert lists back to tensors if needed
-                    step = {}
-                    for key, value in step_dict.items():
-                        if key in ['policy', 'value', 'board_state'] and isinstance(value, list):
-                            step[key] = torch.tensor(value)
-                        else:
-                            step[key] = value
-                    traj.append(step)
-                trajectories.append(traj)
-
-            logger.info(f"Loaded {len(trajectories)} trajectories with {sum(lengths)} total steps")
-            return trajectories
-
-        except Exception as e:
-            logger.error(f"Error loading trajectories: {e}")
-            return []
-
-    def _load_all_trajectories(self, max_epochs: int = None) -> List[List[Dict[str, Any]]]:
-        """Load and combine trajectories from all epochs for accumulated training"""
-        data_dir = Path("results/data")
-        if not data_dir.exists():
-            logger.warning("No data directory found")
-            return []
-
-        # Find all trajectory files
-        trajectory_files = list(data_dir.glob("trajectories_epoch_*.npz"))
-        if not trajectory_files:
-            logger.warning("No trajectory files found")
-            return []
-
-        # Sort by epoch number
-        trajectory_files.sort(key=lambda x: int(x.name.split('_')[2]))
-
-        # Limit to recent epochs if specified
-        if max_epochs:
-            # Get the most recent max_epochs files
-            trajectory_files = trajectory_files[-max_epochs:]
-
-        all_trajectories = []
-        total_games = 0
-        total_steps = 0
-
-        for filepath in trajectory_files:
-            logger.debug(f"Loading trajectories from {filepath}")
-            try:
-                data = np.load(filepath, allow_pickle=True)
-                trajectories_data = data['trajectories']
-                lengths = data['lengths']
-
-                # Convert back to proper format
-                for traj_data in trajectories_data:
-                    traj = []
-                    for step_data in traj_data:
-                        # Handle the step data properly - it might be a dict or numpy array
-                        if hasattr(step_data, 'item'):
-                            step_dict = step_data.item()
-                        else:
-                            step_dict = step_data
-
-                        # Convert lists back to tensors if needed
-                        step = {}
-                        for key, value in step_dict.items():
-                            if key in ['policy', 'value', 'board_state'] and isinstance(value, list):
-                                step[key] = torch.tensor(value)
-                            else:
-                                step[key] = value
-                        traj.append(step)
-                    all_trajectories.append(traj)
-
-                total_games += len(trajectories_data)
-                total_steps += sum(lengths)
-
-            except Exception as e:
-                logger.error(f"Error loading {filepath}: {e}")
-                continue
-
-        logger.info(f"Loaded {len(all_trajectories)} trajectories from {len(trajectory_files)} epochs "
-                   f"({total_games} games, {total_steps} total steps)")
-        return all_trajectories
-
     def _create_display_content(self) -> str:
-        """Create the display content as a single string"""
         uptime = datetime.now() - self.start_time
         last_heartbeat = datetime.now() - self.last_heartbeat
-
         perf = self.metrics['performance']
+        total_moves = sum(len(traj.steps) for traj in self.current_trajectories)
 
-        # Calculate current epoch stats
-        total_moves = sum(len(traj) for traj in self.current_trajectories)
-        avg_ms_per_move = perf.get('avg_ms_per_move', 0.0)
-        current_phase = getattr(self, 'current_phase', 'Initializing')
+        return f"""
+        🎯 GRPO Chess Experiment - Epoch {self.epoch}
+        Started: {self.start_time.strftime('%H:%M:%S')} | Games: {self.total_games} | Moves: {total_moves} | Uptime: {str(uptime).split('.')[0]}
 
-        content = f"""
-🎯 GRPO Chess Experiment - Epoch {self.epoch}
-Started: {self.start_time.strftime('%H:%M:%S')} | Games: {self.total_games} | Moves: {total_moves} | Uptime: {str(uptime).split('.')[0]}
+        📊 Performance Metrics
+        ┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┓
+        ┃ Metric               ┃ Value   ┃ Target  ┃
+        ┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━┩
+        │ Win Rate             │ {perf['win_rate']:.3f}   │ ≥ 0.30  │
+        │ Draw Rate            │ {perf['draw_rate']:.3f}   │ ≤ 0.30  │
+        │ Avg Game Length      │ {perf['avg_game_length']:.1f}    │ 60-90   │
+        │ Avg ms/move          │ {perf['avg_ms_per_move']:.1f}    │ ≤ 200   │
+        │ Games/sec            │ {perf['games_per_second']:.2f}    │ ≥ 1.0   │
+        └───────────────────────┴─────────┴─────────┘
 
-📊 Performance Metrics
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┓
-┃ Metric               ┃ Value   ┃ Target  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━┩
-│ Win Rate             │ {perf['win_rate']:.3f}   │ ≥ 0.30  │
-│ Draw Rate            │ {perf['draw_rate']:.3f}   │ ≤ 0.30  │
-│ Avg Game Length      │ {perf['avg_game_length']:.1f}    │ 60-90   │
-│ Avg ms/move          │ {avg_ms_per_move:.1f}    │ ≤ 200   │
-│ Games/sec            │ {perf['games_per_second']:.2f}    │ ≥ 1.0   │
-└───────────────────────┴─────────┴─────────┘
-
-🔄 Status: 💓 {last_heartbeat.seconds}s ago | 🎮 {self.device} | 🧠 {self.config['model']['type']} | ⚡ {self.config['grpo']['mcts_simulations']} sims
-📍 Phase: {current_phase}
-        """.strip()
-
-        return content
-
-    def _create_performance_table(self) -> Table:
-        """Create performance metrics table"""
-        table = Table(title="📊 Performance Metrics")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="magenta")
-        table.add_column("Target", style="green")
-
-        perf = self.metrics['performance']
-        table.add_row("Win Rate", f"{perf['win_rate']:.3f}", "≥ 0.30")
-        table.add_row("Draw Rate", f"{perf['draw_rate']:.3f}", "≤ 0.30")
-        table.add_row("Avg Game Length", f"{perf['avg_game_length']:.1f}", "60-90")
-        table.add_row("Games/sec", f"{perf['games_per_second']:.2f}", "≥ 1.0")
-
-        return table
-
-    def _create_status_panel(self) -> Panel:
-        """Create current status panel"""
-        uptime = datetime.now() - self.start_time
-        last_heartbeat = datetime.now() - self.last_heartbeat
-
-        status_text = (
-            f"⏱️  Uptime: {str(uptime).split('.')[0]} | "
-            f"💓 Heartbeat: {last_heartbeat.seconds}s ago | "
-            f"🎮 Device: {self.device} | "
-            f"🧠 Model: {self.config['model']['type']} | "
-            f"⚡ MCTS Sims: {self.config['grpo']['mcts_simulations']}"
-        )
-
-        return Panel(status_text, title="🔄 Current Status", border_style="green")
+        🔄 Status: 💓 {last_heartbeat.seconds}s ago | 🎮 {self.device} | 🧠 {self.config['model']['type']} | ⚡ {self.config['grpo']['mcts_simulations']} sims
+        📍 Phase: {self.current_phase}
+        """
 
     def _start_heartbeat(self):
-        """Start heartbeat monitoring thread"""
         def heartbeat():
-            while True:
+            while not self.stop_heartbeat.is_set():
                 self.last_heartbeat = datetime.now()
-                # Update display periodically
-                if hasattr(self, 'live'):
-                    try:
-                        self.live.update(self._create_display_content())
-                    except Exception:
-                        pass  # Ignore display update errors
+                if self.live:
+                    self.live.update(self._create_display_content())
                 time.sleep(self.heartbeat_interval)
 
+        self.stop_heartbeat = threading.Event()
         self.display_thread = threading.Thread(target=heartbeat, daemon=True)
         self.display_thread.start()
 
     def _stop_heartbeat(self):
-        """Stop heartbeat monitoring"""
         if self.display_thread:
+            self.stop_heartbeat.set()
             self.display_thread.join(timeout=1)
 
 
@@ -879,14 +459,13 @@ def main():
                        help='Number of self-play games per epoch')
     parser.add_argument('--epochs', type=int, default=1,
                        help='Number of training epochs')
-    parser.add_argument('--device', type=str, default='cpu',
+    parser.add_argument('--device', type=str, default='auto',
                        help='Device to run on (cpu/cuda/mps)')
-    parser.add_argument('--checkpoint', type=str, default='checkpoints/baseline_medium_transformer.pt',
+    parser.add_argument('--checkpoint', type=str, default=None,
                        help='Path to model checkpoint')
 
     args = parser.parse_args()
 
-    # Load configuration
     config_path = Path(__file__).parent.parent / 'configs' / 'experiment_configs.yaml'
     with open(config_path, 'r') as f:
         configs = yaml.safe_load(f)
@@ -896,30 +475,31 @@ def main():
         sys.exit(1)
 
     config = configs[args.config]
-    config['checkpoint_path'] = args.checkpoint
+    if args.checkpoint:
+        config['checkpoint_path'] = args.checkpoint
 
-    # Set device
     if args.device == 'auto':
         if torch.cuda.is_available():
-            args.device = 'cuda'
+            device = 'cuda'
         elif torch.backends.mps.is_available():
-            args.device = 'mps'
+            device = 'mps'
         else:
-            args.device = 'cpu'
+            device = 'cpu'
+    else:
+        device = args.device
 
     print(f"🚀 Starting GRPO Orchestrator")
     print(f"   Config: {args.config}")
     print(f"   Games: {args.games}")
     print(f"   Epochs: {args.epochs}")
-    print(f"   Device: {args.device}")
-    print(f"   Checkpoint: {args.checkpoint}")
+    print(f"   Device: {device}")
+    if config.get('checkpoint_path'):
+        print(f"   Checkpoint: {config['checkpoint_path']}")
     print()
 
-    # Create and run orchestrator
-    orchestrator = GRPOOrchestrator(config, args.device)
+    orchestrator = GRPOOrchestrator(config, device)
     orchestrator.run_experiment(args.games, args.epochs)
 
 
 if __name__ == "__main__":
-    import yaml
     main()

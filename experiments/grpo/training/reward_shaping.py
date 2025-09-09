@@ -1,119 +1,100 @@
 #!/usr/bin/env python3
 """
-Advanced Reward Shaping for Chess GRPO Experiments
+Advanced Reward Shaping for Chess GRPO
 
-Implements sophisticated reward shaping techniques to improve learning:
-- Material-based rewards
-- Positional incentives
-- Tactical bonuses
-- Long-term strategic guidance
+Chess-specific reward engineering to enhance learning from sparse rewards.
+Provides domain knowledge to accelerate and stabilize training.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import chess
 import numpy as np
+import chess
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ChessRewardComponents:
-    """Components that contribute to shaped reward"""
-    base_result: float = 0.0  # Win/loss/draw result
-    material_advantage: float = 0.0  # Material difference
-    positional_control: float = 0.0  # Center and space control
-    piece_activity: float = 0.0  # Piece mobility and threats
-    king_safety: float = 0.0  # King protection and attacks
-    pawn_structure: float = 0.0  # Pawn chain health
-    tempo_advantage: float = 0.0  # Initiative and development
-    endgame_proximity: float = 0.0  # Endgame positioning
+    """Components of shaped chess reward"""
+    material_advantage: float = 0.0
+    positional_control: float = 0.0
+    king_safety: float = 0.0
+    piece_activity: float = 0.0
+    pawn_structure: float = 0.0
+    center_control: float = 0.0
+    development: float = 0.0
+    tempo_advantage: float = 0.0
 
     def total_reward(self, weights: Dict[str, float]) -> float:
-        """Calculate total shaped reward"""
+        """Compute weighted total reward"""
         total = 0.0
-        for component, value in self.__dict__.items():
-            if component in weights:
-                total += value * weights[component]
+        total += weights.get('material_advantage', 0.1) * self.material_advantage
+        total += weights.get('positional_control', 0.05) * self.positional_control
+        total += weights.get('king_safety', 0.03) * self.king_safety
+        total += weights.get('piece_activity', 0.02) * self.piece_activity
+        total += weights.get('pawn_structure', 0.01) * self.pawn_structure
+        total += weights.get('center_control', 0.02) * self.center_control
+        total += weights.get('development', 0.01) * self.development
+        total += weights.get('tempo_advantage', 0.01) * self.tempo_advantage
         return total
 
 
 class ChessRewardShaper:
-    """
-    Advanced reward shaping for chess games
-    """
+    """Advanced reward shaping for chess positions"""
 
-    def __init__(self, reward_weights: Optional[Dict[str, float]] = None):
-        # Default reward weights
-        self.reward_weights = reward_weights or {
-            'base_result': 1.0,
-            'material_advantage': 0.1,
-            'positional_control': 0.05,
-            'piece_activity': 0.02,
-            'king_safety': 0.03,
-            'pawn_structure': 0.01,
-            'tempo_advantage': 0.02,
-            'endgame_proximity': 0.04
-        }
-
-        # Piece values for material calculation
-        self.piece_values = {
+    def __init__(self):
+        # Material values (centipawns)
+        self.material_values = {
             chess.PAWN: 100,
             chess.KNIGHT: 320,
             chess.BISHOP: 330,
             chess.ROOK: 500,
             chess.QUEEN: 900,
-            chess.KING: 0  # King value doesn't count in material
+            chess.KING: 0  # King has no material value in counting
         }
 
-        # Center squares for positional control
-        self.center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+        # Center squares for control evaluation
+        self.center_squares = [chess.D4, chess.E4, chess.D5, chess.E5,
+                              chess.C3, chess.F3, chess.C6, chess.F6]
 
-        logger.info(f"Initialized reward shaper with weights: {self.reward_weights}")
+        # Extended center for positional control
+        self.extended_center = [chess.C4, chess.D4, chess.E4, chess.F4,
+                               chess.C5, chess.D5, chess.E5, chess.F5,
+                               chess.C3, chess.F3, chess.C6, chess.F6]
 
     def shape_reward(self, board: chess.Board, move: Optional[chess.Move] = None,
-                    game_result: Optional[float] = None) -> ChessRewardComponents:
-        """
-        Calculate shaped reward components for current position
-
-        Args:
-            board: Current chess board
-            move: Move that led to this position (optional)
-            game_result: Final game result if terminal (optional)
-
-        Returns:
-            RewardComponents with all calculated values
-        """
+                    game_result: float = 0.0) -> ChessRewardComponents:
+        """Compute shaped reward components for a position"""
         components = ChessRewardComponents()
 
-        # Base game result (only if terminal)
-        if game_result is not None:
-            components.base_result = game_result
+        # Base game result
+        components.game_result = game_result
 
-        # Material advantage (from side to move perspective)
+        # Material advantage
         components.material_advantage = self._calculate_material_advantage(board)
 
         # Positional control
         components.positional_control = self._calculate_positional_control(board)
 
-        # Piece activity
-        components.piece_activity = self._calculate_piece_activity(board)
-
         # King safety
         components.king_safety = self._calculate_king_safety(board)
+
+        # Piece activity
+        components.piece_activity = self._calculate_piece_activity(board, move)
 
         # Pawn structure
         components.pawn_structure = self._calculate_pawn_structure(board)
 
+        # Center control
+        components.center_control = self._calculate_center_control(board)
+
+        # Development
+        components.development = self._calculate_development(board)
+
         # Tempo advantage
         components.tempo_advantage = self._calculate_tempo_advantage(board)
-
-        # Endgame proximity
-        components.endgame_proximity = self._calculate_endgame_proximity(board)
 
         return components
 
@@ -125,341 +106,252 @@ class ChessRewardShaper:
         for square in chess.SQUARES:
             piece = board.piece_at(square)
             if piece:
-                value = self.piece_values[piece.piece_type]
+                value = self.material_values[piece.piece_type]
                 if piece.color == chess.WHITE:
                     white_material += value
                 else:
                     black_material += value
 
-        # Return from side to move perspective
-        material_diff = white_material - black_material
-        if board.turn == chess.BLACK:
-            material_diff = -material_diff
+        # Return advantage from white's perspective
+        advantage = white_material - black_material
 
-        return material_diff / 100.0  # Convert to pawns
+        # Normalize to [-1, 1] range (assuming max material ~4000 centipawns)
+        return advantage / 4000.0
 
     def _calculate_positional_control(self, board: chess.Board) -> float:
-        """Calculate positional control (center, space, outposts)"""
-        control_score = 0.0
+        """Calculate positional control advantage"""
+        white_control = 0
+        black_control = 0
 
-        # Center control
-        for row, col in self.center_squares:
-            square = chess.square(col, row)
-            controlling_piece = None
+        for square in self.extended_center:
+            white_attackers = len(board.attackers(chess.WHITE, square))
+            black_attackers = len(board.attackers(chess.BLACK, square))
 
-            # Check which side controls this square
-            for piece_square in chess.SQUARES:
-                piece = board.piece_at(piece_square)
-                if piece and piece.color == board.turn:
-                    # Simplified: check if piece attacks this square
-                    if self._piece_attacks_square(board, piece_square, square):
-                        controlling_piece = piece
-                        break
+            # Weight center squares more heavily
+            weight = 2.0 if square in self.center_squares else 1.0
 
-            if controlling_piece:
-                # Bonus for controlling center with valuable pieces
-                control_score += self.piece_values[controlling_piece.piece_type] / 1000.0
+            white_control += white_attackers * weight
+            black_control += black_attackers * weight
 
-        # Space advantage (mobility)
-        mobility = len(list(board.legal_moves))
-        control_score += mobility / 100.0
-
-        return control_score
-
-    def _calculate_piece_activity(self, board: chess.Board) -> float:
-        """Calculate piece activity and attacking potential"""
-        activity_score = 0.0
-
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece and piece.color == board.turn:
-                # Count squares attacked by this piece
-                attacked_squares = 0
-                for target_square in chess.SQUARES:
-                    if self._piece_attacks_square(board, square, target_square):
-                        attacked_squares += 1
-
-                # Activity bonus based on piece value and squares attacked
-                piece_value = self.piece_values[piece.piece_type]
-                activity_score += (piece_value / 100.0) * (attacked_squares / 27.0)  # Max ~27 squares
-
-        return activity_score / 16.0  # Normalize by max pieces
+        # Return advantage normalized
+        advantage = white_control - black_control
+        return advantage / 20.0  # Normalize by reasonable maximum
 
     def _calculate_king_safety(self, board: chess.Board) -> float:
-        """Calculate king safety and attacking potential"""
-        king_square = board.king(board.turn)
-        if not king_square:
+        """Calculate king safety advantage"""
+        white_king_square = board.king(chess.WHITE)
+        black_king_square = board.king(chess.BLACK)
+
+        if white_king_square is None or black_king_square is None:
             return 0.0
 
-        safety_score = 0.0
+        # Count attackers near each king
+        white_attackers = 0
+        black_attackers = 0
 
-        # Check for direct attacks on king
-        attackers = 0
-        defenders = 0
+        # Check squares around king
+        for rank_offset in [-1, 0, 1]:
+            for file_offset in [-1, 0, 1]:
+                if rank_offset == 0 and file_offset == 0:
+                    continue
 
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece:
-                if self._piece_attacks_square(board, square, king_square):
-                    if piece.color == board.turn:
-                        defenders += 1
-                    else:
-                        attackers += 1
+                white_square = white_king_square + rank_offset * 8 + file_offset
+                black_square = black_king_square + rank_offset * 8 + file_offset
 
-        # King safety score
-        if attackers > defenders:
-            safety_score = -0.5 * (attackers - defenders)
-        elif defenders > attackers:
-            safety_score = 0.2 * (defenders - attackers)
+                if 0 <= white_square < 64:
+                    white_attackers += len(board.attackers(chess.BLACK, white_square))
+                if 0 <= black_square < 64:
+                    black_attackers += len(board.attackers(chess.WHITE, black_square))
 
-        # Bonus for castling
-        if board.has_kingside_castling_rights(board.turn) or board.has_queenside_castling_rights(board.turn):
-            safety_score += 0.1
+        # Higher attackers around opponent king is better
+        advantage = black_attackers - white_attackers
+        return advantage / 8.0  # Normalize
 
-        return safety_score
+    def _calculate_piece_activity(self, board: chess.Board, move: Optional[chess.Move]) -> float:
+        """Calculate piece activity and mobility"""
+        if move is None:
+            return 0.0
+
+        # Simple mobility calculation - number of legal moves
+        white_moves = len(list(board.legal_moves)) if board.turn == chess.WHITE else 0
+
+        # Switch turn to count black moves
+        board_copy = board.copy()
+        board_copy.turn = chess.BLACK
+        black_moves = len(list(board_copy.legal_moves))
+
+        # Return advantage normalized
+        advantage = white_moves - black_moves
+        return advantage / 50.0  # Normalize by reasonable maximum
 
     def _calculate_pawn_structure(self, board: chess.Board) -> float:
-        """Calculate pawn structure health"""
-        structure_score = 0.0
+        """Calculate pawn structure advantage"""
+        white_pawn_score = 0
+        black_pawn_score = 0
 
-        # Doubled pawns penalty
-        for file in range(8):
-            pawns_in_file = 0
-            for rank in range(8):
-                square = chess.square(file, rank)
-                piece = board.piece_at(square)
-                if (piece and piece.piece_type == chess.PAWN and
-                    piece.color == board.turn):
-                    pawns_in_file += 1
-
-            if pawns_in_file > 1:
-                structure_score -= 0.1 * (pawns_in_file - 1)
-
-        # Isolated pawns penalty
-        for file in range(8):
-            has_pawn_in_file = False
-            has_pawn_adjacent = False
-
-            for rank in range(8):
-                square = chess.square(file, rank)
-                piece = board.piece_at(square)
-                if (piece and piece.piece_type == chess.PAWN and
-                    piece.color == board.turn):
-                    has_pawn_in_file = True
-                    break
-
-            if has_pawn_in_file:
-                # Check adjacent files
-                for adj_file in [file-1, file+1]:
-                    if 0 <= adj_file < 8:
-                        for rank in range(8):
-                            square = chess.square(adj_file, rank)
-                            piece = board.piece_at(square)
-                            if (piece and piece.piece_type == chess.PAWN and
-                                piece.color == board.turn):
-                                has_pawn_adjacent = True
-                                break
-
-                if not has_pawn_adjacent:
-                    structure_score -= 0.15
-
-        return structure_score
-
-    def _calculate_tempo_advantage(self, board: chess.Board) -> float:
-        """Calculate tempo and initiative advantage"""
-        tempo_score = 0.0
-
-        # Development bonus (pieces moved from starting squares)
-        developed_pieces = 0
-        total_pieces = 0
-
-        # Simplified development check
-        if board.turn == chess.WHITE:
-            # Check if knights and bishops have moved
-            knight_squares = [chess.B1, chess.G1]
-            bishop_squares = [chess.C1, chess.F1]
-        else:
-            knight_squares = [chess.B8, chess.G8]
-            bishop_squares = [chess.C8, chess.F8]
-
-        for square in knight_squares + bishop_squares:
-            piece = board.piece_at(square)
-            if not piece or piece.piece_type not in [chess.KNIGHT, chess.BISHOP]:
-                developed_pieces += 1
-            total_pieces += 1
-
-        tempo_score += 0.1 * (developed_pieces / total_pieces)
-
-        # Castling bonus
-        if board.has_kingside_castling_rights(board.turn) or board.has_queenside_castling_rights(board.turn):
-            tempo_score += 0.05
-
-        return tempo_score
-
-    def _calculate_endgame_proximity(self, board: chess.Board) -> float:
-        """Calculate endgame positioning and preparation"""
-        endgame_score = 0.0
-
-        # Count pieces remaining
-        piece_count = 0
+        # Evaluate pawn chains, isolated pawns, etc.
         for square in chess.SQUARES:
             piece = board.piece_at(square)
-            if piece and piece.piece_type != chess.KING:
-                piece_count += 1
+            if piece and piece.piece_type == chess.PAWN:
+                row, col = divmod(square, 8)
 
-        # Endgame when few pieces remain
-        if piece_count <= 6:  # Roughly endgame
-            endgame_score += 0.2
+                # Center pawns are better
+                center_bonus = 1.0 if 2 <= col <= 5 else 0.5
 
-            # King centralization bonus in endgame
-            king_square = board.king(board.turn)
-            if king_square:
-                row, col = divmod(king_square, 8)
-                center_distance = abs(row - 3.5) + abs(col - 3.5)
-                endgame_score += 0.1 * (1.0 - center_distance / 7.0)  # Closer to center is better
+                # Advanced pawns are better
+                advancement_bonus = row / 7.0 if piece.color == chess.WHITE else (6 - row) / 7.0
 
-            # Opponent king centralization penalty
-            opp_king_square = board.king(not board.turn)
-            if opp_king_square:
-                row, col = divmod(opp_king_square, 8)
-                center_distance = abs(row - 3.5) + abs(col - 3.5)
-                endgame_score += 0.1 * (center_distance / 7.0)  # Opponent far from center is good
+                score = center_bonus + advancement_bonus
 
-        return endgame_score
+                if piece.color == chess.WHITE:
+                    white_pawn_score += score
+                else:
+                    black_pawn_score += score
 
-    def _piece_attacks_square(self, board: chess.Board, from_square: int, to_square: int) -> bool:
-        """Check if piece attacks target square (simplified)"""
-        # This is a simplified check - in practice you'd use proper attack tables
-        piece = board.piece_at(from_square)
-        if not piece:
-            return False
+        advantage = white_pawn_score - black_pawn_score
+        return advantage / 16.0  # Normalize by max pawns
 
-        # Simple distance and piece type checks
-        from_row, from_col = divmod(from_square, 8)
-        to_row, to_col = divmod(to_square, 8)
+    def _calculate_center_control(self, board: chess.Board) -> float:
+        """Calculate center control advantage"""
+        white_control = 0
+        black_control = 0
 
-        row_diff = abs(from_row - to_row)
-        col_diff = abs(from_col - to_col)
+        for square in self.center_squares:
+            white_attackers = len(board.attackers(chess.WHITE, square))
+            black_attackers = len(board.attackers(chess.BLACK, square))
 
-        if piece.piece_type == chess.KNIGHT:
-            return (row_diff == 2 and col_diff == 1) or (row_diff == 1 and col_diff == 2)
-        elif piece.piece_type == chess.BISHOP:
-            return row_diff == col_diff
-        elif piece.piece_type == chess.ROOK:
-            return row_diff == 0 or col_diff == 0
-        elif piece.piece_type == chess.QUEEN:
-            return row_diff == col_diff or row_diff == 0 or col_diff == 0
-        elif piece.piece_type == chess.KING:
-            return max(row_diff, col_diff) <= 1
-        elif piece.piece_type == chess.PAWN:
-            direction = 1 if piece.color == chess.WHITE else -1
-            if piece.color == board.turn:
-                return (to_row == from_row + direction and col_diff <= 1)
-            else:
-                return (to_row == from_row - direction and col_diff <= 1)
+            white_control += white_attackers
+            black_control += black_attackers
 
-        return False
+        advantage = white_control - black_control
+        return advantage / 8.0  # Normalize
+
+    def _calculate_development(self, board: chess.Board) -> float:
+        """Calculate development advantage"""
+        white_developed = 0
+        black_developed = 0
+
+        # Check if pieces have moved from starting squares
+        white_start_squares = [chess.B1, chess.G1, chess.B8, chess.G8]  # Knights
+        black_start_squares = [chess.B8, chess.G8, chess.B1, chess.G1]
+
+        for square in white_start_squares:
+            if not board.piece_at(square) or board.piece_at(square).piece_type != chess.KNIGHT:
+                white_developed += 1
+
+        for square in black_start_squares:
+            if not board.piece_at(square) or board.piece_at(square).piece_type != chess.KNIGHT:
+                black_developed += 1
+
+        advantage = white_developed - black_developed
+        return advantage / 4.0  # Normalize
+
+    def _calculate_tempo_advantage(self, board: chess.Board) -> float:
+        """Calculate tempo advantage (side to move)"""
+        return 1.0 if board.turn == chess.WHITE else -1.0
 
 
 class AdaptiveRewardShaper:
-    """
-    Learns to adapt reward weights based on training progress
-    """
+    """Adaptive reward shaping that learns optimal weights"""
 
-    def __init__(self, initial_weights: Optional[Dict[str, float]] = None):
-        self.base_shaper = ChessRewardShaper(initial_weights)
-        self.performance_history = []
+    def __init__(self, d_model: int = 512):
+        self.reward_shaper = ChessRewardShaper()
 
-        # Learnable weight adjustments
+        # Learnable weight adaptation
         self.weight_adapter = nn.Sequential(
-            nn.Linear(10, 32),  # Input: performance metrics
-            nn.ReLU(),
-            nn.Linear(32, 8),   # Output: weight adjustments for 8 components
-            nn.Tanh()           # Keep adjustments small
+            nn.Linear(d_model, d_model // 2),
+            nn.LayerNorm(d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 8),  # 8 reward components
+            nn.Sigmoid()  # Output weights between 0 and 1
         )
 
-    def adapt_weights(self, recent_performance: List[float],
-                     game_characteristics: List[Dict[str, Any]]) -> Dict[str, float]:
-        """
-        Adapt reward weights based on recent training performance
+        # Component names for indexing
+        self.component_names = [
+            'material_advantage', 'positional_control', 'king_safety',
+            'piece_activity', 'pawn_structure', 'center_control',
+            'development', 'tempo_advantage'
+        ]
 
-        Args:
-            recent_performance: Recent win rates or other metrics
-            game_characteristics: Characteristics of recent games
+    def adapt_weights(self, board_embedding: torch.Tensor,
+                     performance_history: List[float]) -> Dict[str, float]:
+        """Adapt reward weights based on board state and performance"""
+        # Use board embedding to predict optimal weights
+        weights_tensor = self.weight_adapter(board_embedding.mean(dim=1))
 
-        Returns:
-            Adapted reward weights
-        """
-        # Prepare input features
-        features = torch.tensor([
-            np.mean(recent_performance),           # Average performance
-            np.std(recent_performance),            # Performance stability
-            len([g for g in game_characteristics if g.get('phase') == 'endgame']),  # Endgame games
-            len([g for g in game_characteristics if g.get('complexity', 0) > 0.7]),  # Complex games
-            np.mean([g.get('material_balance', 0) for g in game_characteristics]),  # Avg material balance
-        ] + [0.0] * 5)  # Pad to 10 features
+        # Convert to dictionary
+        weights = {}
+        for i, name in enumerate(self.component_names):
+            weights[name] = weights_tensor[0, i].item()
 
-        # Predict weight adjustments
-        with torch.no_grad():
-            adjustments = self.weight_adapter(features.unsqueeze(0)).squeeze(0)
+        # Boost weights based on recent performance
+        if performance_history:
+            recent_avg = np.mean(performance_history[-10:])  # Last 10 games
+            if recent_avg < 0.3:  # Poor performance
+                # Boost material and king safety
+                weights['material_advantage'] *= 1.5
+                weights['king_safety'] *= 1.5
+            elif recent_avg > 0.7:  # Good performance
+                # Boost positional and activity rewards
+                weights['positional_control'] *= 1.5
+                weights['piece_activity'] *= 1.5
 
-        # Apply adjustments to base weights
-        adapted_weights = {}
-        component_names = ['base_result', 'material_advantage', 'positional_control',
-                          'piece_activity', 'king_safety', 'pawn_structure',
-                          'tempo_advantage', 'endgame_proximity']
-
-        for i, component in enumerate(component_names):
-            adjustment = adjustments[i].item() * 0.1  # Keep adjustments small
-            adapted_weights[component] = self.base_shaper.reward_weights[component] + adjustment
-
-        return adapted_weights
+        return weights
 
     def shape_reward_adaptive(self, board: chess.Board, move: Optional[chess.Move] = None,
-                             game_result: Optional[float] = None,
-                             adapted_weights: Optional[Dict[str, float]] = None) -> float:
-        """
-        Shape reward with adapted weights
+                             game_result: float = 0.0, board_embedding: Optional[torch.Tensor] = None,
+                             performance_history: Optional[List[float]] = None) -> float:
+        """Shape reward with adaptive weights"""
+        # Get base components
+        components = self.reward_shaper.shape_reward(board, move, game_result)
 
-        Args:
-            board: Current chess board
-            move: Move that led to this position
-            game_result: Final game result if terminal
-            adapted_weights: Adapted reward weights
+        # Get adaptive weights
+        if board_embedding is not None:
+            weights = self.adapt_weights(board_embedding, performance_history or [])
+        else:
+            # Default weights
+            weights = {name: 0.1 for name in self.component_names}
 
-        Returns:
-            Total shaped reward
-        """
-        components = self.base_shaper.shape_reward(board, move, game_result)
-        weights = adapted_weights or self.base_shaper.reward_weights
-        return components.total_reward(weights)
+        # Compute shaped reward
+        shaped_reward = components.total_reward(weights)
+        shaped_reward += game_result  # Always include base game result
+
+        return shaped_reward
+
+
+def create_chess_reward_shaper() -> ChessRewardShaper:
+    """Factory function for basic reward shaper"""
+    return ChessRewardShaper()
+
+
+def create_adaptive_reward_shaper(d_model: int = 512) -> AdaptiveRewardShaper:
+    """Factory function for adaptive reward shaper"""
+    return AdaptiveRewardShaper(d_model)
 
 
 if __name__ == "__main__":
-    # Test reward shaping
-    print("=== Chess Reward Shaping Test ===")
+    # Test the reward shaper
+    print("Testing Chess Reward Shaper...")
 
-    # Create reward shaper
     shaper = ChessRewardShaper()
-    print(f"Reward weights: {shaper.reward_weights}")
-
-    # Test with a simple position
     board = chess.Board()
+
+    # Test reward shaping
     components = shaper.shape_reward(board)
-    total_reward = components.total_reward(shaper.reward_weights)
+    print(f"Material advantage: {components.material_advantage:.4f}")
+    print(f"Positional control: {components.positional_control:.4f}")
+    print(f"King safety: {components.king_safety:.4f}")
 
-    print(f"Initial position components: {components}")
-    print(f"Total shaped reward: {total_reward}")
+    # Test with default weights
+    weights = {'material_advantage': 0.1, 'positional_control': 0.05,
+              'king_safety': 0.03, 'piece_activity': 0.02}
+    total_reward = components.total_reward(weights)
+    print(f"Total shaped reward: {total_reward:.4f}")
 
-    # Test adaptive reward shaper
+    # Test adaptive shaper
     adaptive_shaper = AdaptiveRewardShaper()
-    recent_perf = [0.4, 0.5, 0.6, 0.5, 0.7]
-    game_chars = [{'phase': 'opening'}, {'phase': 'middlegame'}, {'phase': 'endgame'}]
+    board_embedding = torch.randn(1, 64, 512)
+    adaptive_weights = adaptive_shaper.adapt_weights(board_embedding, [0.5, 0.6, 0.4])
+    print(f"Adaptive weights sample: {dict(list(adaptive_weights.items())[:3])}")
 
-    adapted_weights = adaptive_shaper.adapt_weights(recent_perf, game_chars)
-    print(f"Adapted weights: {adapted_weights}")
-
-    adaptive_reward = adaptive_shaper.shape_reward_adaptive(board, adapted_weights=adapted_weights)
-    print(f"Adaptive shaped reward: {adaptive_reward}")
-
-    print("✅ Reward shaping test passed!")
+    print("✅ Chess Reward Shaper test passed!")

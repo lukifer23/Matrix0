@@ -49,7 +49,9 @@ class GRPOConfig:
                  learning_rate: float = 1e-4,
                  max_grad_norm: float = 0.5,
                  ppo_epochs: int = 4,
-                 batch_size: int = 64):
+                 batch_size: int = 64,
+                 gamma: float = 0.99,
+                 gae_lambda: float = 0.95):
         self.group_size = group_size
         self.clip_epsilon = clip_epsilon
         self.value_loss_coef = value_loss_coef
@@ -58,14 +60,13 @@ class GRPOConfig:
         self.max_grad_norm = max_grad_norm
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
 
 
 class GRPOTrainer:
     """
     GRPO Trainer with group-based reward normalization
-
-    Key innovation: Uses groups of trajectories to normalize rewards,
-    reducing variance and improving sample efficiency.
     """
 
     def __init__(self, model: nn.Module, config: GRPOConfig, device: str = "cpu"):
@@ -78,46 +79,6 @@ class GRPOTrainer:
 
         logger.info(f"Initialized GRPO trainer with group_size={config.group_size}")
 
-    def collect_trajectories(self, mcts_engine, num_games: int) -> List[Trajectory]:
-        """
-        Collect trajectories using MCTS for exploration
-
-        Args:
-            mcts_engine: MCTS engine for move selection
-            num_games: Number of games to play
-
-        Returns:
-            List of trajectories from self-play
-        """
-        trajectories = []
-
-        for game_idx in range(num_games):
-            trajectory = self._play_single_game(mcts_engine)
-            trajectories.append(trajectory)
-            logger.debug(f"Completed game {game_idx + 1}/{num_games}, length: {trajectory.length}")
-
-        return trajectories
-
-    def _play_single_game(self, mcts_engine) -> Trajectory:
-        """Play a single game and collect trajectory"""
-        # This would integrate with existing MCTS implementation
-        # For now, return a dummy trajectory structure
-        steps = []
-        total_reward = 0.0
-
-        # TODO: Implement actual game playing with MCTS
-        # This would collect: state, action, log_prob, value, reward, done
-
-        # Placeholder: create a simple trajectory
-        game_result = np.random.choice([-1, 0, 1])  # Random for now
-
-        return Trajectory(
-            steps=steps,
-            total_reward=total_reward,
-            length=len(steps),
-            game_result=game_result
-        )
-
     def train_on_trajectories(self, trajectories: List[Trajectory]) -> Dict[str, float]:
         """
         Train using GRPO with group-based reward normalization
@@ -128,32 +89,45 @@ class GRPOTrainer:
         Returns:
             Dictionary of training metrics
         """
+        if not trajectories:
+            logger.warning("No trajectories provided for training")
+            return {}
+
         if len(trajectories) < self.config.group_size:
             logger.warning(f"Only {len(trajectories)} trajectories, need at least {self.config.group_size}")
             return {}
 
+        logger.info(f"Starting GRPO training on {len(trajectories)} trajectories")
+
         # Form groups for reward normalization
         groups = self._form_groups(trajectories)
+        logger.info(f"Formed {len(groups)} groups for training")
 
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy_loss = 0.0
         num_updates = 0
 
-        for group in groups:
+        for group_idx, group in enumerate(groups):
+            logger.debug(f"Training on group {group_idx + 1}/{len(groups)} ({len(group)} trajectories)")
             group_metrics = self._train_on_group(group)
             total_policy_loss += group_metrics['policy_loss']
             total_value_loss += group_metrics['value_loss']
             total_entropy_loss += group_metrics['entropy_loss']
             num_updates += 1
 
-        return {
-            'policy_loss': total_policy_loss / num_updates,
-            'value_loss': total_value_loss / num_updates,
-            'entropy_loss': total_entropy_loss / num_updates,
+        avg_metrics = {
+            'policy_loss': total_policy_loss / num_updates if num_updates > 0 else 0.0,
+            'value_loss': total_value_loss / num_updates if num_updates > 0 else 0.0,
+            'entropy_loss': total_entropy_loss / num_updates if num_updates > 0 else 0.0,
             'num_groups': len(groups),
-            'total_trajectories': len(trajectories)
+            'total_trajectories': len(trajectories),
+            'trajectories_per_group': len(trajectories) / len(groups) if groups else 0
         }
+
+        logger.info(f"GRPO training completed: Policy Loss: {avg_metrics['policy_loss']:.4f}, "
+                   f"Value Loss: {avg_metrics['value_loss']:.4f}")
+        return avg_metrics
 
     def _form_groups(self, trajectories: List[Trajectory]) -> List[List[Trajectory]]:
         """
@@ -190,66 +164,93 @@ class GRPOTrainer:
         reward_mean = np.mean(group_rewards)
         reward_std = np.std(group_rewards) + 1e-8  # Avoid division by zero
 
-        # Normalize rewards within group
-        normalized_rewards = [(r - reward_mean) / reward_std for r in group_rewards]
+        # Process trajectories to compute advantages
+        all_advantages = []
+        all_returns = []
+        all_log_probs = []
+        all_states = []
+        all_actions = []
 
-        # TODO: Implement actual GRPO training loop
-        # This would include:
-        # 1. Compute advantages with group-normalized rewards
-        # 2. PPO-style policy updates with clipping
-        # 3. Value function updates
-        # 4. Entropy regularization
+        for trajectory in group:
+            rewards = [step.reward for step in trajectory.steps]
+            values = [step.value for step in trajectory.steps]
+            log_probs = [step.log_prob for step in trajectory.steps]
+            states = [step.state for step in trajectory.steps]
+            actions = [step.action for step in trajectory.steps]
 
-        # Placeholder metrics
+            advantages, returns = self.compute_gae(rewards, values, self.config.gamma, self.config.gae_lambda)
+            
+            # Normalize advantages within the group
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            all_advantages.append(advantages)
+            all_returns.append(returns)
+            all_log_probs.extend(log_probs)
+            all_states.extend(states)
+            all_actions.extend(actions)
+
+        advantages_tensor = torch.cat(all_advantages).to(self.device)
+        returns_tensor = torch.cat(all_returns).to(self.device)
+        old_log_probs_tensor = torch.tensor(all_log_probs, device=self.device)
+        states_tensor = torch.cat(all_states).to(self.device)
+        actions_tensor = torch.tensor(all_actions, device=self.device)
+
+        for _ in range(self.config.ppo_epochs):
+            for i in range(0, len(states_tensor), self.config.batch_size):
+                batch_states = states_tensor[i:i+self.config.batch_size]
+                batch_actions = actions_tensor[i:i+self.config.batch_size]
+                batch_old_log_probs = old_log_probs_tensor[i:i+self.config.batch_size]
+                batch_advantages = advantages_tensor[i:i+self.config.batch_size]
+                batch_returns = returns_tensor[i:i+self.config.batch_size]
+
+                # Get new policy and value
+                new_policy_logits, new_values = self.model(batch_states)
+                new_policy = F.softmax(new_policy_logits, dim=-1)
+                new_log_probs = torch.log(new_policy.gather(1, batch_actions.unsqueeze(1)).squeeze(1) + 1e-8)
+
+                # Policy loss
+                ratio = torch.exp(new_log_probs - batch_old_log_probs)
+                clipped_ratio = torch.clamp(ratio, 1 - self.config.clip_epsilon, 1 + self.config.clip_epsilon)
+                policy_loss = -torch.min(ratio * batch_advantages, clipped_ratio * batch_advantages).mean()
+
+                # Value loss
+                value_loss = F.mse_loss(new_values.squeeze(), batch_returns)
+
+                # Entropy loss
+                entropy = -torch.sum(new_policy * torch.log(new_policy + 1e-8), dim=-1).mean()
+
+                # Total loss
+                total_loss = policy_loss + self.config.value_loss_coef * value_loss - self.config.entropy_coef * entropy
+
+                # Update
+                self.optimizer.zero_grad()
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
+
         return {
-            'policy_loss': 0.5,  # Placeholder
-            'value_loss': 0.3,   # Placeholder
-            'entropy_loss': 0.1  # Placeholder
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'entropy_loss': entropy.item()
         }
 
-    def compute_group_advantage(self, trajectories: List[Trajectory],
-                              reward_mean: float, reward_std: float) -> torch.Tensor:
+    def compute_gae(self, rewards: List[float], values: List[float], gamma: float, gae_lambda: float) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute advantages using group-based reward normalization
-
-        Args:
-            trajectories: Group of trajectories
-            reward_mean: Mean reward in group
-            reward_std: Std reward in group
-
-        Returns:
-            Normalized advantages tensor
+        Compute Generalized Advantage Estimation (GAE)
         """
-        # TODO: Implement advantage computation
-        # This should compute GAE (Generalized Advantage Estimation)
-        # with group-normalized rewards
+        advantages = []
+        last_advantage = 0
+        last_value = values[-1]
 
-        # Placeholder
-        return torch.randn(len(trajectories), 10)  # (batch, seq_len)
+        for i in reversed(range(len(rewards))):
+            delta = rewards[i] + gamma * last_value - values[i]
+            last_advantage = delta + gamma * gae_lambda * last_advantage
+            advantages.insert(0, last_advantage)
+            last_value = values[i]
 
-    def grpo_policy_loss(self, old_logprobs: torch.Tensor, new_logprobs: torch.Tensor,
-                        advantages: torch.Tensor, clip_epsilon: float) -> torch.Tensor:
-        """
-        Compute GRPO policy loss with group normalization
+        returns = [adv + val for adv, val in zip(advantages, values)]
 
-        Args:
-            old_logprobs: Log probabilities from old policy
-            new_logprobs: Log probabilities from new policy
-            advantages: Group-normalized advantages
-            clip_epsilon: Clipping parameter
-
-        Returns:
-            GRPO policy loss
-        """
-        ratio = torch.exp(new_logprobs - old_logprobs)
-
-        # PPO-style clipping
-        clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
-
-        # GRPO loss (similar to PPO but with group-normalized advantages)
-        policy_loss = -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
-
-        return policy_loss
+        return torch.tensor(advantages, dtype=torch.float32), torch.tensor(returns, dtype=torch.float32)
 
     def save_checkpoint(self, path: str):
         """Save model checkpoint"""
@@ -303,15 +304,18 @@ class GRPOEvaluator:
 
 if __name__ == "__main__":
     # Test GRPO trainer setup
-    from models.small_resnet import ChessSmallResNet
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from models.large_chess_transformer import MagnusChessTransformerFactory
 
     print("=== GRPO Trainer Test ===")
 
-    # Create small model
-    model = ChessSmallResNet.create()
+    # Create Magnus transformer model
+    model = MagnusChessTransformerFactory.create_magnus_chess()
     config = GRPOConfig(group_size=4)  # Smaller for testing
     trainer = GRPOTrainer(model, config)
 
-    print(f"Model parameters: {ChessSmallResNet.get_parameter_count(model):,}")
+    print(f"Model parameters: {MagnusChessTransformerFactory.get_model_info(model)}")
     print(f"GRPO config: group_size={config.group_size}, lr={config.learning_rate}")
     print("✅ GRPO trainer initialized successfully!")

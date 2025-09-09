@@ -11,6 +11,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Optional, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AdvancedPositionalEncoding(nn.Module):
@@ -54,7 +57,7 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Relative positional embeddings for chess board
-        self.relative_pos_emb = nn.Parameter(torch.randn(64, nhead, self.head_dim) * 0.02)  # 8x8 board = 64 positions
+        self.relative_pos_emb = nn.Parameter(torch.randn(2 * 64 - 1, self.head_dim))
 
     def forward(self, x, attn_mask=None):
         batch_size, seq_len, _ = x.shape
@@ -68,8 +71,7 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         # Add relative positional bias
-        # This is a simplified version - in practice you'd want full relative attention
-        rel_pos_bias = self._get_relative_pos_bias(batch_size, seq_len)
+        rel_pos_bias = self._get_relative_pos_bias(seq_len, self.device)
         scores = scores + rel_pos_bias
 
         # Apply attention mask
@@ -89,11 +91,12 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
 
         return output
 
-    def _get_relative_pos_bias(self, batch_size, seq_len):
+    def _get_relative_pos_bias(self, seq_len, device):
         """Get relative positional bias for attention"""
-        # Simplified relative positioning for chess board
-        # Return zeros with exact shape to match attention scores: [batch, nhead, seq_len, seq_len]
-        return torch.zeros(batch_size, self.nhead, seq_len, seq_len, device=self.relative_pos_emb.device)
+        q_pos = torch.arange(seq_len, device=device)[:, None]
+        k_pos = torch.arange(seq_len, device=device)[None, :]
+        rel_pos = k_pos - q_pos + seq_len - 1
+        return self.relative_pos_emb[rel_pos].unsqueeze(0).unsqueeze(0)
 
 
 class LargeChessTransformerBlock(nn.Module):
@@ -136,15 +139,20 @@ class LargeChessTransformerBlock(nn.Module):
         return x
 
 
-class LargeChessTransformer(nn.Module):
-    """Large transformer model for serious chess learning"""
+class MagnusChessTransformer(nn.Module):
+    """Magnus - Advanced transformer model for chess learning (~70M parameters)
+    Named after Magnus Carlsen, the world champion, representing peak chess performance.
+
+    Architecture: 12-layer transformer with 512d embeddings, 8 attention heads
+    Total parameters: ~70M (38M transformer, 17M features, 13M policy head)
+    Designed for serious chess pattern recognition with efficient training."""
 
     def __init__(self,
                  input_channels: int = 19,
-                 d_model: int = 512,
-                 nhead: int = 8,
-                 num_layers: int = 8,
-                 dim_feedforward: int = 2048,
+                 d_model: int = 512,   # Optimized for 70M total parameters
+                 nhead: int = 8,       # 8 attention heads
+                 num_layers: int = 12, # 12 transformer layers
+                 dim_feedforward: int = 2048,  # Efficient feedforward
                  dropout: float = 0.1,
                  activation: str = "gelu"):
         super().__init__()
@@ -152,9 +160,17 @@ class LargeChessTransformer(nn.Module):
         self.input_channels = input_channels
         self.d_model = d_model
 
-        # Enhanced board to sequence conversion
-        self.board_to_sequence = nn.Sequential(
-            nn.Conv2d(input_channels, d_model // 2, 3, padding=1),
+        # Enhanced multi-scale board to sequence conversion
+        self.board_encoder = nn.Sequential(
+            # First conv block
+            nn.Conv2d(input_channels, d_model // 4, 3, padding=1),
+            nn.BatchNorm2d(d_model // 4),
+            nn.GELU(),
+            nn.Conv2d(d_model // 4, d_model // 2, 3, padding=1),
+            nn.BatchNorm2d(d_model // 2),
+            nn.GELU(),
+            # Second conv block with residual
+            nn.Conv2d(d_model // 2, d_model // 2, 3, padding=1),
             nn.BatchNorm2d(d_model // 2),
             nn.GELU(),
             nn.Conv2d(d_model // 2, d_model, 1),
@@ -162,46 +178,61 @@ class LargeChessTransformer(nn.Module):
             nn.GELU()
         )
 
-        # Flatten spatial dimensions to sequence
-        self.spatial_flatten = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),  # Global average pooling
-            nn.Flatten(),  # Remove spatial dimensions
-            nn.Linear(d_model, d_model)  # Project to sequence dimension
+        # Simplified feature extraction (single scale for efficiency)
+        self.feature_extractor = nn.Sequential(
+            nn.AdaptiveAvgPool2d((8, 8)),  # Fixed 8x8 output
+            nn.Flatten(),
+            nn.Linear(d_model * 64, d_model),  # 64 = 8*8
+            nn.LayerNorm(d_model),
+            nn.GELU()
         )
 
-        # Positional encoding
+        # Advanced positional encoding with learnable parameters
         self.pos_encoder = AdvancedPositionalEncoding(d_model, max_len=64, dropout=dropout)
 
-        # Transformer layers
-        self.transformer_layers = nn.ModuleList([
-            LargeChessTransformerBlock(
-                d_model, nhead, dim_feedforward, dropout, activation
-            ) for _ in range(num_layers)
-        ])
+        # Deep transformer layers with fixed capacity (not progressive scaling)
+        self.transformer_layers = nn.ModuleList()
+        for i in range(num_layers):
+            # Fixed dimensions for all layers (much more reasonable parameter count)
+            self.transformer_layers.append(
+                LargeChessTransformerBlock(
+                    d_model, nhead,  # Fixed dimensions
+                    dim_feedforward,  # Fixed feedforward
+                    dropout, activation
+                )
+            )
 
         # Layer norm after transformer
         self.transformer_norm = nn.LayerNorm(d_model)
 
-        # Enhanced policy head
+        # Ultra-large policy head with multiple branches
         self.policy_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model * 2),
+            nn.LayerNorm(d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, 1024),
-            nn.LayerNorm(1024),
+            nn.Linear(d_model * 2, d_model * 2),
+            nn.LayerNorm(d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(1024, 4672)  # 4672 legal moves
+            nn.Linear(d_model * 2, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2048, 4672)  # 4672 legal moves
         )
 
-        # Enhanced value head
+        # Enhanced value head with multiple prediction branches
         self.value_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, 256),
+            nn.Linear(d_model, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -212,27 +243,42 @@ class LargeChessTransformer(nn.Module):
             nn.Tanh()
         )
 
+        # Auxiliary heads for multi-task learning
+        self.material_head = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Linear(256, 1)  # Material advantage prediction
+        )
+
+        self.threat_head = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Linear(256, 64)  # Threat detection (8x8 board)
+        )
+
         # Attention mask for legal moves
         self.attention_mask = None
 
-        # Initialize weights
-        self._initialize_weights()
+        # Initialize weights with advanced schemes
+        self._initialize_weights_advanced()
 
-    def _initialize_weights(self):
-        """Initialize model weights using Xavier initialization"""
+    def _initialize_weights_advanced(self):
+        """Advanced weight initialization for ultra-large model"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                # Use T5-style initialization for better transformer training
+                nn.init.normal_(module.weight, mean=0.0, std=self.d_model ** -0.5)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
             elif isinstance(module, nn.Conv2d):
                 nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
-
-    def set_attention_mask(self, mask):
-        """Set attention mask for legal moves"""
-        self.attention_mask = mask
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.constant_(module.bias, 0)
+                nn.init.constant_(module.weight, 1.0)
 
     def board_to_tokens(self, board):
         """
@@ -243,16 +289,20 @@ class LargeChessTransformer(nn.Module):
         batch_size, channels, height, width = board.shape
 
         # Apply convolutional processing
-        conv_features = self.board_to_sequence(board)  # (batch, d_model, 8, 8)
+        conv_features = self.board_encoder(board)  # (batch, d_model, 8, 8)
 
         # Flatten to sequence while preserving some spatial information
         # We'll create 64 tokens, each with spatial context
-        tokens = conv_features.view(batch_size, self.d_model, -1)  # (batch, d_model, 64)
+        tokens = conv_features.reshape(batch_size, self.d_model, -1)  # (batch, d_model, 64)
         tokens = tokens.transpose(1, 2)  # (batch, 64, d_model)
 
         return tokens
 
-    def forward(self, x):
+    def set_attention_mask(self, mask):
+        """Set attention mask for legal moves"""
+        self.attention_mask = mask
+
+    def forward(self, x, return_aux=False):
         # Convert board to token sequence
         tokens = self.board_to_tokens(x)  # (batch, 64, d_model)
 
@@ -279,34 +329,42 @@ class LargeChessTransformer(nn.Module):
         # Value head
         value = self.value_head(representation)
 
-        return policy_logits, value
+        if return_aux:
+            # Auxiliary predictions for multi-task learning
+            material_advantage = self.material_head(representation)
+            threat_map = self.threat_head(representation).view(-1, 8, 8)
+            return policy_logits, value, material_advantage, threat_map
+        else:
+            return policy_logits, value
 
 
-class LargeChessTransformerFactory:
-    """Factory for creating large chess transformer models"""
+class MagnusChessTransformerFactory:
+    """Factory for creating Magnus ultra-large chess transformer models"""
 
     @staticmethod
-    def create_large(input_channels: int = 19, d_model: int = 512, nhead: int = 8,
-                    num_layers: int = 8, dim_feedforward: int = 2048):
-        """Create a large transformer for deep chess learning"""
-        return LargeChessTransformer(
+    def create_magnus_chess(input_channels: int = 19):
+        """Create optimized Magnus transformer for chess (~70M parameters)
+        Optimized configuration: 512d embeddings, 8 heads, 12 layers
+        Total: ~70M parameters with excellent chess learning capacity"""
+        return MagnusChessTransformer(
             input_channels=input_channels,
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
-            dim_feedforward=dim_feedforward
+            d_model=512,       # Optimized embedding dimension
+            nhead=8,           # 8 attention heads for balance
+            num_layers=12,     # 12 transformer layers (deep but efficient)
+            dim_feedforward=2048,  # Efficient feedforward dimension
+            dropout=0.1,       # Standard dropout
+            activation="gelu"  # GELU activation
         )
 
     @staticmethod
-    def create_medium_large(input_channels: int = 19, d_model: int = 384, nhead: int = 6,
-                           num_layers: int = 6, dim_feedforward: int = 1536):
+    def create_medium_transformer(input_channels: int = 19):
         """Create a medium-large transformer balancing capacity and speed"""
-        return LargeChessTransformer(
+        return MagnusChessTransformer(
             input_channels=input_channels,
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
-            dim_feedforward=dim_feedforward
+            d_model=384,
+            nhead=6,
+            num_layers=6,
+            dim_feedforward=1536
         )
 
     @staticmethod
@@ -317,9 +375,9 @@ class LargeChessTransformerFactory:
     @staticmethod
     def get_model_info(model):
         """Get model information"""
-        params = LargeChessTransformerFactory.get_parameter_count(model)
+        params = MagnusChessTransformerFactory.get_parameter_count(model)
         return {
-            'architecture': 'LargeChessTransformer',
+            'architecture': 'MagnusChessTransformer',
             'parameters': params,
             'parameter_count': f"{params:,}",
             'd_model': model.d_model,
@@ -331,15 +389,15 @@ class LargeChessTransformerFactory:
 
 if __name__ == "__main__":
     # Test the large transformer models
-    print("=== Large Chess Transformer Models ===")
+    print("=== Large Chess Transformer Models ====")
 
     # Large model for serious learning
-    large_model = LargeChessTransformerFactory.create_large()
-    print(f"Large Model: {LargeChessTransformerFactory.get_model_info(large_model)}")
+    large_model = MagnusChessTransformerFactory.create_magnus_chess()
+    print(f"Large Model: {MagnusChessTransformerFactory.get_model_info(large_model)}")
 
     # Medium-large model for balanced performance
-    med_large_model = LargeChessTransformerFactory.create_medium_large()
-    print(f"Medium-Large Model: {LargeChessTransformerFactory.get_model_info(med_large_model)}")
+    med_large_model = MagnusChessTransformerFactory.create_medium_transformer()
+    print(f"Medium-Large Model: {MagnusChessTransformerFactory.get_model_info(med_large_model)}")
 
     # Test forward pass
     x = torch.randn(1, 19, 8, 8)  # Batch size 1, 19 input channels, 8x8 board
@@ -350,4 +408,4 @@ if __name__ == "__main__":
         print(f"{name} - Input: {x.shape}, Policy: {policy.shape}, Value: {value.shape}")
 
     print("✅ Large transformer models initialized successfully!")
-    print(f"🚀 Ready for deep chess learning with {LargeChessTransformerFactory.get_parameter_count(large_model):,} parameters!")
+    print(f"🚀 Ready for deep chess learning with {MagnusChessTransformerFactory.get_parameter_count(large_model):,} parameters!")
