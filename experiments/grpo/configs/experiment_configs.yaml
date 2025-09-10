@@ -71,7 +71,7 @@ magnus_transformer_smoke_test:
     max_grad_norm: 0.5
     ppo_epochs: 3      # Fewer epochs for speed
     batch_size: 16     # Smaller batch
-    num_workers: 1     # Single worker for test
+    num_workers: 2     # 2 workers for 6 games (3 games each)
     mcts_simulations: 200  # Very few simulations for speed
 
   training:
