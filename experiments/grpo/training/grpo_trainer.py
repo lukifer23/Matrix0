@@ -294,13 +294,57 @@ class GRPOEvaluator:
 
     def evaluate_game(self, game_trajectory: Trajectory) -> Dict[str, float]:
         """Evaluate a single game"""
-        # TODO: Implement game evaluation
-        # This would replay the game and compute metrics
+        if not game_trajectory.steps:
+            return {
+                'game_length': 0,
+                'final_result': game_trajectory.game_result,
+                'total_reward': game_trajectory.total_reward,
+                'move_accuracy': 0.0,
+                'avg_value_error': 0.0,
+            }
+
+        correct_moves = 0
+        value_errors = []
+
+        with torch.no_grad():
+            for idx, step in enumerate(game_trajectory.steps):
+                state = step.state.to(self.device)
+                if state.dim() == 1:
+                    state = state.unsqueeze(0)
+
+                policy_logits, value_pred = self.model(state)
+
+                # Apply legal move mask if provided
+                if step.legal_mask is not None:
+                    mask = step.legal_mask.to(self.device)
+                    if mask.dim() == 1:
+                        mask = mask.unsqueeze(0)
+                    masked_logits = policy_logits.clone()
+                    masked_logits[mask == 0] = -1e9
+                else:
+                    masked_logits = policy_logits
+
+                predicted_action = int(torch.argmax(masked_logits, dim=-1).item())
+                if predicted_action == step.action:
+                    correct_moves += 1
+
+                # Determine target value from current player's perspective
+                result = game_trajectory.game_result
+                if idx % 2 == 1:
+                    result = -result
+
+                pred_val = value_pred.squeeze().item()
+                value_errors.append((pred_val - result) ** 2)
+
+        move_accuracy = correct_moves / len(game_trajectory.steps)
+        avg_value_error = float(np.mean(value_errors)) if value_errors else 0.0
 
         return {
             'game_length': game_trajectory.length,
             'final_result': game_trajectory.game_result,
-            'total_reward': game_trajectory.total_reward
+            'total_reward': game_trajectory.total_reward,
+            'move_accuracy': move_accuracy,
+            'avg_value_error': avg_value_error,
         }
 
     def evaluate_games(self, trajectories: List[Trajectory]) -> Dict[str, float]:
@@ -308,11 +352,13 @@ class GRPOEvaluator:
         results = [self.evaluate_game(traj) for traj in trajectories]
 
         return {
-            'avg_game_length': np.mean([r['game_length'] for r in results]),
-            'win_rate': np.mean([1 if r['final_result'] > 0 else 0 for r in results]),
-            'draw_rate': np.mean([1 if r['final_result'] == 0 else 0 for r in results]),
-            'loss_rate': np.mean([1 if r['final_result'] < 0 else 0 for r in results]),
-            'avg_reward': np.mean([r['total_reward'] for r in results])
+            'avg_game_length': np.mean([r['game_length'] for r in results]) if results else 0.0,
+            'win_rate': np.mean([1 if r['final_result'] > 0 else 0 for r in results]) if results else 0.0,
+            'draw_rate': np.mean([1 if r['final_result'] == 0 else 0 for r in results]) if results else 0.0,
+            'loss_rate': np.mean([1 if r['final_result'] < 0 else 0 for r in results]) if results else 0.0,
+            'avg_reward': np.mean([r['total_reward'] for r in results]) if results else 0.0,
+            'avg_move_accuracy': np.mean([r['move_accuracy'] for r in results]) if results else 0.0,
+            'avg_value_error': np.mean([r['avg_value_error'] for r in results]) if results else 0.0,
         }
 
 
