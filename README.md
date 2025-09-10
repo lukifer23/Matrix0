@@ -11,12 +11,12 @@ Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **compl
 
 Matrix0 implements **cutting-edge multi-task learning** combining reinforcement learning from AlphaZero with advanced SSL (Self-Supervised Learning) for chess pattern recognition, optimized for Apple Silicon (MPS). The project delivers:
 
-- **🔥 SSL Architecture Integration**: **ARCHITECTURE READY** - 7 specialized SSL heads for piece, threat, pin, fork, control, pawn structure, and king safety detection
+- **SSL Architecture Integration**: **ARCHITECTURE READY** - 7 specialized SSL heads for piece, threat, pin, fork, control, pawn structure, and king safety detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
-- **🏗️ Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
-- **🍎 Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
-- **📊 Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
-- **🏆 Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
+- **Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
+- **Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
+- **Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
+- **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## Project Status
 **ACTIVE DEVELOPMENT** - **SSL architecture integration achieved**, training pipeline fully operational with SSL framework, **EX0Bench external engine benchmarking system** deployed. See the
@@ -24,7 +24,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the
 [development roadmap](docs/roadmap.md) for current achievements and next steps.
 
-## ✨ Key Features
+## Key Features
 
 ### SSL Integration (COMPLETE)
 - **5 Specialized SSL Heads**: Piece recognition, threat detection, pin detection, fork detection, control detection
@@ -67,7 +67,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Mixed Precision Training**: FP16 optimization with MPS compatibility
 - **Performance Monitoring**: Real-time MPS utilization and memory tracking
 
-### 🔧 Enterprise Features
+### Enterprise Features
 - **Robust Data Management**: SQLite metadata, corruption detection, automatic backup
 - **External Engine Integration**: Stockfish and LC0 support for competitive evaluation
 - **Comprehensive Logging**: Structured logging with SSL performance metrics
@@ -237,7 +237,7 @@ python -m azchess.training.train --config config_small.yaml
 ```
 Use this to iterate quickly on data/algorithms, then switch back to the main config for strength.
 
-## 📚 Documentation
+## Documentation
 - [Configuration guide](docs/configuration.md)
 - [Web UI guide](docs/webui.md)
 - [Performance tuning](docs/performance.md)
@@ -245,21 +245,20 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 - [External engine integration](docs/EXTERNAL_ENGINES.md)
 - [Full documentation index](docs/index.md)
 
-## 🔧 Current Training Status
+## Current Training Status
 
 **Latest Update**: September 2025 - SSL Architecture Integration Complete + Data Pipeline Fixes
 - **Training Progress**: **FULLY OPERATIONAL** with SSL architecture integration and data pipeline fixes
 - **Training Speed**: ~1.58-2.5 seconds per step (optimized for SSL processing)
 - **Model Size**: 53M parameter ResNet-24 with SSL heads
-- **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **5 SSL heads**
-- **SSL Status**: **ARCHITECTURE INTEGRATED** - All 5 SSL tasks integrated (piece, threat, pin, fork, control) - optimized data pipeline
+- **Architecture**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads, **5 SSL heads** - **SSL Status**: **ARCHITECTURE INTEGRATED** - All 5 SSL tasks integrated (piece, threat, pin, fork, control) - optimized data pipeline
 - **Large-Scale Training**: 100K step pretraining run in progress using enhanced_best.pt checkpoint
 - **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
 - **Training Stability**: 100% stable with proper gradient accumulation and scheduler stepping
 - **Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
 - **Recent Enhancements**: SSL architecture integration, enhanced WebUI monitoring, EX0Bench external engine battles, data pipeline fixes, MPS stability improvements, CoreML export
 
-## 🔧 Development
+## Development
 
 ### Testing & Validation
 The project includes comprehensive validation and monitoring:
@@ -287,7 +286,7 @@ python -m azchess.tools.bench_inference
 python -m azchess.tools.bench_mcts
 ```
 
-## 🤝 Contributing
+## Contributing
 Contributions are welcome! Current focus areas include:
 
 ### High Priority
@@ -309,21 +308,21 @@ Contributions are welcome! Current focus areas include:
 - Use type hints and docstrings for all functions
 - Ensure MPS compatibility for all new features
 
-## 📄 License
+## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 **Note**: This is a research project. No third-party model weights are included.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 - Inspired by AlphaZero, Leela Chess Zero, and modern chess AI research
 - Built with PyTorch and optimized for Apple Silicon MPS architecture
 - Advanced SSL concepts from recent computer vision and NLP research
 - Community contributions and feedback
 - **Bugbot**: Code review and quality assurance via [Bugbot](https://bugbot.dev) (14-day trial via Cursor)
 
-## 📈 Current Achievements & Next Steps
+## Current Achievements & Next Steps
 
-### ✅ Major Milestones Completed (September 2025)
+### [x] Major Milestones Completed (September 2025)
 - **SSL Architecture Integration**: All 5 SSL tasks (piece, threat, pin, fork, control) integrated with optimized data pipeline
 - **Data Pipeline Fixes**: Resolved SSL target concatenation issues, fixed control shape mismatches, corrected value targets
 - **Multi-Task Learning**: Simultaneous training of policy, value, and SSL optimization working perfectly
@@ -346,7 +345,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Enhanced Evaluation**: Multi-engine tournaments with SSL-aware strength estimation
 - **SSL Visualization**: Advanced heatmaps and decision explanation tools
 
-### 🎯 Immediate Next Steps
+### Immediate Next Steps
 1. **SSL Learning Validation**: Measure effectiveness of all 5 SSL tasks
 2. **Performance Benchmarking**: Establish SSL contribution baselines with EX0Bench
 3. **WebUI Enhancement**: Add SSL-specific visualization features
@@ -356,6 +355,4 @@ See [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md), [docs/webu
 
 ---
 
-**Matrix0 v2.2 - SSL Architecture Integration + EX0Bench System**
-
-*Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring, EX0Bench external engine battles, and data pipeline fixes.*
+**Matrix0 v2.2 - SSL Architecture Integration + EX0Bench System** *Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring, EX0Bench external engine battles, and data pipeline fixes.*

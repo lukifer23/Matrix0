@@ -9,18 +9,18 @@ The `config.yaml` file is the single source of truth for all system parameters. 
 ### Recent Configuration Updates (v2.2)
 
 **SSL Task Optimization**: Reduced from 7 to 5 SSL tasks for improved stability and performance
-- ✅ **Active Tasks**: piece, threat, pin, fork, control detection
-- ❌ **Removed Tasks**: pawn_structure, king_safety (due to data availability issues)
+- [x] **Active Tasks**: piece, threat, pin, fork, control detection
+- [ ] **Removed Tasks**: pawn_structure, king_safety (due to data availability issues)
 
 **Data Pipeline Fixes**: Resolved configuration conflicts and duplicate keys
-- ✅ **Duplicate Key Removal**: All duplicate configuration entries eliminated
-- ✅ **SSL Task Alignment**: Configuration matches actual implemented SSL tasks
-- ✅ **Memory Optimization**: Settings optimized for stable SSL training within MPS limits
+- [x] **Duplicate Key Removal**: All duplicate configuration entries eliminated
+- [x] **SSL Task Alignment**: Configuration matches actual implemented SSL tasks
+- [x] **Memory Optimization**: Settings optimized for stable SSL training within MPS limits
 
 **EX0Bench Integration**: New external engine benchmarking configuration options
-- ✅ **External-Only Mode**: CPU-only external engine battles without Matrix0
-- ✅ **Automatic Detection**: Smart detection of pure external engine scenarios
-- ✅ **Performance Benefits**: Faster startup, lower memory for external comparisons
+- [x] **External-Only Mode**: CPU-only external engine battles without Matrix0
+- [x] **Automatic Detection**: Smart detection of pure external engine scenarios
+- [x] **Performance Benefits**: Faster startup, lower memory for external comparisons
 
 ### Current Configuration Structure
 ```yaml
@@ -391,10 +391,10 @@ metrics. Running at the default `INFO` level suppresses these messages.
 ## 6. SSL Status and Future Enhancements
 
 ### Current SSL Implementation
-- **Basic Piece Recognition**: ✅ Working and operational
-- **Advanced SSL Algorithms**: ✅ Implemented in `ssl_algorithms.py`
-- **Training Integration**: 🔄 Ready for integration
-- **Multi-Task Learning**: 🔄 Ready for implementation
+- **Basic Piece Recognition**: [x] Working and operational
+- **Advanced SSL Algorithms**: [x] Implemented in `ssl_algorithms.py`
+- **Training Integration**:  Ready for integration
+- **Multi-Task Learning**:  Ready for implementation
 
 ### Advanced SSL Tasks (Implemented, Ready for Integration)
 - **Threat Detection**: Identify squares under attack/defense

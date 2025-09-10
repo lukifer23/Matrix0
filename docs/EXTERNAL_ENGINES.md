@@ -22,7 +22,7 @@ Matrix0 now supports advanced integration with external chess engines through th
 - **Parameters**: Threads, Hash, Skill Level, ELO limits
 - **Apple Silicon**: Native x86_64 emulation support
 - **Time Control**: Configurable (default: 30+0.3)
-- **Status**: ✅ Fully integrated with automated discovery
+- **Status**: [x] Fully integrated with automated discovery
 
 ### Leela Chess Zero (LC0)
 - **Path**: `/opt/homebrew/bin/lc0` (auto-detected)
@@ -30,14 +30,14 @@ Matrix0 now supports advanced integration with external chess engines through th
 - **Apple Silicon**: Metal backend optimization for M1/M2/M3
 - **Neural Network**: Full neural evaluation with CUDA/Metal acceleration
 - **Time Control**: Configurable (default: 30+0.3)
-- **Status**: ✅ Fully integrated with Apple Silicon optimization
+- **Status**: [x] Fully integrated with Apple Silicon optimization
 
 ### Matrix0 (Internal)
 - **Type**: Internal neural network model with SSL integration
 - **Checkpoint**: `checkpoints/v2_base.pt` (53M parameters)
 - **Evaluation**: MCTS with SSL-enhanced neural network guidance
 - **SSL Heads**: Threat, pin, fork, control, piece detection
-- **Status**: ✅ Enhanced with comprehensive benchmark system
+- **Status**: [x] Enhanced with comprehensive benchmark system
 
 ### Additional Engines
 The system supports automatic discovery of additional UCI-compliant engines:
@@ -336,9 +336,7 @@ class EvaluationResult:
     games: List[Dict[str, Any]]
 ```
 
-## **NEW: Recent Improvements**
-
-### Enhanced Self-Play System
+## **NEW: Recent Improvements** ### Enhanced Self-Play System
 - **Modular Architecture**: Separated internal and external self-play into distinct modules
 - **Improved Resignation Logic**: Smart resignation based on consecutive bad evaluations
 - **Opening Diversity**: Configurable random opening moves for training variety
@@ -360,18 +358,15 @@ class EvaluationResult:
 
 ### Common Issues
 
-1. **Engine Not Found**
-   - Verify engine path in configuration
+1. **Engine Not Found** - Verify engine path in configuration
    - Ensure engine executable has proper permissions
    - Check if engine is installed and accessible
 
-2. **Engine Communication Errors**
-   - Verify UCI protocol compatibility
+2. **Engine Communication Errors** - Verify UCI protocol compatibility
    - Check engine parameters and time controls
    - Review engine logs for errors
 
-3. **Performance Issues**
-   - Adjust time controls for faster games
+3. **Performance Issues** - Adjust time controls for faster games
    - Reduce engine thread count
    - Monitor system resources
 
@@ -471,10 +466,10 @@ For draw adjudication and resignation settings, see [Configuration Guide](docs/c
 ## Current Project Status
 
 ### Training Pipeline
-- **Status**: ✅ Operational and stable
+- **Status**: [x] Operational and stable
 - **SSL Foundation**: Basic piece recognition working
 - **Advanced SSL**: Algorithms implemented and integrated
-- **External Engines**: ✅ Fully integrated and tested
+- **External Engines**: [x] Fully integrated and tested
 
 ### Development Priorities
 1. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness

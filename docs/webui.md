@@ -33,7 +33,7 @@ Once running, access the enhanced WebUI at:
 - **API Documentation**: http://127.0.0.1:8000/docs (automatic Swagger UI)
 - **Alternative API Docs**: http://127.0.0.1:8000/redoc
 
-## 📊 Enhanced Features Overview
+## Enhanced Features Overview
 \n+## Integration Contract (Do Not Break)
 - The WebUI reads lightweight JSONL events written by the orchestrator at `logs/webui.jsonl`.
 - Required event types are:
@@ -45,7 +45,7 @@ Once running, access the enhanced WebUI at:
 
 Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs and will infer progress if the JSONL events are missing, but the JSONL path is the supported mechanism for accurate worker status.
 
-### 🎮 Game View - Interactive Chess Interface
+### Game View - Interactive Chess Interface
 - **Interactive Chess Board**: Fully functional 8x8 chess board with proper alternating square colors
 - **Interactive Play**: Play against SSL-integrated Matrix0 models with click-to-move interface
 - **Game Analysis**: Real-time position evaluation with SSL-aware analysis
@@ -73,7 +73,7 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
 - **SSL Integration Status**: SSL enablement verification and task configuration
 - **Model Specifications**: Complete technical architecture documentation
 
-## 🛠️ Enhanced API Endpoints
+## Enhanced API Endpoints
 
 ### Core Endpoints
 
@@ -243,7 +243,7 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
 
 The enhanced WebUI features four specialized views accessible via the top navigation:
 
-#### 🎮 Game View - Interactive Chess Interface
+#### Game View - Interactive Chess Interface
 1. **Chess Board**: Fully functional 8x8 board with proper alternating square colors (light beige/dark brown)
 2. **Engine Selection**: Choose Matrix0, Stockfish, or Human players for each side
 3. **Time Controls**: Set engine thinking time (10ms - 10s range)
@@ -256,7 +256,7 @@ The enhanced WebUI features four specialized views accessible via the top naviga
 7. **Game Management**: Start new games, review move history, export PGN
 8. **Responsive Design**: Optimized layout for all screen sizes
 
-#### 📈 Training View - Live Training Monitor
+#### Training View - Live Training Monitor
 1. **Training Status**: View current step, progress, and estimated completion
 2. **Loss Visualization**: Interactive charts showing:
    - Total loss progression
@@ -266,7 +266,7 @@ The enhanced WebUI features four specialized views accessible via the top naviga
 3. **Performance Metrics**: Monitor memory usage, training speed, stability
 4. **Training History**: Review recent steps with detailed metrics
 
-#### 🔬 SSL View - Advanced SSL Monitoring
+#### SSL View - Advanced SSL Monitoring
 1. **SSL Configuration**: View current SSL settings and task status
 2. **SSL Heads Analysis**: Examine all 7 SSL heads:
    - **Piece Detection**: Dedicated SSL parameters
@@ -279,13 +279,13 @@ The enhanced WebUI features four specialized views accessible via the top naviga
 3. **Parameter Tracking**: Monitor SSL learning effectiveness
 4. **SSL Performance**: Track task balancing and contribution
 
-#### 🧠 Analysis View - Model Architecture Deep Dive
+#### Analysis View - Model Architecture Deep Dive
 1. **Model Specifications**: View complete architecture details
 2. **Parameter Breakdown**: Layer-by-layer parameter distribution
 3. **SSL Integration Status**: Verify SSL enablement and configuration
 4. **Architecture Comparison**: Compare model specifications and capabilities
 
-## 🔧 Advanced Configuration
+## Advanced Configuration
 
 ### SSL Monitoring Configuration
 ```python
@@ -372,7 +372,7 @@ top -p $(pgrep uvicorn)
 activity_monitor  # macOS Activity Monitor
 ```
 
-## 🔄 Development
+## Development
 
 ### Adding New Endpoints
 ```python
@@ -403,10 +403,10 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 ## Current Project Status
 
 ### Training Pipeline
-- **Status**: ✅ **FULLY OPERATIONAL** with complete SSL integration
-- **SSL Integration**: ✅ **COMPLETE** - All 7 SSL tasks working simultaneously
-- **Multi-Task Learning**: ✅ **ACTIVE** - Policy, value, and SSL training combined
-- **Real-time Monitoring**: ✅ **ENHANCED** - WebUI provides comprehensive monitoring
+- **Status**: [x] **FULLY OPERATIONAL** with complete SSL integration
+- **SSL Integration**: [x] **COMPLETE** - All 7 SSL tasks working simultaneously
+- **Multi-Task Learning**: [x] **ACTIVE** - Policy, value, and SSL training combined
+- **Real-time Monitoring**: [x] **ENHANCED** - WebUI provides comprehensive monitoring
 
 ### Model Architecture
 - **Parameters**: 53M+ (ResNet-24 with complete SSL integration)

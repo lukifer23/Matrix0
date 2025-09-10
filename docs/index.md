@@ -16,7 +16,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 
 **Matrix0 v2.2** - SSL Architecture Integration + Data Pipeline Fixes + EX0Bench System deployed.
 
-### ✅ What's Working
+### [x] What's Working
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with data pipeline fixes
 - **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
 - **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection) with optimized pipeline
@@ -27,21 +27,21 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - **Apple Silicon**: MPS optimization with 14GB memory management and Metal backend support
 - **Web Interface**: FastAPI-based evaluation and analysis interface with comprehensive monitoring
 
-### 🔄 Active Development
+### Active Development
 - **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
 - **Tournament System Enhancement**: Multi-engine tournament analysis and ranking improvements
 - **Performance Optimization**: Memory usage and training throughput improvements
 - **Model Strength Improvement**: Continue training to close gap with top engines
 
-### 📚 Documentation Status
-- **Configuration Guide**: ✅ Current and accurate (updated for SSL fixes)
-- **Model V2 Design**: ✅ Current and accurate
-- **Web UI Guide**: ✅ Current and accurate
-- **External Engines**: ✅ Current and accurate
-- **Benchmark System**: ✅ New comprehensive guide added
-- **EX0Bench System**: ✅ New comprehensive guide added
-- **Changelog**: ✅ New comprehensive changelog added
-- **Status & Roadmap**: ✅ Current and accurate (updated for v2.2)
+### Documentation Status
+- **Configuration Guide**: [x] Current and accurate (updated for SSL fixes)
+- **Model V2 Design**: [x] Current and accurate
+- **Web UI Guide**: [x] Current and accurate
+- **External Engines**: [x] Current and accurate
+- **Benchmark System**: [x] New comprehensive guide added
+- **EX0Bench System**: [x] New comprehensive guide added
+- **Changelog**: [x] New comprehensive changelog added
+- **Status & Roadmap**: [x] Current and accurate (updated for v2.2)
 
 ## Open Issues
 

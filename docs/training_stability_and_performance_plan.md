@@ -116,119 +116,100 @@
 
 ## Current Implementation Status Summary
 
-### ✅ COMPLETED (Major Milestones Achieved)
+### [x] COMPLETED (Major Milestones Achieved)
 
-**M1: Core Stability Fixes (COMPLETE)**
-- ✅ ResidualBlock now properly respects `cfg.norm` parameter
-- ✅ GroupNorm defaulted in config.yaml for small-batch training
-- ✅ SSL target typing hygiene implemented with proper tensor/dict handling
-- ✅ Piece-only SSL format documented and working
-- ✅ Precision policy unified across CUDA/MPS with proper autocast handling
-- ✅ Loss input hygiene with policy masking and NaN guards
-- ✅ Gradient health monitoring with clipping and non-finite loss handling
+**M1: Core Stability Fixes (COMPLETE)** - [x] ResidualBlock now properly respects `cfg.norm` parameter
+- [x] GroupNorm defaulted in config.yaml for small-batch training
+- [x] SSL target typing hygiene implemented with proper tensor/dict handling
+- [x] Piece-only SSL format documented and working
+- [x] Precision policy unified across CUDA/MPS with proper autocast handling
+- [x] Loss input hygiene with policy masking and NaN guards
+- [x] Gradient health monitoring with clipping and non-finite loss handling
 
-**M3: Precision Policy Unification (COMPLETE)**
-- ✅ Centralized precision policy in train_step
-- ✅ CUDA: bf16 autocast preferred, fp16 + GradScaler fallback
-- ✅ MPS: bf16 autocast with fp32 params/buffers, no scalers
-- ✅ Unified autocast dtype selection helper implemented
-- ✅ No more scaler churn or type mismatch errors
+**M3: Precision Policy Unification (COMPLETE)** - [x] Centralized precision policy in train_step
+- [x] CUDA: bf16 autocast preferred, fp16 + GradScaler fallback
+- [x] MPS: bf16 autocast with fp32 params/buffers, no scalers
+- [x] Unified autocast dtype selection helper implemented
+- [x] No more scaler churn or type mismatch errors
 
-**M4: Model Architecture Improvements (COMPLETE)**
-- ✅ Policy head factorization with `policy_factor_rank: 128` (32M model)
-- ✅ Channel/depth rebalancing: `channels=320, blocks=24, attention_heads=20`
-- ✅ SE optimization with configurable `se_ratio`
-- ✅ Enhanced SSL with piece recognition head working
-- ✅ SSL chunking and memory optimization implemented
+**M4: Model Architecture Improvements (COMPLETE)** - [x] Policy head factorization with `policy_factor_rank: 128` (32M model)
+- [x] Channel/depth rebalancing: `channels=320, blocks=24, attention_heads=20`
+- [x] SE optimization with configurable `se_ratio`
+- [x] Enhanced SSL with piece recognition head working
+- [x] SSL chunking and memory optimization implemented
 
-**Configuration & Unification (COMPLETE)**
-- ✅ Single source of truth in config.yaml for all training parameters
-- ✅ Curriculum learning phases encoded in config (not hardcoded)
-- ✅ Device setup centralized in utils.device.setup_device
-- ✅ Documentation aligned with current implementation
+**Configuration & Unification (COMPLETE)** - [x] Single source of truth in config.yaml for all training parameters
+- [x] Curriculum learning phases encoded in config (not hardcoded)
+- [x] Device setup centralized in utils.device.setup_device
+- [x] Documentation aligned with current implementation
 
-### 🔄 IN PROGRESS / PARTIALLY IMPLEMENTED
+### IN PROGRESS / PARTIALLY IMPLEMENTED
 
-**SSL Target Typing & Timeout Hygiene (80% Complete)**
-- ✅ Per-target casting implemented
-- ✅ Tensor/dict target handling working
-- ❌ `signal.alarm` still present (needs monotonic time budget replacement)
-- ✅ Piece-only SSL format working
+**SSL Target Typing & Timeout Hygiene (80% Complete)** - [x] Per-target casting implemented
+- [x] Tensor/dict target handling working
+- [ ] `signal.alarm` still present (needs monotonic time budget replacement)
+- [x] Piece-only SSL format working
 
-**Cache Clearing Policy (50% Complete)**
-- ✅ Memory monitor thresholds implemented
-- ❌ Unconditional `clear_memory_cache()` calls still present in training loop
-- ❌ Need to trigger cache clears only via memory monitor thresholds
+**Cache Clearing Policy (50% Complete)** - [x] Memory monitor thresholds implemented
+- [ ] Unconditional `clear_memory_cache()` calls still present in training loop
+- [ ] Need to trigger cache clears only via memory monitor thresholds
 
-**Data Pipeline Modernization (30% Complete)**
-- ✅ ComprehensiveDataLoader exists but not integrated
-- ❌ PyTorch DataLoader not implemented
-- ❌ NPZ shard Dataset not created
-- ❌ Still using ad-hoc `next(batch_generator)` pattern
-- ❌ No pin_memory, num_workers, or persistent_workers
+**Data Pipeline Modernization (30% Complete)** - [x] ComprehensiveDataLoader exists but not integrated
+- [ ] PyTorch DataLoader not implemented
+- [ ] NPZ shard Dataset not created
+- [ ] Still using ad-hoc `next(batch_generator)` pattern
+- [ ] No pin_memory, num_workers, or persistent_workers
 
-**Value Head Simplification (0% Complete)**
-- ❌ GAP + MLP replacement not implemented
-- ❌ Still using flatten + dense layers
+**Value Head Simplification (0% Complete)** - [ ] GAP + MLP replacement not implemented
+- [ ] Still using flatten + dense layers
 
-### ❌ NOT STARTED
+### [ ] NOT STARTED
 
-**Unit Tests for Critical Components**
-- ❌ ResidualBlock norm selection tests
-- ❌ SSL target typing tests
-- ❌ Policy normalization tests
+**Unit Tests for Critical Components** - [ ] ResidualBlock norm selection tests
+- [ ] SSL target typing tests
+- [ ] Policy normalization tests
 
-**Advanced SSL Tasks Integration**
-- ❌ Threat detection model heads
-- ❌ Pin detection model heads  
-- ❌ Fork detection model heads
-- ❌ Square control model heads
+**Advanced SSL Tasks Integration** - [ ] Threat detection model heads
+- [ ] Pin detection model heads  
+- [ ] Fork detection model heads
+- [ ] Square control model heads
 
-**Performance Optimizations**
-- ❌ torch.compile integration
-- ❌ channels_last optimization
-- ❌ Fused AdamW implementation
+**Performance Optimizations** - [ ] torch.compile integration
+- [ ] channels_last optimization
+- [ ] Fused AdamW implementation
 
-**Shard Sanity Metrics**
-- ❌ Policy entropy validation
-- ❌ Legal coverage ratio checking
-- ❌ WDL skew detection
+**Shard Sanity Metrics** - [ ] Policy entropy validation
+- [ ] Legal coverage ratio checking
+- [ ] WDL skew detection
 
-### 🎯 NEXT PRIORITIES
+### NEXT PRIORITIES
 
-1. **Complete M2: DataLoader Deployment**
-   - Implement PyTorch Dataset for NPZ shards
+1. **Complete M2: DataLoader Deployment** - Implement PyTorch Dataset for NPZ shards
    - Integrate DataLoader with pin_memory, num_workers
    - Replace batch_generator pattern
 
-2. **Finish SSL Timeout Hygiene**
-   - Replace signal.alarm with monotonic time budget
+2. **Finish SSL Timeout Hygiene** - Replace signal.alarm with monotonic time budget
    - Implement early exit + warning system
 
-3. **Optimize Cache Clearing**
-   - Remove unconditional clear_memory_cache calls
+3. **Optimize Cache Clearing** - Remove unconditional clear_memory_cache calls
    - Implement memory monitor-driven clearing
 
-4. **Add Critical Unit Tests**
-   - Test ResidualBlock norm selection
+4. **Add Critical Unit Tests** - Test ResidualBlock norm selection
    - Test SSL target handling
    - Test policy normalization
 
-### 📊 IMPACT ASSESSMENT
+### IMPACT ASSESSMENT
 
-**Stability Improvements: 85% Complete**
-- NaN/Inf incidents dramatically reduced
+**Stability Improvements: 85% Complete** - NaN/Inf incidents dramatically reduced
 - SSL crashes eliminated
 - Training stability significantly improved
 
-**Performance Improvements: 40% Complete**
-- Precision policy unified and optimized
+**Performance Improvements: 40% Complete** - Precision policy unified and optimized
 - Model architecture streamlined
 - SSL memory usage optimized
 - Data pipeline still needs modernization
 
-**Code Quality: 75% Complete**
-- Configuration centralized
+**Code Quality: 75% Complete** - Configuration centralized
 - Device handling unified
 - Error handling improved
 - Documentation updated

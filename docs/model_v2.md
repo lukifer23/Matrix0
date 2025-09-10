@@ -283,64 +283,55 @@ llm_tutor:
 ## 7) Novel Feature Deep-Dive
 
 ### Enhanced SSL/SSRL System
-**Multi-Task SSL Tasks:**
-- **Piece Recognition**: Basic piece identification (✅ WORKING)
-- **Threat Detection**: Identify pieces under attack/defense (✅ IMPLEMENTED)
-- **Pin Detection**: Identify pinned pieces and constraints (✅ IMPLEMENTED)
-- **Fork Detection**: Identify forking opportunities and threats (✅ IMPLEMENTED)
-- **Control Detection**: Analyze square control and influence (✅ IMPLEMENTED)
-- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns (✅ IMPLEMENTED)
-- **King Safety**: Recognize safe vs exposed king positions (✅ IMPLEMENTED)
+**Multi-Task SSL Tasks:** - **Piece Recognition**: Basic piece identification ([x] WORKING)
+- **Threat Detection**: Identify pieces under attack/defense ([x] IMPLEMENTED)
+- **Pin Detection**: Identify pinned pieces and constraints ([x] IMPLEMENTED)
+- **Fork Detection**: Identify forking opportunities and threats ([x] IMPLEMENTED)
+- **Control Detection**: Analyze square control and influence ([x] IMPLEMENTED)
+- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns ([x] IMPLEMENTED)
+- **King Safety**: Recognize safe vs exposed king positions ([x] IMPLEMENTED)
 
-**SSRL Learning Objectives:**
-- **Masked Position Prediction**: Hide random pieces, predict what should be there
+**SSRL Learning Objectives:** - **Masked Position Prediction**: Hide random pieces, predict what should be there
 - **Contrastive Learning**: Similar positions should have similar representations
 - **Rotation/Flip Invariance**: Board orientation shouldn't change game state
 - **Temporal Consistency**: Adjacent moves should have similar representations
 
-**SSL Curriculum Progression:**
-1. **Level 1**: Basic piece recognition and board state (✅ WORKING)
-2. **Level 2**: Threat detection and piece relationships (✅ WORKING)
-3. **Level 3**: Pin detection and fork opportunities (✅ WORKING)
-4. **Level 4**: Control analysis and pawn structure (✅ WORKING)
-5. **Level 5**: King safety and complex tactical patterns (✅ WORKING)
-6. **Level 6**: Strategic concepts and long-term planning (✅ READY)
-7. **Level 7**: Advanced positional understanding (✅ READY)
+**SSL Curriculum Progression:** 1. **Level 1**: Basic piece recognition and board state ([x] WORKING)
+2. **Level 2**: Threat detection and piece relationships ([x] WORKING)
+3. **Level 3**: Pin detection and fork opportunities ([x] WORKING)
+4. **Level 4**: Control analysis and pawn structure ([x] WORKING)
+5. **Level 5**: King safety and complex tactical patterns ([x] WORKING)
+6. **Level 6**: Strategic concepts and long-term planning ([x] READY)
+7. **Level 7**: Advanced positional understanding ([x] READY)
 
 ### LLM Chess Tutor Integration
-**Fine-tuning Strategy:**
-- **Base Model**: Gemma 3 270M (good balance of capability vs size)
+**Fine-tuning Strategy:** - **Base Model**: Gemma 3 270M (good balance of capability vs size)
 - **Training Data**: Chess literature, game annotations, strategic explanations
 - **Tasks**: Move quality assessment, strategic analysis, position evaluation
 - **Output Format**: Structured analysis for easy integration
 
-**Integration Points:**
-- **Training Data Generation**: LLM annotates self-play games
+**Integration Points:** - **Training Data Generation**: LLM annotates self-play games
 - **Strategic Guidance**: LLM provides insights during training
 - **Active Learning**: LLM identifies positions needing more training
 - **Move Quality**: LLM rates move quality for training feedback
 
-**Benefits:**
-- **Human-Like Understanding**: Strategic thinking beyond pattern recognition
+**Benefits:** - **Human-Like Understanding**: Strategic thinking beyond pattern recognition
 - **Quality Training Data**: Focus on positions with learning value
 - **Continuous Improvement**: LLM adapts training based on model weaknesses
 - **Strategic Context**: Long-term planning and positional understanding
 
 ### Multi-Modal Learning
-**Visual Processing Pipeline:**
-- **Input**: RGB board images (8×8×3)
+**Visual Processing Pipeline:** - **Input**: RGB board images (8×8×3)
 - **Encoder**: Convolutional network to extract visual features
 - **Fusion**: Cross-attention with symbolic representation
 - **Output**: Enhanced features for policy/value/SSL heads
 
-**Cross-Modal Learning:**
-- **Symbolic-to-Visual**: Given symbolic board, predict visual appearance
+**Cross-Modal Learning:** - **Symbolic-to-Visual**: Given symbolic board, predict visual appearance
 - **Visual-to-Symbolic**: Given visual board, predict symbolic representation
 - **Consistency Learning**: Ensure both modalities align
 - **Weak Supervision**: Use visual data to improve symbolic understanding
 
-**Data Sources:**
-- **Generated Images**: Synthetic board images with different pieces
+**Data Sources:** - **Generated Images**: Synthetic board images with different pieces
 - **Real Game Screenshots**: Lichess, Chess.com, chess books
 - **Augmentation**: Rotation, cropping, lighting adjustments
 - **Style Transfer**: Different chess set styles for robustness
@@ -348,34 +339,28 @@ llm_tutor:
 ## 8) Risk Assessment and Mitigation
 
 ### Technical Risks
-**MPS Stability Issues:**
-- **Risk**: GroupNorm + SiLU combination may have numeric issues
+**MPS Stability Issues:** - **Risk**: GroupNorm + SiLU combination may have numeric issues
 - **Mitigation**: Extensive testing on MPS, fallback to BatchNorm + ReLU
 - **Monitoring**: Track non-finite occurrences, implement early detection
 
-**Multi-Modal Complexity:**
-- **Risk**: Visual processing adds training complexity and potential instability
+**Multi-Modal Complexity:** - **Risk**: Visual processing adds training complexity and potential instability
 - **Mitigation**: Gradual integration, extensive validation, configurable enable/disable
 - **Fallback**: Symbolic-only mode if visual processing fails
 
-**LLM Integration Overhead:**
-- **Risk**: LLM processing may slow training significantly
+**LLM Integration Overhead:** - **Risk**: LLM processing may slow training significantly
 - **Mitigation**: Async processing, caching, configurable usage levels
 - **Optimization**: Batch LLM processing, efficient position encoding
 
 ### Training Risks
-**Over-regularization:**
-- **Risk**: DropPath + enhanced SSL may over-regularize
+**Over-regularization:** - **Risk**: DropPath + enhanced SSL may over-regularize
 - **Mitigation**: Conservative DropPath values, monitor validation loss
 - **Adjustment**: Dynamic regularization based on training progress
 
-**Multi-Task Learning Conflicts:**
-- **Risk**: SSL tasks may interfere with policy/value learning
+**Multi-Task Learning Conflicts:** - **Risk**: SSL tasks may interfere with policy/value learning
 - **Mitigation**: Careful task weighting, curriculum progression
 - **Monitoring**: Track individual task performance and overall metrics
 
-**Data Quality Issues:**
-- **Risk**: LLM-generated annotations may be incorrect
+**Data Quality Issues:** - **Risk**: LLM-generated annotations may be incorrect
 - **Mitigation**: Validation pipeline, human oversight, quality metrics
 - **Fallback**: Traditional self-play if LLM quality degrades
 
