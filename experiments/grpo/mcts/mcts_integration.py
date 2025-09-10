@@ -13,7 +13,7 @@ import chess
 import logging
 import time
 import math
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Callable
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -563,21 +563,34 @@ class MCTS:
 class SelfPlayManager:
     """Manages self-play games for GRPO training"""
 
-    def __init__(self, mcts: MCTS, num_workers: int = 4, display_callback=None):
-        self.mcts = mcts
+    def __init__(self, mcts_factory: Callable[[], MCTS], num_workers: int = 4, display_callback=None):
+        """Create a self-play manager.
+
+        Args:
+            mcts_factory: Callable that returns a new :class:`MCTS` instance.
+                A separate MCTS will be created for each worker to avoid
+                shared mutable state across threads.
+            num_workers: Number of parallel workers.
+            display_callback: Optional callback for displaying trajectories.
+        """
+
+        self.mcts_factory = mcts_factory
         self.num_workers = num_workers
         self.display_callback = display_callback
         logger.info(f"Initialized SelfPlayManager with {num_workers} workers")
 
     def generate_games(self, num_games: int, max_moves: int = 180, timeout: int = 120) -> List[List[Dict[str, Any]]]:
         """
-        Generate self-play games using sequential processing for debugging
+        Generate self-play games concurrently across workers.
         """
         logger.info(f"🚀 SelfPlayManager.generate_games called with {num_games} games")
         games = []
 
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            futures = [executor.submit(self._generate_single_game, max_moves, timeout) for _ in range(num_games)]
+            futures = [
+                executor.submit(self._generate_single_game, self.mcts_factory(), max_moves)
+                for _ in range(num_games)
+            ]
 
             for future in as_completed(futures):
                 try:
@@ -593,10 +606,10 @@ class SelfPlayManager:
         logger.info(f"🎉 Generated {len(games)} self-play games total")
         return games
 
-    def _generate_single_game(self, max_moves: int, timeout: int) -> List[Dict[str, Any]]:
-        """Generate a single game with timeout protection"""
+    def _generate_single_game(self, mcts: MCTS, max_moves: int) -> List[Dict[str, Any]]:
+        """Generate a single game using its own MCTS instance."""
         try:
-            return self.mcts.get_trajectory(chess.Board(), max_moves)
+            return mcts.get_trajectory(chess.Board(), max_moves)
         except Exception as e:
             logger.error(f"Error in single game generation: {e}")
             return []
@@ -612,16 +625,16 @@ if __name__ == "__main__":
     model = MagnusChessTransformerFactory.create_magnus_chess()
     print(f"Model: {MagnusChessTransformerFactory.get_model_info(model)}")
 
-    # Create MCTS
+    # Create MCTS factory
     mcts_config = MCTSConfig(num_simulations=50)  # Reduced for testing
-    mcts = MCTS(model, mcts_config)
+    mcts_factory = lambda: MCTS(model, mcts_config)
 
     # Create self-play manager
-    self_play = SelfPlayManager(mcts, num_workers=2)
+    self_play = SelfPlayManager(mcts_factory, num_workers=2)
 
     # Test single trajectory generation
     board = chess.Board()
-    trajectory = mcts.get_trajectory(board, max_moves=10)
+    trajectory = mcts_factory().get_trajectory(board, max_moves=10)
 
     print(f"Generated trajectory with {len(trajectory)} steps")
     print(f"First move: {trajectory[0]['move'] if len(trajectory) > 0 else 'None'}")
