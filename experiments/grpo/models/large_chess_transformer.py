@@ -70,8 +70,8 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
         # Attention scores
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
-        # Add relative positional bias
-        rel_pos_bias = self._get_relative_pos_bias(seq_len, self.device)
+        # Add relative positional bias using the input tensor's device
+        rel_pos_bias = self._get_relative_pos_bias(seq_len, x.device)
         scores = scores + rel_pos_bias
 
         # Apply attention mask
