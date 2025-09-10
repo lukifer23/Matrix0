@@ -41,6 +41,7 @@ sys.path.insert(0, str(experiments_dir))
 from models.large_chess_transformer import MagnusChessTransformerFactory
 from training.grpo_trainer import GRPOTrainer, GRPOConfig, Trajectory, TrajectoryStep
 from mcts.mcts_integration import MCTS, MCTSConfig, SelfPlayManager
+from utils.board_encoding import board_to_tensor
 
 # Setup logging
 logging.basicConfig(
@@ -120,7 +121,7 @@ class GRPOOrchestrator:
             for step_dict in mcts_traj:
                 state = step_dict.get('state')
                 if state is None and 'board' in step_dict:
-                    state = self._board_to_tensor(step_dict['board'])
+                    state = board_to_tensor(step_dict['board'])
 
                 # Ensure state is properly formatted
                 if state is not None:
@@ -166,61 +167,6 @@ class GRPOOrchestrator:
         logger.info(f"Converted {len(mcts_trajectories)} MCTS trajectories to {len(grpo_trajectories)} GRPO trajectories")
         return grpo_trajectories
 
-    def _board_to_tensor(self, board):
-        """Convert chess board to tensor format (copied from MCTS)"""
-        # Create 19-channel board representation
-        channels = []
-
-        # Piece channels (12 channels: 6 piece types x 2 colors)
-        piece_channels = []
-        for piece_type in range(1, 7):  # 1-6: pawn, knight, bishop, rook, queen, king
-            white_channel = torch.zeros(8, 8)
-            black_channel = torch.zeros(8, 8)
-
-            for square in chess.SQUARES:
-                piece = board.piece_at(square)
-                if piece and piece.piece_type == piece_type:
-                    row, col = divmod(square, 8)
-                    if piece.color == chess.WHITE:
-                        white_channel[row, col] = 1.0
-                    else:
-                        black_channel[row, col] = 1.0
-
-            piece_channels.extend([white_channel, black_channel])
-
-        channels.extend(piece_channels)
-
-        # Additional channels for game state (7 more to make 19 total)
-        # Side to move
-        side_to_move = torch.ones(8, 8) if board.turn == chess.WHITE else torch.zeros(8, 8)
-        channels.append(side_to_move)
-
-        # Castling rights (4 channels)
-        castling_channels = []
-        for i in range(4):
-            castling_channels.append(torch.zeros(8, 8))
-        if board.has_kingside_castling_rights(chess.WHITE):
-            castling_channels[0].fill_(1.0)
-        if board.has_queenside_castling_rights(chess.WHITE):
-            castling_channels[1].fill_(1.0)
-        if board.has_kingside_castling_rights(chess.BLACK):
-            castling_channels[2].fill_(1.0)
-        if board.has_queenside_castling_rights(chess.BLACK):
-            castling_channels[3].fill_(1.0)
-        channels.extend(castling_channels)
-
-        # En passant (1 channel)
-        en_passant = torch.zeros(8, 8)
-        if board.ep_square:
-            row, col = divmod(board.ep_square, 8)
-            en_passant[row, col] = 1.0
-        channels.append(en_passant)
-
-        # Halfmove clock (1 channel)
-        halfmove = torch.full((8, 8), min(board.halfmove_clock / 100.0, 1.0))
-        channels.append(halfmove)
-
-        return torch.stack(channels, dim=0).unsqueeze(0)  # Add batch dimension
 
     def _initialize_components(self):
         """Initialize all experiment components"""
