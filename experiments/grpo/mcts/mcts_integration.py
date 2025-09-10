@@ -504,15 +504,19 @@ class MCTS:
         except Exception as e:
             logger.warning(f"Error in move sampling: {e}, falling back to numpy sampling")
             # Fallback to numpy sampling
-            sampled_idx = np.random.choice(len(legal_indices), p=legal_probs)
+            legal_probs_np = np.array(legal_probs, dtype=np.float64)
+            if legal_probs_np.sum() > 0:
+                legal_probs_np /= legal_probs_np.sum()
+            else:
+                legal_probs_np = np.ones(len(legal_indices), dtype=np.float64) / len(legal_indices)
+
+            sampled_idx = np.random.choice(len(legal_indices), p=legal_probs_np)
             sampled_move_idx = legal_indices[sampled_idx]
 
             # Find corresponding move
             for move in legal_moves:
                 if self._move_to_index(move) == sampled_move_idx:
-                    # Calculate log probability
-                    total_prob = sum(legal_probs)
-                    move_prob = legal_probs[sampled_idx] / total_prob if total_prob > 0 else 1.0 / len(legal_moves)
+                    move_prob = legal_probs_np[sampled_idx]
                     log_prob = math.log(move_prob + 1e-8)
                     return move, log_prob
 
