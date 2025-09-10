@@ -761,43 +761,89 @@ class SelfPlayManager:
 
     def generate_games(self, num_games: int, max_moves: int = 180, timeout: int = 120) -> List[List[Dict[str, Any]]]:
         """
-        Generate self-play games concurrently across workers with improved parallelization.
+        Generate self-play games with proper worker distribution.
+        Each worker handles multiple games (num_games / num_workers).
         """
         logger.info(f"🚀 SelfPlayManager.generate_games called with {num_games} games")
         games = []
         
-        # Use more workers for better parallelization
-        max_workers = min(self.num_workers * 2, num_games, 8)  # Cap at 8 workers
-        logger.info(f"Using {max_workers} workers for parallel game generation")
+        # Calculate games per worker
+        games_per_worker = max(1, num_games // self.num_workers)
+        remaining_games = num_games % self.num_workers
+        
+        logger.info(f"Using {self.num_workers} workers, {games_per_worker} games per worker")
+        if remaining_games > 0:
+            logger.info(f"First {remaining_games} workers will get 1 extra game each")
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all games at once for maximum parallelization
-            futures = [
-                executor.submit(self._generate_single_game, self.mcts_factory(), max_moves)
-                for _ in range(num_games)
-            ]
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            # Submit worker tasks
+            futures = []
+            game_start = 0
+            
+            for worker_id in range(self.num_workers):
+                # Calculate games for this worker
+                worker_games = games_per_worker
+                if worker_id < remaining_games:
+                    worker_games += 1
+                
+                if worker_games > 0:
+                    future = executor.submit(
+                        self._generate_worker_games, 
+                        worker_id, 
+                        worker_games, 
+                        max_moves, 
+                        timeout
+                    )
+                    futures.append(future)
+                    game_start += worker_games
 
-            # Process completed games as they finish
+            # Collect results from all workers
             completed_games = 0
             for future in as_completed(futures):
                 try:
-                    trajectory = future.result(timeout=timeout + 10)  # Add buffer for timeout
-                    if trajectory:  # Only add non-empty trajectories
-                        games.append(trajectory)
-                        completed_games += 1
-                        if self.display_callback:
-                            self.display_callback(trajectory)
+                    worker_games = future.result(timeout=timeout + 30)  # Add buffer for timeout
+                    if worker_games:
+                        games.extend(worker_games)
+                        completed_games += len(worker_games)
                         
-                        # Log progress every 25% completion
-                        if completed_games % max(1, num_games // 4) == 0:
-                            logger.info(f"Progress: {completed_games}/{num_games} games completed")
+                        # Log progress
+                        logger.info(f"Worker completed {len(worker_games)} games. Total: {completed_games}/{num_games}")
+                        
+                        # Call display callback for each game
+                        if self.display_callback:
+                            for game in worker_games:
+                                self.display_callback(game)
                             
                 except Exception as e:
-                    logger.error(f"Error generating game: {e}")
-                    # Continue with other games even if one fails
+                    logger.error(f"Error in worker: {e}")
+                    # Continue with other workers even if one fails
 
         logger.info(f"🎉 Generated {len(games)} self-play games total")
         return games
+
+    def _generate_worker_games(self, worker_id: int, num_games: int, max_moves: int, timeout: int) -> List[List[Dict[str, Any]]]:
+        """Generate multiple games in a single worker thread."""
+        logger.info(f"Worker {worker_id} starting {num_games} games")
+        worker_games = []
+        
+        # Create MCTS instance for this worker
+        mcts = self.mcts_factory()
+        
+        for game_id in range(num_games):
+            try:
+                logger.debug(f"Worker {worker_id} generating game {game_id + 1}/{num_games}")
+                trajectory = mcts.get_trajectory(chess.Board(), max_moves, timeout)
+                if trajectory:
+                    worker_games.append(trajectory)
+                    logger.debug(f"Worker {worker_id} completed game {game_id + 1} with {len(trajectory)} moves")
+                else:
+                    logger.warning(f"Worker {worker_id} game {game_id + 1} returned empty trajectory")
+            except Exception as e:
+                logger.error(f"Worker {worker_id} error in game {game_id + 1}: {e}")
+                # Continue with next game even if one fails
+        
+        logger.info(f"Worker {worker_id} completed {len(worker_games)}/{num_games} games")
+        return worker_games
 
     def _generate_single_game(self, mcts: MCTS, max_moves: int) -> List[Dict[str, Any]]:
         """Generate a single game using its own MCTS instance."""
