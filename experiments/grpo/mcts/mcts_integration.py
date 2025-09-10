@@ -272,10 +272,17 @@ class MCTS:
             legal_moves = list(root.board.legal_moves)
             root.expand(legal_moves, policy_logits_batch[i], self.config)
 
-        # Then, run simulations for each root
+        # Then, run simulations for each root while preserving input order
         with ThreadPoolExecutor(max_workers=self.config.batch_size) as executor:
-            futures = [executor.submit(self._run_simulations_for_root, root) for root in roots]
-            results = [future.result() for future in as_completed(futures)]
+            future_to_index = {
+                executor.submit(self._run_simulations_for_root, root): idx
+                for idx, root in enumerate(roots)
+            }
+
+            results = [None] * len(roots)
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                results[idx] = future.result()
 
         logger.debug(f"Batch search completed for {len(boards)} positions")
         return results
