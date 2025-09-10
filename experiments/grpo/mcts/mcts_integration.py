@@ -16,6 +16,7 @@ import math
 from typing import List, Dict, Tuple, Optional, Any, Callable
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from utils.board_encoding import board_to_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,7 @@ class MCTS:
         roots = [MCTSNode(board=b.copy()) for b in boards]
         
         # First, evaluate all root positions in a batch
-        board_tensors = torch.cat([self._board_to_tensor(b) for b in boards])
+        board_tensors = torch.cat([board_to_tensor(b) for b in boards])
         policy_logits_batch, value_batch = self.model(board_tensors.to(self.device))
 
         for i, root in enumerate(roots):
@@ -328,7 +329,7 @@ class MCTS:
     def _evaluate_position(self, board: chess.Board) -> Tuple[torch.Tensor, float]:
         """Evaluate position using neural network"""
         try:
-            board_tensor = self._board_to_tensor(board)
+            board_tensor = board_to_tensor(board)
             
             if board_tensor is None or board_tensor.numel() == 0:
                 logger.error("Invalid board tensor generated")
@@ -352,58 +353,6 @@ class MCTS:
             logger.error(f"Position evaluation failed: {e}")
             return torch.zeros(4672), 0.0
 
-    def _board_to_tensor(self, board: chess.Board) -> torch.Tensor:
-        """Convert chess board to tensor format compatible with transformer"""
-        # Create 19-channel board representation
-        channels = []
-
-        # Piece channels (12 channels: 6 piece types x 2 colors)
-        for piece_type in range(1, 7):  # 1-6: pawn, knight, bishop, rook, queen, king
-            white_channel = torch.zeros(8, 8)
-            black_channel = torch.zeros(8, 8)
-
-            for square in chess.SQUARES:
-                piece = board.piece_at(square)
-                if piece and piece.piece_type == piece_type:
-                    row, col = divmod(square, 8)
-                    if piece.color == chess.WHITE:
-                        white_channel[row, col] = 1.0
-                    else:
-                        black_channel[row, col] = 1.0
-
-            channels.extend([white_channel, black_channel])
-
-        # Additional channels for game state (7 more to make 19 total)
-        # Side to move
-        side_to_move = torch.ones(8, 8) if board.turn == chess.WHITE else torch.zeros(8, 8)
-        channels.append(side_to_move)
-
-        # Castling rights (4 channels)
-        castling_channels = []
-        for i in range(4):
-            castling_channels.append(torch.zeros(8, 8))
-        if board.has_kingside_castling_rights(chess.WHITE):
-            castling_channels[0].fill_(1.0)
-        if board.has_queenside_castling_rights(chess.WHITE):
-            castling_channels[1].fill_(1.0)
-        if board.has_kingside_castling_rights(chess.BLACK):
-            castling_channels[2].fill_(1.0)
-        if board.has_queenside_castling_rights(chess.BLACK):
-            castling_channels[3].fill_(1.0)
-        channels.extend(castling_channels)
-
-        # En passant (1 channel)
-        en_passant = torch.zeros(8, 8)
-        if board.ep_square:
-            row, col = divmod(board.ep_square, 8)
-            en_passant[row, col] = 1.0
-        channels.append(en_passant)
-
-        # Halfmove clock (1 channel)
-        halfmove = torch.full((8, 8), min(board.halfmove_clock / 100.0, 1.0))
-        channels.append(halfmove)
-
-        return torch.stack(channels, dim=0).unsqueeze(0)  # Add batch dimension
 
     def _get_policy_from_visits(self, root: MCTSNode, legal_moves: List[chess.Move]) -> torch.Tensor:
         """Extract policy from visit counts"""
@@ -484,7 +433,7 @@ class MCTS:
             for i, step in enumerate(trajectory):
                 step['reward'] = result if i == len(trajectory) - 1 else 0.0
                 step['done'] = i == len(trajectory) - 1
-                step['state'] = self._board_to_tensor(step['board'])
+                step['state'] = board_to_tensor(step['board'])
                 step['action'] = self._move_to_index(step['move'])
 
         logger.info(f"Trajectory generation complete: {len(trajectory)} steps, final result: {result}")
