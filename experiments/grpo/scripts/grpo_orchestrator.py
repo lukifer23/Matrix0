@@ -40,6 +40,8 @@ sys.path.insert(0, str(experiments_dir))
 
 from models.large_chess_transformer import MagnusChessTransformerFactory
 from training.grpo_trainer import GRPOTrainer, GRPOConfig, Trajectory, TrajectoryStep
+from training.meta_learning import PerformanceBasedParameterAdjuster
+from training.reward_shaping import RewardShapingCallback
 from mcts.mcts_integration import MCTS, MCTSConfig, SelfPlayManager
 
 # Setup logging
@@ -134,12 +136,16 @@ class GRPOOrchestrator:
                 else:
                     state = torch.zeros(1, 19, 8, 8)
 
+                reward = step_dict.get('reward', 0.0)
+                if self.reward_callback and 'board' in step_dict:
+                    reward += self.reward_callback(step_dict['board'], step_dict.get('move'))
+
                 step = TrajectoryStep(
                     state=state,
                     action=step_dict.get('action', 0),
                     log_prob=step_dict.get('log_prob', 0.0),
                     value=step_dict.get('value', 0.0),
-                    reward=step_dict.get('reward', 0.0),
+                    reward=reward,
                     done=step_dict.get('done', False),
                     legal_mask=step_dict.get('legal_mask')
                 )
@@ -266,6 +272,19 @@ class GRPOOrchestrator:
         )
         self.grpo_trainer = GRPOTrainer(self.model, grpo_cfg, self.device)
 
+        # Optional meta-learning adaptor
+        ml_cfg = self.config.get('meta_learning', {})
+        self.meta_learner = None
+        self.meta_adapt_freq = ml_cfg.get('adaptation_freq', 1)
+        if ml_cfg.get('enabled'):
+            self.meta_learner = PerformanceBasedParameterAdjuster(self.grpo_trainer)
+
+        # Optional reward shaping
+        rs_cfg = self.config.get('reward_shaping', {})
+        self.reward_callback = None
+        if rs_cfg.get('enabled'):
+            self.reward_callback = RewardShapingCallback()
+
         def display_callback(new_trajectory):
             self.current_trajectories.append(new_trajectory)
             self.total_games = len(self.current_trajectories)
@@ -363,6 +382,11 @@ class GRPOOrchestrator:
         try:
             eval_results = self._run_evaluation_games(eval_games)
             self.metrics['evaluation'].append(eval_results)
+
+            if self.meta_learner and self.epoch % self.meta_adapt_freq == 0:
+                win_rate = eval_results.get('win_rate', 0.0)
+                updated = self.meta_learner.adjust(win_rate)
+                logger.info(f"Meta-learning adjusted parameters: {updated}")
         except Exception as e:
             logger.error(f"Error in evaluation phase: {e}")
             self.metrics['evaluation'].append({

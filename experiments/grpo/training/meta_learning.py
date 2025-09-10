@@ -428,6 +428,50 @@ def create_meta_grpo_trainer(base_trainer: Any, d_model: int = 512) -> MetaGRPOT
     return MetaGRPOTrainer(base_trainer, d_model)
 
 
+class PerformanceBasedParameterAdjuster:
+    """Lightweight utility that tweaks GRPO parameters based on win rate.
+
+    This class is intentionally simple and does not require the full
+    meta-learning stack defined above.  It directly mutates the provided
+    ``GRPOTrainer`` instance and keeps its optimizer in sync with the
+    updated learning rate.  The orchestrator can call :meth:`adjust`
+    after each evaluation phase when ``meta_learning.enabled`` is true.
+    """
+
+    def __init__(self, trainer: Any, lr_bounds: Tuple[float, float] = (1e-6, 5e-4),
+                 clip_bounds: Tuple[float, float] = (0.1, 0.4)):
+        self.trainer = trainer
+        self.lr_bounds = lr_bounds
+        self.clip_bounds = clip_bounds
+
+    def adjust(self, win_rate: float) -> Dict[str, float]:
+        """Adjust learning rate and clip epsilon based on win rate.
+
+        Args:
+            win_rate: Fraction of evaluation games won by the trained model.
+
+        Returns:
+            Dictionary of the updated parameter values.
+        """
+
+        cfg = self.trainer.config
+
+        if win_rate < 0.3:
+            cfg.learning_rate = max(cfg.learning_rate * 0.9, self.lr_bounds[0])
+            cfg.clip_epsilon = max(cfg.clip_epsilon * 0.95, self.clip_bounds[0])
+        elif win_rate > 0.7:
+            cfg.learning_rate = min(cfg.learning_rate * 1.1, self.lr_bounds[1])
+            cfg.clip_epsilon = min(cfg.clip_epsilon * 1.05, self.clip_bounds[1])
+
+        for group in self.trainer.optimizer.param_groups:
+            group['lr'] = cfg.learning_rate
+
+        return {
+            'learning_rate': cfg.learning_rate,
+            'clip_epsilon': cfg.clip_epsilon,
+        }
+
+
 if __name__ == "__main__":
     # Test the meta-learning components
     print("Testing Meta-Learning for GRPO...")

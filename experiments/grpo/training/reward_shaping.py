@@ -387,6 +387,19 @@ def create_adaptive_reward_shaper(d_model: int = 512) -> AdaptiveRewardShaper:
     return AdaptiveRewardShaper(d_model)
 
 
+class RewardShapingCallback:
+    """Simple callable used by the orchestrator to inject shaped rewards."""
+
+    def __init__(self, weights: Optional[Dict[str, float]] = None):
+        self.shaper = ChessRewardShaper()
+        self.weights = weights or {}
+
+    def __call__(self, board: chess.Board, move: Optional[chess.Move] = None,
+                 game_result: float = 0.0) -> float:
+        components = self.shaper.shape_reward(board, move, game_result)
+        return components.total_reward(self.weights)
+
+
 if __name__ == "__main__":
     # Test the reward shaper
     print("Testing Chess Reward Shaper...")

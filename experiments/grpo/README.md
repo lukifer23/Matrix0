@@ -51,7 +51,20 @@ magnus_transformer_grpo:
   training:
     num_games_per_epoch: 50  # Games per training epoch
     max_epochs: 25          # Total training epochs
+
+  meta_learning:
+    enabled: true           # Adjust GRPO params based on win rate
+    adaptation_freq: 5      # Epochs between parameter updates
+
+  reward_shaping:
+    enabled: true           # Inject heuristic rewards during self-play
 ```
+
+When `meta_learning.enabled` is true the orchestrator uses a lightweight
+meta-learner to nudge learning rate and clipping parameters based on the
+current evaluation win rate.  Enabling `reward_shaping` applies the
+`ChessRewardShaper` during trajectory conversion so that additional
+heuristic rewards are added to each step.
 
 ## Future Research Directions
 
