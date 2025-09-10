@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import chess
 import torch
+import logging
 
 
 def _get_mcts_module_without_psutil():
@@ -29,6 +30,8 @@ def test_mcts_runs_without_psutil():
 
     model = DummyModel()
     cfg = mcts_mod.MCTSConfig(num_simulations=1, batch_size=1)
+    logging.getLogger().handlers = []
+    logging.basicConfig(level=logging.WARNING)
     mcts = mcts_mod.MCTS(cfg, model)
     board = chess.Board()
     moves, policy, value = mcts.run(board, num_simulations=1)

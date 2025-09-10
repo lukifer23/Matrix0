@@ -69,20 +69,20 @@ class MCTSNode:
         """Check if node has been expanded"""
         return len(self.children) > 0
 
-    def select_child(self, config: MCTSConfig) -> Tuple[chess.Move, 'MCTSNode']:
-        """Select best child using PUCT formula"""
+    def select_child(self, config: MCTSConfig, cpuct: float) -> Tuple[chess.Move, 'MCTSNode']:
+        """Select best child using PUCT formula with dynamic cpuct"""
         best_score = float('-inf')
-        best_move = None
-        best_child = None
+        best_move: Optional[chess.Move] = None
+        best_child: Optional['MCTSNode'] = None
 
         sqrt_parent_visits = np.sqrt(self.visit_count)
 
         for move, child in self.children.items():
-            # PUCT score
             exploitation = child.value
-            exploration = config.cpuct * child.prior * sqrt_parent_visits / (1 + child.visit_count + child.virtual_loss_count)
+            exploration = cpuct * child.prior * sqrt_parent_visits / (
+                1 + child.visit_count + child.virtual_loss_count
+            )
 
-            # Virtual loss penalty
             virtual_penalty = config.virtual_loss * child.virtual_loss_count
 
             score = exploitation + exploration - virtual_penalty
@@ -163,6 +163,16 @@ class MCTS:
         self.tt_cache = {} if config.enable_tt_cache else None
 
         logger.info(f"Initialized MCTS with {config.num_simulations} simulations")
+
+    def _cpuct_at(self, depth: int) -> float:
+        """Compute cpuct value for given tree depth using linear schedule."""
+        start = getattr(self.config, "cpuct_start", None)
+        end = getattr(self.config, "cpuct_end", None)
+        span = int(getattr(self.config, "cpuct_plies", 0))
+        if start is None or end is None or span <= 0:
+            return float(self.config.cpuct)
+        t = min(max(depth, 0), span) / float(span)
+        return float(start) + (float(end) - float(start)) * t
 
     def search(self, board: chess.Board) -> Tuple[torch.Tensor, float]:
         """
@@ -290,37 +300,34 @@ class MCTS:
 
     def _simulate(self, root: MCTSNode) -> None:
         """Single MCTS simulation"""
-        path = []
+        path: List[MCTSNode] = []
         current = root
+        depth = 0
 
         # Selection phase
         while current.is_expanded and not current.board.is_game_over():
-            move, current = current.select_child(self.config)
-            if current is None:
+            cpuct = self._cpuct_at(depth)
+            move, child = current.select_child(self.config, cpuct)
+            if child is None:
                 break
-            path.append(current)
+            child.virtual_loss_count += 1
+            path.append(child)
+            current = child
+            depth += 1
 
-        # Expansion phase
-        if not current.board.is_game_over() and not current.is_expanded:
-            policy_logits, _ = self._evaluate_position(current.board)
+        # Expansion & evaluation
+        if not current.board.is_game_over():
+            policy_logits, value = self._evaluate_position(current.board)
             legal_moves = list(current.board.legal_moves)
             current.expand(legal_moves, policy_logits, self.config)
-
-            # Select first child for evaluation
-            if current.children:
-                first_child = next(iter(current.children.values()))
-                path.append(first_child)
-                current = first_child
-
-        # Evaluation phase
-        if current.board.is_game_over():
-            result = self._get_game_result(current.board)
-        else:
-            _, value = self._evaluate_position(current.board)
             result = value
+        else:
+            result = self._get_game_result(current.board)
 
-        # Backpropagation phase
+        # Backpropagation phase (also removes virtual loss)
         for node in reversed(path):
+            if node.virtual_loss_count > 0:
+                node.virtual_loss_count -= 1
             node.visit_count += 1
             node.value_sum += result
             result = -result  # Flip for opponent
