@@ -285,7 +285,7 @@ class GRPOOrchestrator:
             trajectories = self.self_play_manager.generate_games(
                 num_games, 
                 max_moves=180, 
-                timeout=self.config.get('mcts_timeout', 120)
+                timeout=self.config.get('mcts_timeout', 300)  # 5 minutes per game
             )
             self.current_trajectories = self._convert_mcts_to_grpo_trajectories(trajectories)
             
@@ -300,6 +300,9 @@ class GRPOOrchestrator:
             
         duration = time.time() - start_time
 
+        # Update total games counter
+        self.total_games = len(self.current_trajectories)
+        
         self.metrics['self_play'].append({
             'epoch': self.epoch,
             'games_generated': len(self.current_trajectories),

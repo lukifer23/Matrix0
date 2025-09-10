@@ -320,28 +320,24 @@ class MCTS:
         """Run simulations with batched position evaluation for efficiency"""
         batch_size = min(self.config.batch_size, self.config.num_simulations)
         
-        for batch_start in range(0, self.config.num_simulations, batch_size):
-            batch_end = min(batch_start + batch_size, self.config.num_simulations)
-            batch_size_actual = batch_end - batch_start
-            
-            # Collect positions to evaluate in this batch
-            positions_to_evaluate = []
-            simulation_paths = []
-            
-            for sim_idx in range(batch_start, batch_end):
-                try:
-                    # Run simulation up to the point where we need neural network evaluation
-                    path = self._simulate_to_evaluation(root)
-                    if path:
-                        positions_to_evaluate.append(path[-1].board)
-                        simulation_paths.append(path)
-                except Exception as e:
-                    logger.warning(f"Simulation {sim_idx} failed: {e}")
-                    continue
-            
-            # Batch evaluate all positions
-            if positions_to_evaluate:
-                self._batch_evaluate_positions(positions_to_evaluate, simulation_paths)
+        # Collect all positions that need evaluation
+        all_positions = []
+        all_paths = []
+        
+        for sim_idx in range(self.config.num_simulations):
+            try:
+                # Run simulation up to the point where we need neural network evaluation
+                path = self._simulate_to_evaluation(root)
+                if path:
+                    all_positions.append(path[-1].board)
+                    all_paths.append(path)
+            except Exception as e:
+                logger.warning(f"Simulation {sim_idx} failed: {e}")
+                continue
+        
+        # Batch evaluate all positions at once (much more efficient)
+        if all_positions:
+            self._batch_evaluate_positions(all_positions, all_paths)
     
     def _simulate_to_evaluation(self, root: MCTSNode) -> List[MCTSNode]:
         """Simulate until we reach a position that needs neural network evaluation"""
@@ -508,19 +504,104 @@ class MCTS:
             # Should not happen in a properly terminated game
             return 0.0
 
-    def get_trajectory(self, board: chess.Board, max_moves: int = 180) -> List[Dict[str, Any]]:
+    def _is_draw_by_repetition(self, board: chess.Board, position_history: List[str]) -> bool:
+        """Check if position is a draw by repetition (3-fold repetition)"""
+        current_fen = board.fen()
+        # Count occurrences of current position
+        count = position_history.count(current_fen)
+        return count >= 2  # 3-fold repetition (current + 2 previous)
+
+    def _is_draw_by_50_move_rule(self, move_count: int, last_capture_or_pawn_move: int) -> bool:
+        """Check if position is a draw by 50-move rule"""
+        return (move_count - last_capture_or_pawn_move) >= 50
+
+    def _is_draw_by_insufficient_material(self, board: chess.Board) -> bool:
+        """Check if position is a draw by insufficient material"""
+        return board.is_insufficient_material()
+
+    def _has_duplicate_moves(self, recent_moves: List[chess.Move], move_count: int) -> bool:
+        """Check if recent moves show a repeating pattern"""
+        if len(recent_moves) < 6:  # Need at least 6 moves to detect a pattern
+            return False
+            
+        # Check for simple repetition (same move repeated)
+        last_3_moves = recent_moves[-3:]
+        if len(set(str(m) for m in last_3_moves)) == 1:  # All 3 moves are the same
+            return True
+            
+        # Check for alternating pattern (A-B-A-B-A-B)
+        if len(recent_moves) >= 6:
+            last_6_moves = recent_moves[-6:]
+            if (str(last_6_moves[0]) == str(last_6_moves[2]) == str(last_6_moves[4]) and
+                str(last_6_moves[1]) == str(last_6_moves[3]) == str(last_6_moves[5])):
+                return True
+                
+        return False
+
+    def get_trajectory(self, board: chess.Board, max_moves: int = 180, timeout_seconds: int = 300) -> List[Dict[str, Any]]:
         """
         Generate complete trajectory for GRPO training using real MCTS
+        
+        Args:
+            board: Starting chess position
+            max_moves: Maximum moves per game
+            timeout_seconds: Maximum time per game in seconds (5 minutes default)
         """
-        logger.debug(f"Starting trajectory generation with max_moves={max_moves}")
+        logger.debug(f"Starting trajectory generation with max_moves={max_moves}, timeout={timeout_seconds}s")
         trajectory = []
         current_board = board.copy()
         move_count = 0
+        
+        # Timeout tracking
+        start_time = time.time()
+        last_move_time = start_time
+        
+        # Track game state for draw detection
+        position_history = []
+        move_history = []
+        last_capture_or_pawn_move = 0
+        
+        # Track for duplicate move detection
+        recent_moves = []
+        duplicate_move_count = 0
 
         while not current_board.is_game_over() and move_count < max_moves:
+            # Check for timeout
+            current_time = time.time()
+            if current_time - start_time > timeout_seconds:
+                logger.debug(f"Game timeout after {timeout_seconds}s at move {move_count + 1}")
+                break
+                
+            # Check for move timeout (if a single move takes too long)
+            if current_time - last_move_time > 30:  # 30 seconds per move max
+                logger.debug(f"Move timeout after 30s at move {move_count + 1}")
+                break
+                
             logger.debug(f"Move {move_count + 1}: Getting MCTS policy...")
 
             try:
+                # Check for draw conditions before MCTS search
+                if self._is_draw_by_repetition(current_board, position_history):
+                    logger.debug(f"Draw by repetition at move {move_count + 1}")
+                    break
+                    
+                if self._is_draw_by_50_move_rule(move_count, last_capture_or_pawn_move):
+                    logger.debug(f"Draw by 50-move rule at move {move_count + 1}")
+                    break
+                    
+                if self._is_draw_by_insufficient_material(current_board):
+                    logger.debug(f"Draw by insufficient material at move {move_count + 1}")
+                    break
+                    
+                # Check for duplicate moves (prevent infinite loops)
+                if self._has_duplicate_moves(recent_moves, move_count):
+                    duplicate_move_count += 1
+                    if duplicate_move_count >= 10:  # Allow some duplicates but not too many
+                        logger.debug(f"Too many duplicate moves at move {move_count + 1}, ending game")
+                        break
+                else:
+                    duplicate_move_count = 0
+
                 # Get MCTS policy and value
                 policy, value = self.search(current_board)
 
@@ -547,6 +628,22 @@ class MCTS:
                 # Make move
                 current_board.push(move)
                 move_count += 1
+                
+                # Update game state tracking
+                position_history.append(current_board.fen())
+                move_history.append(move)
+                
+                # Track captures and pawn moves for 50-move rule
+                if current_board.is_capture(move) or current_board.piece_at(move.from_square) == chess.PAWN:
+                    last_capture_or_pawn_move = move_count
+                
+                # Track recent moves for duplicate detection
+                recent_moves.append(move)
+                if len(recent_moves) > 20:  # Keep only last 20 moves
+                    recent_moves.pop(0)
+                
+                # Update move timing
+                last_move_time = time.time()
 
             except Exception as e:
                 logger.error(f"Error during move {move_count + 1}: {e}")
@@ -664,24 +761,37 @@ class SelfPlayManager:
 
     def generate_games(self, num_games: int, max_moves: int = 180, timeout: int = 120) -> List[List[Dict[str, Any]]]:
         """
-        Generate self-play games concurrently across workers.
+        Generate self-play games concurrently across workers with improved parallelization.
         """
         logger.info(f"🚀 SelfPlayManager.generate_games called with {num_games} games")
         games = []
+        
+        # Use more workers for better parallelization
+        max_workers = min(self.num_workers * 2, num_games, 8)  # Cap at 8 workers
+        logger.info(f"Using {max_workers} workers for parallel game generation")
 
-        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all games at once for maximum parallelization
             futures = [
                 executor.submit(self._generate_single_game, self.mcts_factory(), max_moves)
                 for _ in range(num_games)
             ]
 
+            # Process completed games as they finish
+            completed_games = 0
             for future in as_completed(futures):
                 try:
                     trajectory = future.result(timeout=timeout + 10)  # Add buffer for timeout
                     if trajectory:  # Only add non-empty trajectories
                         games.append(trajectory)
+                        completed_games += 1
                         if self.display_callback:
                             self.display_callback(trajectory)
+                        
+                        # Log progress every 25% completion
+                        if completed_games % max(1, num_games // 4) == 0:
+                            logger.info(f"Progress: {completed_games}/{num_games} games completed")
+                            
                 except Exception as e:
                     logger.error(f"Error generating game: {e}")
                     # Continue with other games even if one fails
