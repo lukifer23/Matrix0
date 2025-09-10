@@ -151,7 +151,13 @@ class GRPOTrainer:
 
     def _train_on_group(self, group: List[Trajectory]) -> Dict[str, float]:
         """
-        Train on a single group using GRPO
+        Train on a single group using GRPO.
+
+        Each trajectory's advantages (and value targets) are first scaled by the
+        trajectory's normalized total reward ``(R - reward_mean) / reward_std``.
+        After concatenating steps across the group, advantages are standardized
+        again to zero mean and unit variance. This preserves the relative impact
+        of reward scaling while keeping optimization numerically stable.
 
         Args:
             group: List of trajectories in this group
@@ -166,6 +172,11 @@ class GRPOTrainer:
         all_states = []
         all_actions = []
 
+        # Group-based reward statistics used to normalize each trajectory
+        group_rewards = [t.total_reward for t in group]
+        reward_mean = np.mean(group_rewards)
+        reward_std = np.std(group_rewards) + 1e-8
+
         for trajectory in group:
             rewards = [step.reward for step in trajectory.steps]
             values = [step.value for step in trajectory.steps]
@@ -174,6 +185,13 @@ class GRPOTrainer:
             actions = [step.action for step in trajectory.steps]
 
             advantages, returns = self.compute_gae(rewards, values, self.config.gamma, self.config.gae_lambda)
+
+            # Scale by normalized total reward so higher rewarded trajectories
+            # have proportionally larger advantages/returns.
+            norm_reward = (trajectory.total_reward - reward_mean) / reward_std
+            advantages = advantages * norm_reward
+            returns = returns * norm_reward
+
             all_advantages.append(advantages)
             all_returns.append(returns)
             all_log_probs.extend(log_probs)
@@ -191,12 +209,8 @@ class GRPOTrainer:
         states_tensor = torch.cat(all_states).to(self.device)
         actions_tensor = torch.tensor(all_actions, device=self.device)
 
-        # Group-based reward normalization (GRPO core)
-        group_rewards = [t.total_reward for t in group]
-        reward_mean = np.mean(group_rewards)
-        reward_std = np.std(group_rewards) + 1e-8
-        
-        # Normalize advantages within the group
+        # Standardize advantages after trajectory-level normalization.
+        # This keeps optimization stable while still reflecting reward differences.
         advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
 
         # Store losses for averaging
