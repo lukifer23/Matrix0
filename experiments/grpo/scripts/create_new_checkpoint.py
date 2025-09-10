@@ -28,7 +28,7 @@ def create_magnus_checkpoint():
     print(f"📊 Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Create checkpoint directory
-    checkpoint_dir = Path("checkpoints")
+    checkpoint_dir = Path(__file__).parent.parent / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
 
     # Create checkpoint
@@ -80,7 +80,7 @@ def create_medium_checkpoint():
     print(f"📊 Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Create checkpoint directory
-    checkpoint_dir = Path("checkpoints")
+    checkpoint_dir = Path(__file__).parent.parent / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
 
     # Create checkpoint

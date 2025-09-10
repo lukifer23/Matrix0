@@ -46,11 +46,13 @@ from mcts.mcts_integration import MCTS, MCTSConfig, SelfPlayManager
 from utils.board_encoding import board_to_tensor
 
 # Setup logging
+log_dir = Path(__file__).parent.parent / "logs"
+log_dir.mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)-7s %(message)s',
     handlers=[
-        logging.FileHandler('logs/grpo_orchestrator.log'),
+        logging.FileHandler(log_dir / 'grpo_orchestrator.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -192,7 +194,7 @@ class GRPOOrchestrator:
         # Load checkpoint if exists
         checkpoint_path = self.config.get('checkpoint_path')
         if checkpoint_path and os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             self.epoch = checkpoint.get('epoch', 0)
             logger.info(f"Loaded checkpoint from {checkpoint_path}")
@@ -232,11 +234,16 @@ class GRPOOrchestrator:
             self.reward_callback = RewardShapingCallback()
 
         def display_callback(new_trajectory):
-            self.current_trajectories.append(new_trajectory)
-            self.total_games = len(self.current_trajectories)
+            # Just log that a trajectory was generated, don't modify current_trajectories
+            # as it will be set by _convert_mcts_to_grpo_trajectories after all games are done
+            logger.debug(f"Generated trajectory with {len(new_trajectory)} steps")
 
+        # Create MCTS factory function
+        def mcts_factory():
+            return MCTS(self.model, mcts_config, self.device)
+        
         self.self_play_manager = SelfPlayManager(
-            self.mcts,
+            mcts_factory,
             num_workers=grpo_config.get('num_workers', 3),
             display_callback=display_callback
         )
@@ -382,7 +389,9 @@ class GRPOOrchestrator:
         }
 
     def _load_baseline_model(self):
-        baseline_path = Path(self.config.get('model', {}).get('baseline_checkpoint', 'checkpoints/baseline_medium_transformer_fresh.pt'))
+        # Get the baseline checkpoint path from config, but make it relative to the experiments/grpo directory
+        baseline_relative = self.config.get('model', {}).get('baseline_checkpoint', 'checkpoints/baseline_medium_transformer_fresh.pt')
+        baseline_path = Path(__file__).parent.parent / baseline_relative
         if not baseline_path.exists():
             logger.warning(f"Baseline checkpoint not found at {baseline_path}, using a copy of the current model.")
             return copy.deepcopy(self.model)

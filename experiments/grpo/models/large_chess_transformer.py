@@ -37,7 +37,15 @@ class AdvancedPositionalEncoding(nn.Module):
     def forward(self, x):
         # Combine fixed and learned positional encodings
         combined_pe = self.pe + self.learned_pe
-        return self.dropout(x + combined_pe[:x.size(1)])
+        # Ensure we don't exceed the sequence length
+        seq_len = x.size(1)
+        if seq_len <= combined_pe.size(0):
+            return self.dropout(x + combined_pe[:seq_len])
+        else:
+            # If sequence is longer than max_len, repeat the last positional encoding
+            padding = combined_pe[-1:].repeat(seq_len - combined_pe.size(0), 1)
+            extended_pe = torch.cat([combined_pe, padding], dim=0)
+            return self.dropout(x + extended_pe)
 
 
 class MultiHeadAttentionWithRelativePos(nn.Module):
@@ -57,7 +65,7 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Relative positional embeddings for chess board
-        self.relative_pos_emb = nn.Parameter(torch.randn(2 * 64 - 1, self.head_dim))
+        self.relative_pos_emb = nn.Parameter(torch.randn(2 * 64 - 1, self.nhead))
 
     def forward(self, x, attn_mask=None):
         batch_size, seq_len, _ = x.shape
@@ -96,7 +104,14 @@ class MultiHeadAttentionWithRelativePos(nn.Module):
         q_pos = torch.arange(seq_len, device=device)[:, None]
         k_pos = torch.arange(seq_len, device=device)[None, :]
         rel_pos = k_pos - q_pos + seq_len - 1
-        return self.relative_pos_emb[rel_pos].unsqueeze(0).unsqueeze(0)
+        
+        # Get relative positional embeddings: (seq_len, seq_len, nhead)
+        rel_pos_emb = self.relative_pos_emb[rel_pos]
+        
+        # Add batch dimension and transpose to (1, nhead, seq_len, seq_len)
+        rel_pos_bias = rel_pos_emb.permute(2, 0, 1).unsqueeze(0)
+        
+        return rel_pos_bias
 
 
 class LargeChessTransformerBlock(nn.Module):

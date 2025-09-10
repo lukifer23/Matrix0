@@ -99,7 +99,7 @@ class MCTSNode:
               config: MCTSConfig) -> None:
         """Expand node with legal moves and policy priors"""
         # Apply legal move masking
-        legal_mask = torch.zeros(4672)  # Standard chess move space
+        legal_mask = torch.zeros(4672, device=policy_logits.device)  # Standard chess move space
         for move in legal_moves:
             move_idx = self._move_to_index(move)
             if move_idx < len(legal_mask):
@@ -165,6 +165,21 @@ class MCTS:
 
         logger.info(f"Initialized MCTS with {config.num_simulations} simulations")
 
+    def _move_to_index(self, move: chess.Move) -> int:
+        """Converts a chess.Move object to a policy index using AlphaZero encoding."""
+        from_square = move.from_square
+        to_square = move.to_square
+        promotion = move.promotion
+
+        # Queen moves: 0-4095 (64*64)
+        if not promotion or promotion == chess.QUEEN:
+            return from_square * 64 + to_square
+
+        # Underpromotions: 4096-4671 (64*3*3 = 576 moves)
+        # Each from_square can promote to 3 pieces (Knight, Bishop, Rook)
+        promo_offset = {chess.KNIGHT: 0, chess.BISHOP: 1, chess.ROOK: 2}
+        return 4096 + from_square * 3 + promo_offset[promotion]
+
     def _cpuct_at(self, depth: int) -> float:
         """Compute cpuct value for given tree depth using linear schedule."""
         start = getattr(self.config, "cpuct_start", None)
@@ -227,13 +242,8 @@ class MCTS:
                 logger.error(f"🔍 Traceback: {traceback.format_exc()}")
                 raise
 
-            # Perform simulations
-            for sim_idx in range(self.config.num_simulations):
-                try:
-                    self._simulate(root)
-                except Exception as e:
-                    logger.warning(f"Simulation {sim_idx} failed: {e}")
-                    continue
+            # Perform batched simulations
+            self._run_batched_simulations(root)
 
             # Extract policy from visit counts
             policy = self._get_policy_from_visits(root, legal_moves)
@@ -306,6 +316,112 @@ class MCTS:
         value = root.value
         return policy, value
 
+    def _run_batched_simulations(self, root: MCTSNode):
+        """Run simulations with batched position evaluation for efficiency"""
+        batch_size = min(self.config.batch_size, self.config.num_simulations)
+        
+        for batch_start in range(0, self.config.num_simulations, batch_size):
+            batch_end = min(batch_start + batch_size, self.config.num_simulations)
+            batch_size_actual = batch_end - batch_start
+            
+            # Collect positions to evaluate in this batch
+            positions_to_evaluate = []
+            simulation_paths = []
+            
+            for sim_idx in range(batch_start, batch_end):
+                try:
+                    # Run simulation up to the point where we need neural network evaluation
+                    path = self._simulate_to_evaluation(root)
+                    if path:
+                        positions_to_evaluate.append(path[-1].board)
+                        simulation_paths.append(path)
+                except Exception as e:
+                    logger.warning(f"Simulation {sim_idx} failed: {e}")
+                    continue
+            
+            # Batch evaluate all positions
+            if positions_to_evaluate:
+                self._batch_evaluate_positions(positions_to_evaluate, simulation_paths)
+    
+    def _simulate_to_evaluation(self, root: MCTSNode) -> List[MCTSNode]:
+        """Simulate until we reach a position that needs neural network evaluation"""
+        path = [root]
+        current = root
+        
+        while current.children:
+            # Select child using UCB
+            move, current = current.select_child(self.config, self.config.cpuct)
+            path.append(current)
+            
+            # If this is a leaf node, we need to evaluate it
+            if not current.children:
+                break
+                
+        return path
+    
+    def _batch_evaluate_positions(self, boards: List[chess.Board], simulation_paths: List[List[MCTSNode]]):
+        """Evaluate multiple positions in a single batch"""
+        if not boards:
+            return
+            
+        try:
+            # Convert all boards to tensors
+            board_tensors = []
+            for board in boards:
+                tensor = board_to_tensor(board, device=self.device)
+                if tensor is not None and tensor.numel() > 0:
+                    board_tensors.append(tensor)
+                else:
+                    # This should not happen with proper board_to_tensor implementation
+                    raise ValueError(f"board_to_tensor returned invalid tensor for board: {board.fen()}")
+            
+            if not board_tensors:
+                return
+                
+            # Batch evaluate
+            batch_tensor = torch.cat(board_tensors, dim=0)
+            
+            with torch.no_grad():
+                policy_logits_batch, value_batch = self.model(batch_tensor)
+            
+            # Process results for each simulation
+            for i, (board, path) in enumerate(zip(boards, simulation_paths)):
+                if i < len(policy_logits_batch):
+                    policy_logits = policy_logits_batch[i]
+                    value = float(value_batch[i])
+                    
+                    # Complete the simulation
+                    self._complete_simulation(path, policy_logits, value)
+                    
+        except Exception as e:
+            logger.error(f"Batch evaluation failed: {e}")
+            # Fallback to individual evaluation
+            for board, path in zip(boards, simulation_paths):
+                try:
+                    policy_logits, value = self._evaluate_position(board)
+                    self._complete_simulation(path, policy_logits, value)
+                except Exception as e2:
+                    logger.warning(f"Individual evaluation failed: {e2}")
+    
+    def _complete_simulation(self, path: List[MCTSNode], policy_logits: torch.Tensor, value: float):
+        """Complete a simulation with the evaluated position"""
+        current = path[-1]
+        
+        if not current.board.is_game_over():
+            legal_moves = list(current.board.legal_moves)
+            current.expand(legal_moves, policy_logits, self.config)
+            result = value
+        else:
+            result = self._get_game_result(current.board)
+        
+        # Backpropagation
+        for node in reversed(path):
+            if node.virtual_loss_count > 0:
+                node.virtual_loss_count -= 1
+            node.visit_count += 1
+            node.value_sum += result
+            result = -result  # Flip for opponent
+
     def _simulate(self, root: MCTSNode) -> None:
         """Single MCTS simulation"""
         path: List[MCTSNode] = []
@@ -343,23 +459,23 @@ class MCTS:
     def _evaluate_position(self, board: chess.Board) -> Tuple[torch.Tensor, float]:
         """Evaluate position using neural network"""
         try:
-            board_tensor = board_to_tensor(board)
+            board_tensor = board_to_tensor(board, device=self.device)
             
             if board_tensor is None or board_tensor.numel() == 0:
                 logger.error("Invalid board tensor generated")
-                return torch.zeros(4672), 0.0
+                return torch.zeros(4672, device=self.device), 0.0
 
             with torch.no_grad():
-                policy_logits, value = self.model(board_tensor.to(self.device))
+                policy_logits, value = self.model(board_tensor)
 
             # Validate outputs
             if policy_logits is None or value is None:
                 logger.error("Model returned None outputs")
-                return torch.zeros(4672), 0.0
+                return torch.zeros(4672, device=self.device), 0.0
                 
             if policy_logits.shape[-1] != 4672:
                 logger.error(f"Policy logits shape mismatch: expected 4672, got {policy_logits.shape}")
-                return torch.zeros(4672), 0.0
+                return torch.zeros(4672, device=self.device), 0.0
 
             return policy_logits.cpu().squeeze(0), value.item()
             
