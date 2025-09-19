@@ -46,6 +46,102 @@ class GameResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ParsedTimeControl:
+    """Container for parsed time control settings."""
+
+    original: str
+    time_seconds: Optional[float]
+    increment_seconds: float = 0.0
+
+    def limit_kwargs(self) -> Dict[str, float]:
+        """Return keyword arguments compatible with ``chess.engine.Limit``."""
+        kwargs: Dict[str, float] = {}
+
+        if self.time_seconds is not None:
+            kwargs["time"] = self.time_seconds
+
+        if self.increment_seconds:
+            kwargs["white_inc"] = self.increment_seconds
+            kwargs["black_inc"] = self.increment_seconds
+
+        return kwargs
+
+    def to_limit(self) -> "chess.engine.Limit":
+        """Instantiate a ``chess.engine.Limit`` for the parsed settings."""
+        import chess.engine
+
+        return chess.engine.Limit(**self.limit_kwargs())
+
+
+def _parse_time_fragment(value: Union[str, float, int]) -> float:
+    """Parse a single duration fragment into seconds."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported time control fragment type: {type(value)!r}")
+
+    text = value.strip().lower()
+
+    if not text:
+        raise ValueError("Empty time control fragment")
+
+    if text.endswith("ms"):
+        return float(text[:-2]) / 1000.0
+
+    if text.endswith("s"):
+        return float(text[:-1])
+
+    return float(text)
+
+
+def parse_time_control(time_control: Union[str, float, int, ParsedTimeControl]) -> ParsedTimeControl:
+    """Parse a time control specification into seconds.
+
+    Supported formats include:
+
+    - ``"30+0.3"`` – base time plus per-move increment (in seconds)
+    - ``"100ms"`` – milliseconds
+    - ``"60s"`` – seconds with explicit unit
+    - raw numeric seconds (``30`` or ``30.0``)
+    """
+
+    if isinstance(time_control, ParsedTimeControl):
+        return time_control
+
+    if isinstance(time_control, (int, float)):
+        return ParsedTimeControl(
+            original=str(time_control),
+            time_seconds=float(time_control),
+            increment_seconds=0.0,
+        )
+
+    if not isinstance(time_control, str):
+        raise ValueError(f"Unsupported time control type: {type(time_control)!r}")
+
+    original = time_control
+    cleaned = time_control.strip()
+
+    if "+" in cleaned:
+        base_text, increment_text = cleaned.split("+", 1)
+        base_seconds = _parse_time_fragment(base_text)
+        increment_seconds = _parse_time_fragment(increment_text)
+        return ParsedTimeControl(
+            original=original,
+            time_seconds=base_seconds,
+            increment_seconds=increment_seconds,
+        )
+
+    time_seconds = _parse_time_fragment(cleaned)
+    return ParsedTimeControl(
+        original=original,
+        time_seconds=time_seconds,
+        increment_seconds=0.0,
+    )
+
+
 @dataclass
 class EngineStanding:
     """Tournament standing for an engine."""
@@ -81,7 +177,7 @@ class TournamentConfig:
     format: TournamentFormat
     engines: List[str]
     num_games_per_pairing: int = 1
-    time_control: str = "30+0.3"
+    time_control: Union[str, float, int] = "30+0.3"
     max_moves: int = 200
     concurrency: int = 2
     random_openings: bool = True
@@ -116,6 +212,7 @@ class Tournament:
         self.completed_games: List[GameResult] = []
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
+        self._parsed_time_control = parse_time_control(config.time_control)
 
         # Initialize standings
         for engine in config.engines:
@@ -341,6 +438,11 @@ class Tournament:
 
         return results
 
+    def _create_engine_limit(self) -> "chess.engine.Limit":
+        """Create a chess engine limit using the parsed time control."""
+
+        return self._parsed_time_control.to_limit()
+
     async def _play_game(self, white_engine: str, black_engine: str) -> GameResult:
         """Play a single game between two engines."""
         logger.info(f"Playing game: {white_engine} (White) vs {black_engine} (Black)")
@@ -407,7 +509,7 @@ class Tournament:
                     move = max(visits.items(), key=lambda kv: kv[1])[0]
                 elif current_engine == "stockfish" and stockfish_engine:
                     # Stockfish move
-                    limit = chess.engine.Limit(time=self.config.time_control / 1000.0)
+                    limit = self._create_engine_limit()
                     result = stockfish_engine.play(board, limit)
                     move = result.move
                 else:
@@ -452,7 +554,11 @@ class Tournament:
                 move_count=move_count,
                 metadata={
                     "tournament_format": self.config.format.value,
-                    "time_control": self.config.time_control,
+                    "time_control": {
+                        "original": self._parsed_time_control.original,
+                        "time_seconds": self._parsed_time_control.time_seconds,
+                        "increment_seconds": self._parsed_time_control.increment_seconds,
+                    },
                     "moves": moves
                 }
             )
@@ -653,7 +759,7 @@ def create_tournament_config(
     engines: List[str],
     format: str = "round_robin",
     num_games_per_pairing: int = 1,
-    time_control: str = "30+0.3"
+    time_control: Union[str, float, int] = "30+0.3"
 ) -> TournamentConfig:
     """Create a tournament configuration."""
     return TournamentConfig(
