@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse, Response
 
+from azchess import monitor
 from azchess.config import Config, select_device
 from azchess.draw import should_adjudicate_draw
 from azchess.mcts import MCTS, MCTSConfig
@@ -1278,6 +1279,84 @@ def health():
         params = None
     sf_available = _load_stockfish() is not None
     return {"stockfish": sf_available, "model_params": params, "device": _device}
+
+
+@app.get("/system/metrics")
+def system_metrics():
+    """Return lightweight metrics for the dashboard."""
+
+    try:
+        memory_info = monitor.get_memory_usage("auto")
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("Failed to gather memory usage: %s", exc)
+        memory_info = {"available": False}
+
+    metrics: Dict[str, Any] = {
+        "timestamp": _now_ts(),
+        "active_games": len(GAMES),
+        "memory": memory_info,
+    }
+
+    try:
+        training = training_status()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("Training status lookup failed: %s", exc)
+        training = {"error": str(exc), "is_training": False}
+
+    if isinstance(training, dict):
+        metrics["training"] = {
+            "is_training": bool(training.get("is_training", False)),
+            "progress": training.get("progress"),
+        }
+        if training.get("message"):
+            metrics["training"]["message"] = training["message"]
+        if training.get("error"):
+            metrics["training"]["error"] = training["error"]
+    else:
+        metrics["training"] = {"is_training": False}
+
+    try:
+        ssl_info = ssl_status()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("SSL status lookup failed: %s", exc)
+        ssl_info = {"error": str(exc), "enabled": False, "tasks": []}
+
+    ssl_metrics = {"enabled": False, "task_count": 0}
+    if isinstance(ssl_info, dict):
+        ssl_metrics["enabled"] = bool(ssl_info.get("enabled", False))
+        tasks = ssl_info.get("tasks") or []
+        if isinstance(tasks, list):
+            ssl_metrics["task_count"] = len(tasks)
+        else:
+            try:
+                ssl_metrics["task_count"] = int(tasks)
+            except Exception:
+                ssl_metrics["task_count"] = 0
+        if ssl_info.get("error"):
+            ssl_metrics["error"] = ssl_info["error"]
+    metrics["ssl"] = ssl_metrics
+
+    try:
+        tournaments_info = list_tournaments()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("Tournament summary lookup failed: %s", exc)
+        tournaments_info = {"error": str(exc), "active_tournaments": [], "completed_tournaments": []}
+
+    tournaments = {"active": 0, "completed": 0}
+    if isinstance(tournaments_info, dict):
+        active = tournaments_info.get("total_active")
+        if active is None and isinstance(tournaments_info.get("active_tournaments"), list):
+            active = len(tournaments_info["active_tournaments"])
+        completed = tournaments_info.get("total_completed")
+        if completed is None and isinstance(tournaments_info.get("completed_tournaments"), list):
+            completed = len(tournaments_info["completed_tournaments"])
+        tournaments["active"] = int(active or 0)
+        tournaments["completed"] = int(completed or 0)
+        if tournaments_info.get("error"):
+            tournaments["error"] = tournaments_info["error"]
+    metrics["tournaments"] = tournaments
+
+    return metrics
 
 
 @app.get("/ssl/status")

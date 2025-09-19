@@ -45,3 +45,18 @@ def memory_usage_bytes() -> Optional[int]:
     except Exception:
         return None
 
+
+def get_memory_usage(device: str = "auto") -> dict:
+    """Proxy to the unified memory usage helper.
+
+    The web UI expects ``azchess.monitor`` to expose a ``get_memory_usage``
+    helper.  Delegate to :func:`azchess.utils.get_memory_usage` lazily to avoid
+    introducing an import cycle.
+    """
+
+    # Import locally to avoid importing azchess.utils at module import time and
+    # to keep this module lightweight.
+    from .utils import get_memory_usage as _get_memory_usage  # type: ignore
+
+    return _get_memory_usage(device)
+

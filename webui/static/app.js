@@ -309,59 +309,77 @@ async function loadSSLPerformance() {
 
 // System metrics dashboard
 async function loadSystemMetrics() {
+  const activeGamesEl = document.getElementById('metricActiveGames');
+  const trainingStatusEl = document.getElementById('metricTrainingStatus');
+  const sslTasksEl = document.getElementById('metricSSLTasks');
+  const tournamentsEl = document.getElementById('metricTournaments');
+  const memoryEl = document.getElementById('metricMemoryUsage');
+  const responseTimeEl = document.getElementById('metricResponseTime');
+
   try {
     const startTime = Date.now();
-
-    // Load various system metrics in parallel
-    const [healthRes, trainingRes, sslRes, tournamentRes] = await Promise.allSettled([
-      fetch('/health'),
-      fetch('/training/status'),
-      fetch('/ssl/status'),
-      fetch('/tournament/list')
-    ]);
-
+    const res = await fetch('/system/metrics');
     const responseTime = Date.now() - startTime;
 
-    // Update metrics
-    const activeGamesEl = document.getElementById('metricActiveGames');
-    const trainingStatusEl = document.getElementById('metricTrainingStatus');
-    const sslTasksEl = document.getElementById('metricSSLTasks');
-    const tournamentsEl = document.getElementById('metricTournaments');
-    const memoryEl = document.getElementById('metricMemoryUsage');
-    const responseTimeEl = document.getElementById('metricResponseTime');
-
-    // Active games (simplified - could be enhanced with actual game count)
-    activeGamesEl.textContent = gameId ? '1' : '0';
-
-    // Training status
-    if (trainingRes.status === 'fulfilled') {
-      const training = await trainingRes.value.json();
-      trainingStatusEl.textContent = training.is_training ? 'Active' : 'Idle';
-      trainingStatusEl.style.color = training.is_training ? 'var(--success)' : 'var(--muted)';
+    if (!res.ok) {
+      throw new Error(`Failed to fetch metrics: ${res.status}`);
     }
 
-    // SSL tasks
-    if (sslRes.status === 'fulfilled') {
-      const ssl = await sslRes.value.json();
-      sslTasksEl.textContent = ssl.tasks ? ssl.tasks.length : '0';
+    const data = await res.json();
+
+    const activeGames = Number.isFinite(data.active_games) ? data.active_games : 0;
+    activeGamesEl.textContent = activeGames.toString();
+
+    const trainingInfo = data.training || {};
+    const isTraining = Boolean(trainingInfo.is_training);
+    trainingStatusEl.textContent = isTraining ? 'Active' : 'Idle';
+    trainingStatusEl.style.color = isTraining ? 'var(--success)' : 'var(--muted)';
+
+    const sslInfo = data.ssl || {};
+    let sslTaskCount = 0;
+    if (typeof sslInfo.task_count === 'number' && !Number.isNaN(sslInfo.task_count)) {
+      sslTaskCount = sslInfo.task_count;
+    } else if (Array.isArray(sslInfo.tasks)) {
+      sslTaskCount = sslInfo.tasks.length;
     }
+    sslTasksEl.textContent = sslTaskCount.toString();
 
-    // Tournaments
-    if (tournamentRes.status === 'fulfilled') {
-      const tournaments = await tournamentRes.value.json();
-      const activeCount = tournaments.active_tournaments?.length || 0;
-      tournamentsEl.textContent = activeCount;
+    const tournamentsInfo = data.tournaments || {};
+    let activeTournamentCount = 0;
+    if (typeof tournamentsInfo.active === 'number' && !Number.isNaN(tournamentsInfo.active)) {
+      activeTournamentCount = tournamentsInfo.active;
+    } else if (typeof tournamentsInfo.total_active === 'number') {
+      activeTournamentCount = tournamentsInfo.total_active;
+    } else if (Array.isArray(tournamentsInfo.active_tournaments)) {
+      activeTournamentCount = tournamentsInfo.active_tournaments.length;
     }
+    tournamentsEl.textContent = activeTournamentCount.toString();
 
-    // Memory usage (placeholder - would need backend support)
-    memoryEl.textContent = '~11GB';
+    const memoryInfo = data.memory || {};
+    let memoryDisplay = 'N/A';
+    if (typeof memoryInfo.memory_gb === 'number' && !Number.isNaN(memoryInfo.memory_gb)) {
+      memoryDisplay = `${memoryInfo.memory_gb.toFixed(1)} GB`;
+    } else if (typeof memoryInfo.memory_allocated_gb === 'number' && !Number.isNaN(memoryInfo.memory_allocated_gb)) {
+      memoryDisplay = `${memoryInfo.memory_allocated_gb.toFixed(1)} GB`;
+    } else if (typeof memoryInfo.memory_bytes === 'number' && !Number.isNaN(memoryInfo.memory_bytes)) {
+      const gb = memoryInfo.memory_bytes / (1024 ** 3);
+      memoryDisplay = `${gb.toFixed(1)} GB`;
+    }
+    memoryEl.textContent = memoryDisplay;
 
-    // Response time
     responseTimeEl.textContent = `${responseTime}ms`;
     responseTimeEl.style.color = responseTime < 500 ? 'var(--success)' : responseTime < 1000 ? 'var(--warning)' : 'var(--error)';
-
   } catch (error) {
     debugLog('Failed to load system metrics', error);
+
+    activeGamesEl.textContent = '0';
+    trainingStatusEl.textContent = 'Idle';
+    trainingStatusEl.style.color = 'var(--muted)';
+    sslTasksEl.textContent = '0';
+    tournamentsEl.textContent = '0';
+    memoryEl.textContent = 'N/A';
+    responseTimeEl.textContent = '—';
+    responseTimeEl.style.color = 'var(--muted)';
   }
 }
 
