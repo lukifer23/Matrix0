@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
+Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis. Two additional SSL heads (**pawn structure** and **king safety**) exist in the codebase but are currently disabled while we gather reliable targets and validation metrics.
 
 ## ✅ What's Actually Working (Current Reality)
 
@@ -30,6 +30,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 - **Fork Detection**: ✅ Identifies forking opportunities and threats
 - **Control Detection**: ✅ Analyzes square control and influence
 - **SSL Loss Integration**: ✅ Weighted SSL loss with policy/value learning
+- **Experimental Heads (Future)**: Pawn structure and king safety detection implemented but disabled pending data validation
 
 ### Apple Silicon Optimization
 - **MPS Memory**: ✅ 14GB limit with automatic management and cache clearing
@@ -133,10 +134,11 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 ## Current Development Priorities
 
 ### Priority 1: SSL Performance Validation (1-2 weeks)
-1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 7 objectives
+1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 5 production objectives
 2. **SSL Contribution Analysis**: Quantify SSL impact on policy/value learning
 3. **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
 4. **SSL Curriculum Tuning**: Fine-tune progressive difficulty parameters
+5. **Experimental Task Planning**: Define data requirements for pawn structure and king safety heads before activation
 
 ### Priority 2: Enhanced Evaluation System (2-3 weeks)
 1. **Multi-Engine Tournaments**: Automated competitive evaluation against Stockfish/LC0
@@ -155,7 +157,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 ### Training Performance
 - **Training Speed**: ~3-4 seconds per step (optimized for SSL integration)
 - **Memory Usage**: ~10.7-11.0GB MPS usage (stable with SSL processing)
-- **SSL Status**: ✅ **ARCHITECTURE INTEGRATED** - All 7 SSL tasks integrated, performance validation in progress
+- **SSL Status**: ✅ **ARCHITECTURE INTEGRATED** - Five production SSL tasks active; pawn structure and king safety heads staged for future validation
 - **Training Stability**: ✅ **100% stable** - No NaN/Inf issues with SSL
 - **Multi-Task Learning**: ✅ Simultaneous policy, value, and SSL optimization
 
@@ -205,7 +207,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 ## Success Metrics & Timeline
 
 ### Immediate (Completed - August 27, 2025)
-- ✅ **SSL Integration**: All 7 SSL algorithms fully integrated with training pipeline
+- ✅ **SSL Integration**: Five production SSL algorithms (piece, threat, pin, fork, control) fully integrated with the training pipeline; experimental pawn structure and king safety heads remain disabled pending validation
 - ✅ **Multi-Task Learning**: Working SSL curriculum with progressive difficulty
 - ✅ **Training Stability**: 100% stable training with full SSL capabilities
 - ✅ **WebUI Enhancement**: Complete monitoring system with SSL dashboard
@@ -273,7 +275,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 ## Next Steps
 
 ### Immediate Actions (Completed - August 27, 2025)
-1. ✅ **SSL Integration Complete**: All 7 SSL algorithms fully integrated
+1. ✅ **SSL Integration Complete**: Five production SSL algorithms (piece, threat, pin, fork, control) fully integrated; pawn structure and king safety remain staged for future activation
 2. ✅ **WebUI Enhancement Complete**: Comprehensive monitoring system operational
 3. ✅ **Training Stability Resolved**: All scheduler/gradient issues fixed
 4. ✅ **Documentation Update**: Current status summary completely updated
@@ -314,7 +316,7 @@ Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 53M param
 - 🎯 **WebUI Refinement**: Enhance SSL visualization and monitoring features
 
 ### Success Criteria (All Met)
-- ✅ **SSL Integration**: All 7 SSL algorithms working with training pipeline
+- ✅ **SSL Integration**: Five production SSL algorithms working with the training pipeline; experimental pawn structure and king safety heads are tracked separately
 - ✅ **Training Stability**: 100% stable training with full SSL capabilities
 - ✅ **Performance**: Optimized training throughput with SSL processing
 - ✅ **Documentation**: All technical docs updated and comprehensive

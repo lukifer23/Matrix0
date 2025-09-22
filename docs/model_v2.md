@@ -6,7 +6,7 @@ Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and SSL foundation. The architecture is optimized for Apple Silicon MPS with advanced stability features and SSL foundation with integrated advanced algorithms.
+Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation.
 
 ### Key Specifications
 - **Total Parameters**: 53,217,919 (53M)
@@ -14,14 +14,14 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Input**: 19×8×8 chess board representation
 - **Policy Output**: 4,672 move logits (from-square × to-square)
 - **Value Output**: Scalar win probability
-- **SSL Output**: 13-class per-square predictions (basic piece recognition working)
-- **Training Status**: Training pipeline operational with SSL foundation
+- **SSL Output**: Multi-head per-square predictions covering piece, threat, pin, fork, and control detection (production set of 5 tasks)
+- **Training Status**: Training pipeline operational with 5-task SSL integration
 
 ### Production Achievements
 - **Training Stability**: No NaN/Inf crashes with branch normalization
 - **Memory Efficiency**: 14GB MPS limit with automatic management
 - **Performance**: ~3-4s per training step on Apple Silicon
-- **SSL Foundation**: Basic piece recognition working, advanced algorithms integrated
+- **SSL Coverage**: Five production SSL tasks (piece, threat, pin, fork, control) active; pawn structure and king safety heads implemented but disabled pending data validation
 - **Data Pipeline**: Complete self-play → training → evaluation cycle
 
 ## 2) Implemented Architecture Features
@@ -43,10 +43,10 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Stability**: Gradient clipping and NaN/Inf detection
 
 ### SSL Implementation (Complete Integration)
-- **SSL Integration**: All 7 SSL tasks fully operational
-- **SSL Algorithms**: Advanced algorithms implemented and integrated
-- **SSL Architecture**: Dedicated multi-head SSL architecture with 7 task heads
-- **Current Status**: Complete SSL integration with multi-task learning
+- **SSL Integration**: Five production SSL tasks (piece, threat, pin, fork, control) fully operational
+- **SSL Algorithms**: Advanced algorithms implemented and integrated; pawn structure and king safety heads staged behind configuration flags
+- **SSL Architecture**: Dedicated multi-head SSL architecture with capacity for seven task heads
+- **Current Status**: Production SSL integration active with optional heads disabled by default
 - **Training Stability**: SSL integration working with stable training
 
 ### Training Stability Features
@@ -81,11 +81,11 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Parameters**: ~2M in attention components
 
 ### SSL Architecture (Foundation Ready)
-- **SSL Heads**: Dedicated multi-head SSL architecture (piece, threat, pin, fork, control, pawn_structure, king_safety)
-- **SSL Foundation**: Basic piece recognition working and operational
-- **SSL Algorithms**: Advanced algorithms implemented and integrated
-- **Current Status**: Full SSL integration and multi-task learning operational
-- **Parameters**: ~2M+ in SSL heads (distributed across tasks)
+- **SSL Heads**: Dedicated multi-head SSL architecture with five production heads (piece, threat, pin, fork, control) and two experimental heads (pawn_structure, king_safety) disabled by default
+- **SSL Coverage**: Production heads trained every step with curriculum-aware weighting
+- **SSL Algorithms**: Advanced algorithms implemented for all heads; experimental heads require additional data validation
+- **Current Status**: Full SSL integration for production tasks with optional head activation gated by configuration
+- **Parameters**: ~2M+ in SSL heads (distributed across active and optional tasks)
 
 ### Policy Head (Dual Branch Design)
 - **Input Features**: 320 channels from trunk
@@ -102,11 +102,11 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Parameters**: ~200K
 
 ### SSL Head (Complete Integration)
-- **Architecture**: Dedicated SSL heads for each task
-- **SSL Integration**: All 7 SSL tasks fully operational
-- **Current Status**: Complete SSL integration with multi-task learning
-- **Training**: All SSL tasks training simultaneously
-- **Parameters**: Dedicated SSL parameters
+- **Architecture**: Dedicated SSL heads for each task slot
+- **SSL Integration**: Five production SSL tasks (piece, threat, pin, fork, control) fully operational; pawn structure and king safety heads available but disabled
+- **Current Status**: Production SSL integration with multi-task learning across active heads
+- **Training**: Production SSL tasks training simultaneously each step; experimental tasks pending activation
+- **Parameters**: Dedicated SSL parameters for active heads with reserved capacity for experimental ones
 
 ### Outputs (Production Interface)
 - **Policy**: (B, 4672) - move logits (from-square × to-square)
@@ -120,7 +120,7 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 - **Precision**: FP16 mixed precision
 - **Gradient Clipping**: 0.5 norm threshold
 - **SSL Weight**: 0.05 in total loss
-- **SSL Status**: Basic piece recognition working, advanced algorithms ready
+- **SSL Status**: Five production SSL tasks active; pawn structure and king safety heads available but disabled
 
 ## 4) Parameter Budget and Efficiency
 
@@ -134,7 +134,7 @@ Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipe
 
 ### Production Efficiency
 - **Policy Head**: Dual branch design with factorization saves parameters
-- **SSL Foundation**: Basic piece recognition working, advanced algorithms ready
+- **SSL Coverage**: Five production SSL tasks active with stable loss integration; experimental heads staged
 - **Memory Optimized**: 14GB MPS limit enables full training
 - **Training Stable**: No NaN/Inf issues with current safeguards
 
@@ -174,7 +174,7 @@ model:
   cross_modal_attention: true     # enable cross-modal attention
   
   # Enhanced SSL/SSRL
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # Production SSL tasks (experimental: pawn_structure, king_safety)
   ssl_curriculum: true            # enable progressive difficulty
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
   
@@ -284,13 +284,13 @@ llm_tutor:
 
 ### Enhanced SSL/SSRL System
 **Multi-Task SSL Tasks:**
-- **Piece Recognition**: Basic piece identification (✅ WORKING)
-- **Threat Detection**: Identify pieces under attack/defense (✅ IMPLEMENTED)
-- **Pin Detection**: Identify pinned pieces and constraints (✅ IMPLEMENTED)
-- **Fork Detection**: Identify forking opportunities and threats (✅ IMPLEMENTED)
-- **Control Detection**: Analyze square control and influence (✅ IMPLEMENTED)
-- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns (✅ IMPLEMENTED)
-- **King Safety**: Recognize safe vs exposed king positions (✅ IMPLEMENTED)
+- **Piece Recognition**: Basic piece identification (✅ PRODUCTION)
+- **Threat Detection**: Identify pieces under attack/defense (✅ PRODUCTION)
+- **Pin Detection**: Identify pinned pieces and constraints (✅ PRODUCTION)
+- **Fork Detection**: Identify forking opportunities and threats (✅ PRODUCTION)
+- **Control Detection**: Analyze square control and influence (✅ PRODUCTION)
+- **Pawn Structure**: Pawn chains, isolated pawns, passed pawns (🧪 EXPERIMENTAL — disabled pending data validation)
+- **King Safety**: Recognize safe vs exposed king positions (🧪 EXPERIMENTAL — disabled pending data validation)
 
 **SSRL Learning Objectives:**
 - **Masked Position Prediction**: Hide random pieces, predict what should be there
@@ -299,11 +299,11 @@ llm_tutor:
 - **Temporal Consistency**: Adjacent moves should have similar representations
 
 **SSL Curriculum Progression:**
-1. **Level 1**: Basic piece recognition and board state (✅ WORKING)
-2. **Level 2**: Threat detection and piece relationships (✅ WORKING)
-3. **Level 3**: Pin detection and fork opportunities (✅ WORKING)
-4. **Level 4**: Control analysis and pawn structure (✅ WORKING)
-5. **Level 5**: King safety and complex tactical patterns (✅ WORKING)
+1. **Level 1**: Basic piece recognition and board state (✅ PRODUCTION)
+2. **Level 2**: Threat detection and piece relationships (✅ PRODUCTION)
+3. **Level 3**: Pin detection and fork opportunities (✅ PRODUCTION)
+4. **Level 4**: Control analysis and pawn structure (🧪 EXPERIMENTAL — staging pending data)
+5. **Level 5**: King safety and complex tactical patterns (🧪 EXPERIMENTAL — staging pending data)
 6. **Level 6**: Strategic concepts and long-term planning (✅ READY)
 7. **Level 7**: Advanced positional understanding (✅ READY)
 
@@ -393,7 +393,7 @@ model:
   policy_factor_rank: 0
   enable_visual: false
   enable_llm_tutor: false
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # Production SSL tasks (experimental: pawn_structure, king_safety)
 ```
 
 ### Gradual Fallback Options
@@ -440,7 +440,7 @@ model:
 ### Enhanced SSL/SSRL
 - [x] Basic SSL task implementation (piece recognition)
 - [x] Advanced SSL algorithms implemented in ssl_algorithms.py
-- [x] SSL task integration with training pipeline (all 7 tasks)
+- [x] SSL task integration with training pipeline (5 production tasks; experimental heads staged)
 - [x] SSL curriculum progression system
 - [x] Multi-task loss weighting and combination
 - [x] SSL validation and testing framework
@@ -492,7 +492,7 @@ model:
   aux_policy_move_type: true
   enable_visual: true
   enable_llm_tutor: true
-  ssl_tasks: ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]  # All 7 SSL tasks enabled
+  ssl_tasks: ["piece", "threat", "pin", "fork", "control"]  # Production SSL tasks (experimental: pawn_structure, king_safety)
   ssl_curriculum: true
   ssrl_tasks: ["masked_prediction", "contrastive", "rotation_invariance"]
 
@@ -537,5 +537,5 @@ llm_tutor:
 
 ---
 
-This enhanced V2 design represents a significant evolution of Matrix0, combining architectural improvements with SSL foundation ready for enhancement. The phased implementation approach ensures stability while enabling cutting-edge features like LLM-guided training and multi-modal learning. All features are configurable and can be enabled/disabled independently, providing maximum flexibility and risk mitigation.
+This enhanced V2 design represents a significant evolution of Matrix0, combining architectural improvements with production SSL coverage and a clear path for optional head expansion. The phased implementation approach ensures stability while enabling cutting-edge features like LLM-guided training and multi-modal learning. All features are configurable and can be enabled/disabled independently, providing maximum flexibility and risk mitigation.
 
