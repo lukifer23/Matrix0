@@ -778,7 +778,7 @@ class MCTS:
             if encoded is None:
                 logger.warning("Failed to encode board, using fallback values")
                 policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+                return np.zeros(policy_size, dtype=np.float32), 0.0
             
             # Original tensor preparation (circular import workaround)
             encoded = _ensure_contiguous_array(encoded)
@@ -797,12 +797,12 @@ class MCTS:
 
                     if hasattr(self, 'inference_backend') and self.inference_backend is not None:
                         # Use inference client for multi-threaded MCTS
-                        policy, value = self.inference_backend.infer_np(encoded)
+                        policy_logits, value = self.inference_backend.infer_np(encoded)
 
                         # Validate inference results
-                        if policy is None or value is None:
+                        if policy_logits is None or value is None:
                             logger.error("Inference backend returned None results")
-                            return np.ones(4672, dtype=np.float32) / 4672, 0.0
+                            return np.zeros(4672, dtype=np.float32), 0.0
 
                     else:
                         # Direct inference for single-threaded (original implementation)
@@ -824,8 +824,8 @@ class MCTS:
 
                                 input_tensor = torch.from_numpy(encoded).to("cpu")
                                 policy_logits, value_tensor = self._cpu_model(input_tensor)
-                                policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                                value = value_tensor.cpu().numpy().flatten()
+                                policy_logits = policy_logits.detach().cpu().numpy()
+                                value = value_tensor.detach().cpu().numpy().flatten()
                             else:
                                 # Ensure tensor is properly moved to model device
                                 input_tensor = torch.from_numpy(encoded)
@@ -844,8 +844,8 @@ class MCTS:
 
                                 try:
                                     policy_logits, value_tensor = self.model(input_tensor)
-                                    policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                                    value = value_tensor.cpu().numpy().flatten()
+                                    policy_logits = policy_logits.detach().cpu().numpy()
+                                    value = value_tensor.detach().cpu().numpy().flatten()
                                 except RuntimeError as e:
                                     error_str = str(e).lower()
                                     # Check for MPS-specific errors
@@ -863,8 +863,8 @@ class MCTS:
 
                                                 # Retry inference
                                                 policy_logits, value_tensor = self.model(input_tensor)
-                                                policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                                                value = value_tensor.cpu().numpy().flatten()
+                                                policy_logits = policy_logits.detach().cpu().numpy()
+                                                value = value_tensor.detach().cpu().numpy().flatten()
 
                                                 logger.info(f"MPS recovery successful on attempt {recovery_attempt + 1}")
                                                 break
@@ -891,8 +891,8 @@ class MCTS:
                                                 self._cpu_model.eval()
                                         cpu_tensor = input_tensor.to("cpu")
                                         policy_logits, value_tensor = self._cpu_model(cpu_tensor)
-                                        policy = torch.softmax(policy_logits, dim=-1).cpu().numpy()
-                                        value = value_tensor.cpu().numpy().flatten()
+                                        policy_logits = policy_logits.detach().cpu().numpy()
+                                        value = value_tensor.detach().cpu().numpy().flatten()
                                     else:
                                         raise
                     
@@ -901,28 +901,49 @@ class MCTS:
                     expected_policy_shape = (encoded.shape[0], policy_size)
                     expected_value_shape = (encoded.shape[0],)  # Single value per position
 
-                    if policy.shape != expected_policy_shape:
-                        logger.error(f"Policy shape mismatch: got {policy.shape}, expected {expected_policy_shape}")
-                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+                    # Convert outputs to numpy for validation
+                    policy_logits = np.asarray(policy_logits, dtype=np.float32)
+                    if policy_logits.ndim != 2:
+                        try:
+                            policy_logits = policy_logits.reshape(policy_logits.shape[0], -1)
+                        except Exception as reshape_err:
+                            logger.error(
+                                f"Failed to reshape policy logits {policy_logits.shape}: {reshape_err}"
+                            )
+                            return np.zeros(policy_size, dtype=np.float32), 0.0
+
+                    value = np.asarray(value, dtype=np.float32)
+                    if value.ndim == 2 and value.shape[1] == 1:
+                        value = value[:, 0]
+                    elif value.ndim != 1:
+                        try:
+                            value = value.reshape(value.shape[0])
+                        except Exception as reshape_err:
+                            logger.error(
+                                f"Failed to reshape value tensor {value.shape}: {reshape_err}"
+                            )
+                            return np.zeros(policy_size, dtype=np.float32), 0.0
+
+                    if policy_logits.shape != expected_policy_shape:
+                        logger.error(
+                            f"Policy shape mismatch: got {policy_logits.shape}, expected {expected_policy_shape}"
+                        )
+                        return np.zeros(policy_size, dtype=np.float32), 0.0
 
                     if value.shape != expected_value_shape:
-                        logger.error(f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}")
-                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+                        logger.error(
+                            f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}"
+                        )
+                        return np.zeros(policy_size, dtype=np.float32), 0.0
 
-                    # Validate policy values
-                    if np.any(np.isnan(policy)) or np.any(np.isinf(policy)):
-                        logger.warning("Policy contains NaN/Inf values, normalizing")
-                        policy = np.ones_like(policy) / policy.shape[-1]  # Uniform policy
+                    # Validate policy logits values
+                    if np.any(np.isnan(policy_logits)) or np.any(np.isinf(policy_logits)):
+                        logger.warning("Policy logits contain NaN/Inf values, zeroing out")
+                        policy_logits = np.zeros_like(policy_logits, dtype=np.float32)
 
                     if np.any(np.isnan(value)) or np.any(np.isinf(value)):
                         logger.warning("Value contains NaN/Inf values, using 0.0")
-                        value = np.zeros_like(value)
-
-                    # Ensure policy sums to 1
-                    policy_sums = np.sum(policy, axis=-1)
-                    if not np.allclose(policy_sums, 1.0, atol=1e-3):
-                        logger.warning(f"Policy doesn't sum to 1: {policy_sums}, renormalizing")
-                        policy = policy / policy_sums[..., np.newaxis]
+                        value = np.zeros_like(value, dtype=np.float32)
 
                     # Clamp value to reasonable range
                     value = np.clip(value, -1.0, 1.0)
@@ -934,8 +955,8 @@ class MCTS:
                                 value = -value
                     except Exception:
                         pass
-                    
-                    return policy[0], float(value[0])
+
+                    return policy_logits[0], float(value[0])
                     
                 except TimeoutError as e:
                     if attempt < max_retries:
@@ -946,7 +967,7 @@ class MCTS:
                         logger.error(f"Inference timeout after {max_retries + 1} attempts: {e}")
                         # Return fallback values to prevent MCTS crash
                         policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+                        return np.zeros(policy_size, dtype=np.float32), 0.0
                         
                 except Exception as e:
                     if attempt < max_retries:
@@ -957,13 +978,13 @@ class MCTS:
                         logger.error(f"Inference failed after {max_retries + 1} attempts: {e}")
                         # Return fallback values to prevent MCTS crash
                         policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                        return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+                        return np.zeros(policy_size, dtype=np.float32), 0.0
                         
         except Exception as e:
             logger.error(f"Critical inference error: {e}")
             # Return safe fallback values
             policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-            return np.ones(policy_size, dtype=np.float32) / float(policy_size), 0.0
+            return np.zeros(policy_size, dtype=np.float32), 0.0
 
     def _terminal_value(self, board: chess.Board) -> float:
         if board.is_checkmate():
