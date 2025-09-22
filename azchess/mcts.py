@@ -332,7 +332,7 @@ class MCTS:
                     # Cache miss: recompute value without expanding existing root
                     p_logits, v = self._infer(board)
                     # Ensure recomputed result is stored for future lookups
-                    self.nn_cache.put(key, (p_logits, v))
+                    self.nn_cache.put(key, (np.array(p_logits, copy=True), v))
                 else:
                     # Use cached value when available
                     _, v = cached

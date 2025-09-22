@@ -577,8 +577,16 @@ class InferenceClient:
                 try:
                     if self.res["response_event"].wait(timeout=timeout):
                         # Response received, copy results
-                        policy = self.res["response_policy_tensor"][:batch_size].numpy()
-                        value = self.res["response_value_tensor"][:batch_size].numpy()
+                        policy = (
+                            self.res["response_policy_tensor"][:batch_size]
+                            .numpy()
+                            .copy()
+                        )
+                        value = (
+                            self.res["response_value_tensor"][:batch_size]
+                            .numpy()
+                            .copy()
+                        )
                         
                         # Clear response event for next use
                         self.res["response_event"].clear()
