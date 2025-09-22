@@ -45,7 +45,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Modern UI**: Clean, professional interface with efficient space utilization
 
 ### Production Training Pipeline
-- **Self-Play Generation**: 4 workers generating SSL-enhanced training data
+- **Self-Play Generation**: 3 workers by default (configurable) generating SSL-enhanced training data
 - **Multi-Task Training**: Combined policy/value/SSL optimization with proper gradient accumulation
 - **Model Evaluation**: Tournament system with SSL-aware strength estimation
 - **Checkpoint Management**: Advanced checkpoint creation preserving SSL architecture

@@ -22,7 +22,7 @@ model:
   ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
-  num_workers: 3                   # Next pass: 3 workers
+  num_workers: 3                   # Default worker count
   batch_size: 256                  # Increased from 128 for better efficiency
   max_games: 420                    # TEST RUN: 20 games total
   max_game_len: 180                # Encourage decisive results
@@ -158,7 +158,7 @@ mcts:
 presets:
   mps:
     device: "mps"
-    num_threads: 4  # Match worker count
+    num_threads: 3  # Match default worker count
     inference_batch_size: 32
-    mcts_threads: 4  # Match worker count
-    worker_threads: 1  # 1 core per worker for 4 workers
+    mcts_threads: 3  # Match default worker count
+    worker_threads: 1  # 1 core per worker (3 workers)
