@@ -419,13 +419,19 @@ def run_inference_server(
                         logger.debug(f"Full inference completed in {inference_time:.3f}s for batch size {batch_tensor.shape[0]}")
 
                         # Convert to numpy for response with strict dtype/shape
-                        policy = torch.softmax(policy_logits, dim=-1).detach().to(torch.float32).cpu().numpy()
+                        policy_logits_np = (
+                            policy_logits.detach().to(torch.float32).cpu().numpy()
+                        )
                         value = value_tensor.detach().to(torch.float32).cpu().numpy()
 
                         # Ensure contiguous float32 and correct dims
-                        if policy.ndim != 2:
-                            policy = policy.reshape(policy.shape[0], -1)
-                        policy = np.ascontiguousarray(policy, dtype=np.float32)
+                        if policy_logits_np.ndim != 2:
+                            policy_logits_np = policy_logits_np.reshape(
+                                policy_logits_np.shape[0], -1
+                            )
+                        policy_logits_np = np.ascontiguousarray(
+                            policy_logits_np, dtype=np.float32
+                        )
 
                         if value.ndim == 1:
                             value = value[:, None]
@@ -436,7 +442,11 @@ def run_inference_server(
                             value = value[:, :1]
                         value = np.ascontiguousarray(value, dtype=np.float32)
 
-                        logger.debug(f"Results converted to numpy: policy shape {policy.shape}, value shape {value.shape}")
+                        logger.debug(
+                            "Results converted to numpy: logits shape %s, value shape %s",
+                            policy_logits_np.shape,
+                            value.shape,
+                        )
 
                     except Exception as model_error:
                         logger.error(f"Model inference failed: {model_error}")
@@ -446,7 +456,7 @@ def run_inference_server(
 
                         # Return fallback values
                         batch_size = batch_tensor.shape[0]
-                        policy = np.ones((batch_size, 4672), dtype=np.float32) / 4672
+                        policy_logits_np = np.zeros((batch_size, 4672), dtype=np.float32)
                         value = np.zeros((batch_size, 1), dtype=np.float32)
 
                 # Distribute results back to workers
@@ -460,7 +470,7 @@ def run_inference_server(
                     try:
                         res = shared_memory_resources[worker_id]
                         # Convert numpy arrays to torch tensors before assignment
-                        pol_np = policy[start_idx:end_idx]
+                        pol_np = policy_logits_np[start_idx:end_idx]
                         val_np = value[start_idx:end_idx]
                         if val_np.ndim == 1:
                             val_np = val_np.reshape(-1, 1)
@@ -480,7 +490,9 @@ def run_inference_server(
                         logger.error(f"Failed to send response to worker {worker_id}: {e}")
                         # Guarantee a safe fallback is written and event signaled to avoid deadlock
                         try:
-                            fb_pol = np.ones((batch_size, policy.shape[1]), dtype=np.float32) / max(1, policy.shape[1])
+                            fb_pol = np.zeros(
+                                (batch_size, policy_logits_np.shape[1]), dtype=np.float32
+                            )
                             fb_val = np.zeros((batch_size, 1), dtype=np.float32)
                             res["response_policy_tensor"][:batch_size].copy_(torch.from_numpy(fb_pol))
                             res["response_value_tensor"][:batch_size].copy_(torch.from_numpy(fb_val))
@@ -577,17 +589,19 @@ class InferenceClient:
                 try:
                     if self.res["response_event"].wait(timeout=timeout):
                         # Response received, copy results
-                        policy = self.res["response_policy_tensor"][:batch_size].numpy()
+                        policy_logits = self.res["response_policy_tensor"][:batch_size].numpy()
                         value = self.res["response_value_tensor"][:batch_size].numpy()
                         
                         # Clear response event for next use
                         self.res["response_event"].clear()
                         
                         # Validate outputs
-                        if policy.shape[0] != batch_size or value.shape[0] != batch_size:
-                            raise ValueError(f"Response shape mismatch: policy={policy.shape}, value={value.shape}, expected_batch_size={batch_size}")
-                        
-                        return policy, value.flatten()
+                        if policy_logits.shape[0] != batch_size or value.shape[0] != batch_size:
+                            raise ValueError(
+                                f"Response shape mismatch: policy={policy_logits.shape}, value={value.shape}, expected_batch_size={batch_size}"
+                            )
+
+                        return policy_logits, value.flatten()
                     else:
                         raise TimeoutError(f"Inference timeout after {timeout}s")
                         
@@ -630,8 +644,8 @@ class InferenceClient:
 
     def _get_fallback_values(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
         """Return safe fallback values when inference fails completely."""
-        # Return uniform policy and neutral value
-        policy = np.ones((batch_size, 4672), dtype=np.float32) / 4672
+        # Return neutral logits (uniform after softmax) and neutral value
+        policy = np.zeros((batch_size, 4672), dtype=np.float32)
         value = np.zeros(batch_size, dtype=np.float32)
         return policy, value
 
