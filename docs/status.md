@@ -87,7 +87,7 @@
 ### ✅ Production-Ready Components
 
 #### 1. Complete SSL Training Pipeline
-- **Self-Play Generation**: 4 workers generating SSL-enhanced training data
+- **Self-Play Generation**: 3 workers by default (configurable) generating SSL-enhanced training data
 - **Multi-Task Training**: Simultaneous policy, value, and SSL optimization
 - **Model Evaluation**: Tournament system with SSL-aware strength estimation
 - **Checkpoint Management**: Advanced SSL-preserving checkpoint creation and merging

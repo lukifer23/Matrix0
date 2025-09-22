@@ -743,14 +743,14 @@ class MCTS:
 class SelfPlayManager:
     """Manages self-play games for GRPO training"""
 
-    def __init__(self, mcts_factory: Callable[[], MCTS], num_workers: int = 4, display_callback=None):
+    def __init__(self, mcts_factory: Callable[[], MCTS], num_workers: int = 3, display_callback=None):
         """Create a self-play manager.
 
         Args:
             mcts_factory: Callable that returns a new :class:`MCTS` instance.
                 A separate MCTS will be created for each worker to avoid
                 shared mutable state across threads.
-            num_workers: Number of parallel workers.
+            num_workers: Number of parallel workers (default: 3).
             display_callback: Optional callback for displaying trajectories.
         """
 

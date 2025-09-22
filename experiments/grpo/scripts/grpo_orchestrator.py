@@ -244,7 +244,7 @@ class GRPOOrchestrator:
         
         self.self_play_manager = SelfPlayManager(
             mcts_factory,
-            num_workers=grpo_config.get('num_workers', 4),  # Default to 4 workers
+            num_workers=grpo_config.get('num_workers', 3),  # Default to 3 workers
             display_callback=display_callback
         )
 
