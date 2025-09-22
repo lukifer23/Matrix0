@@ -290,92 +290,125 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         expected_planes=cfg_dict.get("model", {}).get("planes", 19),
     )
 
-    for g in range(games):
-        board = get_opening_position()
-        # Apply polyglot opening if configured (adds variety before random plies)
-        openings_cfg = cfg_dict.get("openings", {})
-        polyglot_path = openings_cfg.get("polyglot", "")
-        polyglot_plies = int(openings_cfg.get("max_plies", 0))
-        if polyglot_path and polyglot_plies > 0:
-            apply_polyglot_opening(board, polyglot_path, max_plies=polyglot_plies)
-        states: List[np.ndarray] = []
-        pis: List[np.ndarray] = []
-        turns: List[int] = []
-        search_values: List[float] = []
-        sims_used: List[int] = []
-        entropy_sum: float = 0.0
-        entropy_count: int = 0
-        legal_masks: List[np.ndarray] = []
-        
-        t0 = perf_counter()
-        last_hb = t0
-        
-        # Temperature parameters for exploration
-        temp_start = float(sp_cfg.get("temperature_start", 1.0))
-        temp_end = float(sp_cfg.get("temperature_end", 0.1))
-        temp_moves = int(sp_cfg.get("temperature_moves", 20))
-
-        # Resign parameters (multi-factor)
-        resign_thr = float(sp_cfg.get("resign_threshold", -0.98))
-        consec_bad = 0
-        # Track a small window of recent values and entropies for stability-based resignation
-        recent_values: List[float] = []
-        recent_entropies: List[float] = []
-        window_k = int(sp_cfg.get("resign_window", 4))
-        min_entropy = float(sp_cfg.get("resign_min_entropy", 0.3))
-        value_margin = float(sp_cfg.get("resign_value_margin", 0.05))
-        resigner_color: str | None = None
-        move_history = []  # Track moves for pattern detection
-        resigned = False
-
-        # Opening diversity: optional random opening plies (quick uniform legal moves)
-        try:
-            # Prefer explicit selfplay key; fallback to openings.random_plies
-            rnd_plies = int(sp_cfg.get("opening_random_plies", cfg_dict.get("openings", {}).get("random_plies", 0)))
-        except Exception:
-            rnd_plies = 0
-        for _ in range(max(0, rnd_plies)):
-            if board.is_game_over():
-                break
-            legal = list(board.legal_moves)
-            if not legal:
-                break
-            mv = random.choice(legal)
-            board.push(mv)
-            move_history.append(mv)
-
-        min_resign_plies = int(sp_cfg.get("min_resign_plies", 24))
-        while not board.is_game_over() and len(states) < sp_cfg.get("max_game_len", 200):
-            if should_adjudicate_draw(board, move_history, draw_cfg):
-                break
-
-            move_no = board.fullmove_number
+    try:
+        for g in range(games):
+            board = get_opening_position()
+            # Apply polyglot opening if configured (adds variety before random plies)
+            openings_cfg = cfg_dict.get("openings", {})
+            polyglot_path = openings_cfg.get("polyglot", "")
+            polyglot_plies = int(openings_cfg.get("max_plies", 0))
+            if polyglot_path and polyglot_plies > 0:
+                apply_polyglot_opening(board, polyglot_path, max_plies=polyglot_plies)
+            states: List[np.ndarray] = []
+            pis: List[np.ndarray] = []
+            turns: List[int] = []
+            search_values: List[float] = []
+            sims_used: List[int] = []
+            entropy_sum: float = 0.0
+            entropy_count: int = 0
+            legal_masks: List[np.ndarray] = []
             
-            # Determine temperature for the current move
-            # Smooth linear schedule by move number
-            if temp_moves <= 0:
-                temperature = temp_end
-            else:
-                t = min(max(move_no, 0), temp_moves) / float(max(1, temp_moves))
-                temperature = temp_start + (temp_end - temp_start) * t
-
-            # Throttle progress logs: switch to DEBUG to reduce output noise
-            move_count = len(states) + 1
-            if move_count % 50 == 1:
-                logger.debug(f"Game {g + 1}: Move {move_count}")
-
-            # Capture turn perspective for this state BEFORE making a move
-            turn_sign = 1 if board.turn == chess.WHITE else -1
-
+            t0 = perf_counter()
+            last_hb = t0
+            
+            # Temperature parameters for exploration
+            temp_start = float(sp_cfg.get("temperature_start", 1.0))
+            temp_end = float(sp_cfg.get("temperature_end", 0.1))
+            temp_moves = int(sp_cfg.get("temperature_moves", 20))
+    
+            # Resign parameters (multi-factor)
+            resign_thr = float(sp_cfg.get("resign_threshold", -0.98))
+            consec_bad = 0
+            # Track a small window of recent values and entropies for stability-based resignation
+            recent_values: List[float] = []
+            recent_entropies: List[float] = []
+            window_k = int(sp_cfg.get("resign_window", 4))
+            min_entropy = float(sp_cfg.get("resign_min_entropy", 0.3))
+            value_margin = float(sp_cfg.get("resign_value_margin", 0.05))
+            resigner_color: str | None = None
+            move_history = []  # Track moves for pattern detection
+            resigned = False
+    
+            # Opening diversity: optional random opening plies (quick uniform legal moves)
             try:
-                t_move0 = perf_counter()
-                # Pass ply index to MCTS for ply-gated Dirichlet in early game
-                visit_counts, pi, v = mcts.run(board, ply=len(states))
-                t_move1 = perf_counter()
+                # Prefer explicit selfplay key; fallback to openings.random_plies
+                rnd_plies = int(sp_cfg.get("opening_random_plies", cfg_dict.get("openings", {}).get("random_plies", 0)))
+            except Exception:
+                rnd_plies = 0
+            for _ in range(max(0, rnd_plies)):
+                if board.is_game_over():
+                    break
+                legal = list(board.legal_moves)
+                if not legal:
+                    break
+                mv = random.choice(legal)
+                board.push(mv)
+                move_history.append(mv)
+    
+            min_resign_plies = int(sp_cfg.get("min_resign_plies", 24))
+            while not board.is_game_over() and len(states) < sp_cfg.get("max_game_len", 200):
+                if should_adjudicate_draw(board, move_history, draw_cfg):
+                    break
+    
+                move_no = board.fullmove_number
                 
-                # Validate visit counts
-                if not visit_counts or all(count == 0 for count in visit_counts.values()):
-                    logger.debug(f"Invalid visit counts: {visit_counts}")
+                # Determine temperature for the current move
+                # Smooth linear schedule by move number
+                if temp_moves <= 0:
+                    temperature = temp_end
+                else:
+                    t = min(max(move_no, 0), temp_moves) / float(max(1, temp_moves))
+                    temperature = temp_start + (temp_end - temp_start) * t
+    
+                # Throttle progress logs: switch to DEBUG to reduce output noise
+                move_count = len(states) + 1
+                if move_count % 50 == 1:
+                    logger.debug(f"Game {g + 1}: Move {move_count}")
+    
+                # Capture turn perspective for this state BEFORE making a move
+                turn_sign = 1 if board.turn == chess.WHITE else -1
+    
+                try:
+                    t_move0 = perf_counter()
+                    # Pass ply index to MCTS for ply-gated Dirichlet in early game
+                    visit_counts, pi, v = mcts.run(board, ply=len(states))
+                    t_move1 = perf_counter()
+                    
+                    # Validate visit counts
+                    if not visit_counts or all(count == 0 for count in visit_counts.values()):
+                        logger.debug(f"Invalid visit counts: {visit_counts}")
+                        # Fallback to random legal move
+                        legal_moves = list(board.legal_moves)
+                        if legal_moves:
+                            move = random.choice(legal_moves)
+                        else:
+                            logger.error("No legal moves available")
+                            break
+                    else:
+                        # Low-visit fallback: increase temperature when search is shallow
+                        try:
+                            low_visit_thr = int(sp_cfg.get("low_visit_threshold", 0))
+                        except Exception:
+                            low_visit_thr = 0
+                        max_visits = max(visit_counts.values()) if visit_counts else 0
+                        temp_eff = temperature
+                        if low_visit_thr > 0 and max_visits < low_visit_thr:
+                            temp_eff = max(temperature, 0.8)
+                        move = sample_move_from_counts(board, visit_counts, temp_eff)
+                        # Track policy entropy from MCTS policy vector
+                        try:
+                            _pi = np.clip(pi.astype(np.float64, copy=False), 1e-12, 1.0)
+                            ent = float(-np.sum(_pi * np.log(_pi)))
+                            entropy_sum += ent
+                            entropy_count += 1
+                            recent_entropies.append(ent)
+                            if len(recent_entropies) > window_k:
+                                recent_entropies.pop(0)
+                        except Exception:
+                            pass
+                
+                except Exception as e:
+                    logger.error(f"MCTS failed: {e}")
                     # Fallback to random legal move
                     legal_moves = list(board.legal_moves)
                     if legal_moves:
@@ -383,210 +416,186 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     else:
                         logger.error("No legal moves available")
                         break
-                else:
-                    # Low-visit fallback: increase temperature when search is shallow
-                    try:
-                        low_visit_thr = int(sp_cfg.get("low_visit_threshold", 0))
-                    except Exception:
-                        low_visit_thr = 0
-                    max_visits = max(visit_counts.values()) if visit_counts else 0
-                    temp_eff = temperature
-                    if low_visit_thr > 0 and max_visits < low_visit_thr:
-                        temp_eff = max(temperature, 0.8)
-                    move = sample_move_from_counts(board, visit_counts, temp_eff)
-                    # Track policy entropy from MCTS policy vector
-                    try:
-                        _pi = np.clip(pi.astype(np.float64, copy=False), 1e-12, 1.0)
-                        ent = float(-np.sum(_pi * np.log(_pi)))
-                        entropy_sum += ent
-                        entropy_count += 1
-                        recent_entropies.append(ent)
-                        if len(recent_entropies) > window_k:
-                            recent_entropies.pop(0)
-                    except Exception:
-                        pass
-            
-            except Exception as e:
-                logger.error(f"MCTS failed: {e}")
-                # Fallback to random legal move
-                legal_moves = list(board.legal_moves)
-                if legal_moves:
-                    move = random.choice(legal_moves)
-                else:
-                    logger.error("No legal moves available")
-                    break
-                # Provide safe defaults for policy and value on failure
-                # Uniform over legal moves
-                legal = list(board.legal_moves)
-                pi = np.zeros(4672, dtype=np.float32)
-                if len(legal) > 0:
-                    p = 1.0 / float(len(legal))
-                    for mv in legal:
+                    # Provide safe defaults for policy and value on failure
+                    # Uniform over legal moves
+                    legal = list(board.legal_moves)
+                    pi = np.zeros(4672, dtype=np.float32)
+                    if len(legal) > 0:
+                        p = 1.0 / float(len(legal))
+                        for mv in legal:
+                            try:
+                                pi[move_to_index(board, mv)] = p
+                            except Exception:
+                                pass
+                    v = 0.0
+                
+                states.append(encode_board(board))
+                pis.append(pi)
+                search_values.append(v)
+                # Record perspective of this position (side to move at this state)
+                turns.append(turn_sign)
+                # Save legal mask for this position
+                try:
+                    lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
+                except Exception:
+                    lm = np.zeros(4672, dtype=np.uint8)
+                legal_masks.append(lm)
+                # Track sims used
+                try:
+                    sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
+                except Exception:
+                    pass
+    
+                # Resign check (multi-factor): consecutive low values, low entropy, stable bad trend
+                if resign_thr > -1.0 and len(states) >= min_resign_plies:
+                    recent_values.append(float(v))
+                    if len(recent_values) > window_k:
+                        recent_values.pop(0)
+                    low_value = v < resign_thr
+                    if low_value:
+                        consec_bad += 1
+                        logger.info(f"Game {g + 1}: Bad value {v:.3f} < {resign_thr:.3f} (consec: {consec_bad})")
+                    else:
+                        consec_bad = 0
+                    resign_seq_bad = int(sp_cfg.get("resign_consecutive_bad", 5))
+                    # Stability: average of recent values below (resign_thr + margin)
+                    stable_bad = False
+                    if len(recent_values) >= max(2, window_k // 2):
+                        avg_recent = float(sum(recent_values) / len(recent_values))
+                        stable_bad = avg_recent < (resign_thr + value_margin)
+                    # Uncertainty: low average entropy
+                    low_uncertainty = False
+                    if len(recent_entropies) >= max(2, window_k // 2):
+                        avg_ent = float(sum(recent_entropies) / len(recent_entropies))
+                        low_uncertainty = avg_ent < min_entropy
+                    if consec_bad >= resign_seq_bad and (stable_bad or low_uncertainty):
+                        resigned = True
+                        z = -1.0 if board.turn == chess.WHITE else 1.0
+                        resigner_color = 'W' if board.turn == chess.WHITE else 'B'
+                        logger.info(
+                            f"Game {g + 1}: Resigned after {consec_bad} low values (stable={stable_bad} lowH={low_uncertainty}). "
+                            f"Side to move: {'White' if board.turn == chess.WHITE else 'Black'}, Result: {z}"
+                        )
+                        break
+                
+                move_history.append(move)
+                board.push(move)
+    
+                # Heartbeat to orchestrator every ~2 seconds (more responsive TUI)
+                if q is not None:
+                    now = perf_counter()
+                    if now - last_hb >= 2.0:
                         try:
-                            pi[move_to_index(board, mv)] = p
+                            q.put({
+                                "type": "heartbeat",
+                                "proc": proc_id,
+                                "game": g,
+                                "moves": len(states),
+                                "avg_sims": (float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0),
+                                "resigned": resigned,
+                                "avg_policy_entropy": (entropy_sum / max(1, entropy_count)),
+                            })
                         except Exception:
                             pass
-                v = 0.0
+                        last_hb = now
+    
+                # Check tablebase after the move
+                if tablebase_reader:
+                    piece_count = len(board.piece_map())
+                    if piece_count <= tb_cfg.get("max_pieces", 7):
+                        try:
+                            wdl = tablebase_reader.probe_wdl(board)
+                            if wdl is not None:
+                                # Tablebase hit, game is over. WDL is from the perspective of the side to move.
+                                # +2, +1 = win; 0 = draw; -1, -2 = loss.
+                                if wdl == 0:
+                                    z = 0.0
+                                else:
+                                    # Convert WDL to a game result (-1.0, 0.0, 1.0) from white's perspective.
+                                    side_to_move = board.turn
+                                    if wdl > 0: # Win for the side to move
+                                        z = 1.0 if side_to_move == chess.WHITE else -1.0
+                                    else: # Loss for the side to move
+                                        z = -1.0 if side_to_move == chess.WHITE else 1.0
+                                
+                                logger.info(f"Tablebase hit ({piece_count} pieces). WDL: {wdl}. Final result: {z}")
+                                break # End the game
+                        except Exception as e:
+                            logger.warning(f"Tablebase probe failed: {e}")
+    
+            # If the game didn't end by tablebase, get the result normally
+            if 'z' not in locals():
+                z = game_result(board)
             
-            states.append(encode_board(board))
-            pis.append(pi)
-            search_values.append(v)
-            # Record perspective of this position (side to move at this state)
-            turns.append(turn_sign)
-            # Save legal mask for this position
-            try:
-                lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
-            except Exception:
-                lm = np.zeros(4672, dtype=np.uint8)
-            legal_masks.append(lm)
-            # Track sims used
-            try:
-                sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
-            except Exception:
-                pass
-
-            # Resign check (multi-factor): consecutive low values, low entropy, stable bad trend
-            if resign_thr > -1.0 and len(states) >= min_resign_plies:
-                recent_values.append(float(v))
-                if len(recent_values) > window_k:
-                    recent_values.pop(0)
-                low_value = v < resign_thr
-                if low_value:
-                    consec_bad += 1
-                    logger.info(f"Game {g + 1}: Bad value {v:.3f} < {resign_thr:.3f} (consec: {consec_bad})")
-                else:
-                    consec_bad = 0
-                resign_seq_bad = int(sp_cfg.get("resign_consecutive_bad", 5))
-                # Stability: average of recent values below (resign_thr + margin)
-                stable_bad = False
-                if len(recent_values) >= max(2, window_k // 2):
-                    avg_recent = float(sum(recent_values) / len(recent_values))
-                    stable_bad = avg_recent < (resign_thr + value_margin)
-                # Uncertainty: low average entropy
-                low_uncertainty = False
-                if len(recent_entropies) >= max(2, window_k // 2):
-                    avg_ent = float(sum(recent_entropies) / len(recent_entropies))
-                    low_uncertainty = avg_ent < min_entropy
-                if consec_bad >= resign_seq_bad and (stable_bad or low_uncertainty):
-                    resigned = True
-                    z = -1.0 if board.turn == chess.WHITE else 1.0
-                    resigner_color = 'W' if board.turn == chess.WHITE else 'B'
-                    logger.info(
-                        f"Game {g + 1}: Resigned after {consec_bad} low values (stable={stable_bad} lowH={low_uncertainty}). "
-                        f"Side to move: {'White' if board.turn == chess.WHITE else 'Black'}, Result: {z}"
-                    )
-                    break
+            # Debug: log the final game result
+            if resigned:
+                logger.info(f"Game {g + 1}: Final result from resignation: {z}")
+            else:
+                logger.info(f"Game {g + 1}: Final result from game end: {z}")
             
-            move_history.append(move)
-            board.push(move)
-
-            # Heartbeat to orchestrator every ~2 seconds (more responsive TUI)
+            # Blend final game result with search values for a more stable target
+            value_target = []
+            for i in range(len(states)):
+                final_z = z * turns[i]
+                search_z = search_values[i]
+                blended_z = 0.7 * final_z + 0.3 * search_z
+                value_target.append(blended_z)
+                
+            # Debug: log the turns array and final calculations
+            logger.info(f"Game {g + 1}: Final game result z={z}, turns array (first 5): {turns[:5] if len(turns) >= 5 else turns}")
+            logger.info(f"Game {g + 1}: First few final_z values: {[z * turns[i] for i in range(min(3, len(turns)))]}")
+    
+            filepath = None
+            if len(states) > 0:
+                game_data = {
+                    "s": np.array(states, dtype=np.float32),
+                    "pi": np.array(pis, dtype=np.float32),
+                    "z": np.array(value_target, dtype=np.float32),
+                    "legal_mask": np.stack(legal_masks, axis=0).astype(np.uint8, copy=False),
+                    # Per-game metadata arrays
+                    "meta_moves": np.array([len(states)], dtype=np.int32),
+                    "meta_result": np.array([z], dtype=np.float32),
+                    "meta_resigned": np.array([1 if resigned else 0], dtype=np.int8),
+                    "meta_draw": np.array([1 if z == 0.0 else 0], dtype=np.int8),
+                    "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
+                    "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
+                }
+                try:
+                    filepath = data_manager.add_selfplay_data(game_data, worker_id=proc_id, game_id=g)
+                except Exception as e:
+                    logger.error(f"Failed to save self-play game w{proc_id} g{g}: {e}", exc_info=True)
+                    filepath = None
+            else:
+                logger.warning(f"Game {g + 1}: No states collected; skipping save to avoid empty shard")
+    
+            game_time = perf_counter() - t0
+            avg_ms_per_move = (game_time * 1000.0 / max(1, len(states)))
+            avg_sims = (float(sum(sims_used)) / max(1, len(sims_used))) if sims_used else 0.0
+            logger.info(f"Game {g + 1} completed: {len(states)} moves, result: {z:.3f}, time: {game_time:.1f}s, avg_entropy: {entropy_sum / max(1, entropy_count):.3f}")
+            
             if q is not None:
-                now = perf_counter()
-                if now - last_hb >= 2.0:
-                    try:
-                        q.put({
-                            "type": "heartbeat",
-                            "proc": proc_id,
-                            "game": g,
-                            "moves": len(states),
-                            "avg_sims": (float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0),
-                            "resigned": resigned,
-                            "avg_policy_entropy": (entropy_sum / max(1, entropy_count)),
-                        })
-                    except Exception:
-                        pass
-                    last_hb = now
-
-            # Check tablebase after the move
-            if tablebase_reader:
-                piece_count = len(board.piece_map())
-                if piece_count <= tb_cfg.get("max_pieces", 7):
-                    try:
-                        wdl = tablebase_reader.probe_wdl(board)
-                        if wdl is not None:
-                            # Tablebase hit, game is over. WDL is from the perspective of the side to move.
-                            # +2, +1 = win; 0 = draw; -1, -2 = loss.
-                            if wdl == 0:
-                                z = 0.0
-                            else:
-                                # Convert WDL to a game result (-1.0, 0.0, 1.0) from white's perspective.
-                                side_to_move = board.turn
-                                if wdl > 0: # Win for the side to move
-                                    z = 1.0 if side_to_move == chess.WHITE else -1.0
-                                else: # Loss for the side to move
-                                    z = -1.0 if side_to_move == chess.WHITE else 1.0
-                            
-                            logger.info(f"Tablebase hit ({piece_count} pieces). WDL: {wdl}. Final result: {z}")
-                            break # End the game
-                    except Exception as e:
-                        logger.warning(f"Tablebase probe failed: {e}")
-
-        # If the game didn't end by tablebase, get the result normally
-        if 'z' not in locals():
-            z = game_result(board)
-        
-        # Debug: log the final game result
-        if resigned:
-            logger.info(f"Game {g + 1}: Final result from resignation: {z}")
-        else:
-            logger.info(f"Game {g + 1}: Final result from game end: {z}")
-        
-        # Blend final game result with search values for a more stable target
-        value_target = []
-        for i in range(len(states)):
-            final_z = z * turns[i]
-            search_z = search_values[i]
-            blended_z = 0.7 * final_z + 0.3 * search_z
-            value_target.append(blended_z)
-            
-        # Debug: log the turns array and final calculations
-        logger.info(f"Game {g + 1}: Final game result z={z}, turns array (first 5): {turns[:5] if len(turns) >= 5 else turns}")
-        logger.info(f"Game {g + 1}: First few final_z values: {[z * turns[i] for i in range(min(3, len(turns)))]}")
-
-        filepath = None
-        if len(states) > 0:
-            game_data = {
-                "s": np.array(states, dtype=np.float32),
-                "pi": np.array(pis, dtype=np.float32),
-                "z": np.array(value_target, dtype=np.float32),
-                "legal_mask": np.stack(legal_masks, axis=0).astype(np.uint8, copy=False),
-                # Per-game metadata arrays
-                "meta_moves": np.array([len(states)], dtype=np.int32),
-                "meta_result": np.array([z], dtype=np.float32),
-                "meta_resigned": np.array([1 if resigned else 0], dtype=np.int8),
-                "meta_draw": np.array([1 if z == 0.0 else 0], dtype=np.int8),
-                "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
-                "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
-            }
+                q.put({
+                    "type": "game",
+                    "proc": proc_id,
+                    "file": filepath,
+                    "moves": len(states),
+                    "result": float(z),
+                    "secs": game_time,
+                    "resigned": resigned,
+                    "resigner": resigner_color,
+                    "draw": bool(z == 0.0),
+                    "avg_policy_entropy": (entropy_sum / max(1, entropy_count)),
+                    "avg_ms_per_move": avg_ms_per_move,
+                    "avg_sims": avg_sims,
+                })
+    
+    
+    finally:
+        if tablebase_reader is not None:
             try:
-                filepath = data_manager.add_selfplay_data(game_data, worker_id=proc_id, game_id=g)
+                tablebase_reader.close()
             except Exception as e:
-                logger.error(f"Failed to save self-play game w{proc_id} g{g}: {e}", exc_info=True)
-                filepath = None
-        else:
-            logger.warning(f"Game {g + 1}: No states collected; skipping save to avoid empty shard")
-
-        game_time = perf_counter() - t0
-        avg_ms_per_move = (game_time * 1000.0 / max(1, len(states)))
-        avg_sims = (float(sum(sims_used)) / max(1, len(sims_used))) if sims_used else 0.0
-        logger.info(f"Game {g + 1} completed: {len(states)} moves, result: {z:.3f}, time: {game_time:.1f}s, avg_entropy: {entropy_sum / max(1, entropy_count):.3f}")
-        
-        if q is not None:
-            q.put({
-                "type": "game",
-                "proc": proc_id,
-                "file": filepath,
-                "moves": len(states),
-                "result": float(z),
-                "secs": game_time,
-                "resigned": resigned,
-                "resigner": resigner_color,
-                "draw": bool(z == 0.0),
-                "avg_policy_entropy": (entropy_sum / max(1, entropy_count)),
-                "avg_ms_per_move": avg_ms_per_move,
-                "avg_sims": avg_sims,
-            })
+                logger.warning(f"Failed to close tablebase: {e}")
 
 
 def sample_move_from_counts(board: chess.Board, counts: Dict[chess.Move, int], temperature: float) -> chess.Move:
