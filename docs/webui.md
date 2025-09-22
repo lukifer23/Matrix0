@@ -89,8 +89,9 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
   "stockfish": true,
   "model_params": 53206724,
   "device": "cpu",
-      "ssl_enabled": true,
-    "ssl_tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"],
+    "ssl_enabled": true,
+    "ssl_tasks": ["piece", "threat", "pin", "fork", "control"],
+    "experimental_ssl_tasks": ["pawn_structure", "king_safety"],
     "training_status": "operational"
 }
 ```
@@ -101,8 +102,9 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
 ```json
 {
       "enabled": true,
-    "tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"],
-    "ssl_head_count": 7,
+    "tasks": ["piece", "threat", "pin", "fork", "control"],
+    "experimental_tasks": ["pawn_structure", "king_safety"],
+    "ssl_head_count": 5,
     "total_ssl_params": "dedicated",
     "head_parameters": {
       "piece": "dedicated",
@@ -110,8 +112,8 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
       "pin": "dedicated",
       "fork": "dedicated",
       "control": "dedicated",
-      "pawn_structure": "dedicated",
-      "king_safety": "dedicated"
+      "pawn_structure": "dedicated (disabled)",
+      "king_safety": "dedicated (disabled)"
     }
 }
 ```
@@ -154,15 +156,16 @@ Tip: The Orchestrator tab also tails `logs/structured.jsonl` for general logs an
       "pin": {"parameters": "dedicated", "structure": "..."},
       "fork": {"parameters": "dedicated", "structure": "..."},
       "control": {"parameters": "dedicated", "structure": "..."},
-      "pawn_structure": {"parameters": "dedicated", "structure": "..."},
-      "king_safety": {"parameters": "dedicated", "structure": "..."}
+      "pawn_structure": {"parameters": "dedicated", "structure": "...", "status": "experimental"},
+      "king_safety": {"parameters": "dedicated", "structure": "...", "status": "experimental"}
     },
     "architecture": {
       "channels": 320,
       "blocks": 24,
       "attention_heads": 20,
       "ssl_enabled": true,
-      "ssl_tasks": ["piece", "threat", "pin", "fork", "control", "pawn_structure", "king_safety"]
+      "ssl_tasks": ["piece", "threat", "pin", "fork", "control"],
+      "experimental_ssl_tasks": ["pawn_structure", "king_safety"]
     }
 }
 ```
@@ -268,14 +271,14 @@ The enhanced WebUI features four specialized views accessible via the top naviga
 
 #### 🔬 SSL View - Advanced SSL Monitoring
 1. **SSL Configuration**: View current SSL settings and task status
-2. **SSL Heads Analysis**: Examine all 7 SSL heads:
-   - **Piece Detection**: Dedicated SSL parameters
-   - **Threat Detection**: Dedicated SSL parameters
-   - **Pin Detection**: Dedicated SSL parameters
-   - **Fork Detection**: Dedicated SSL parameters
-   - **Control Detection**: Dedicated SSL parameters
-   - **Pawn Structure**: Dedicated SSL parameters
-   - **King Safety**: Dedicated SSL parameters
+2. **SSL Heads Analysis**: Examine all 5 production SSL heads, with experimental heads called out separately:
+   - **Piece Detection**: Dedicated SSL parameters (production)
+   - **Threat Detection**: Dedicated SSL parameters (production)
+   - **Pin Detection**: Dedicated SSL parameters (production)
+   - **Fork Detection**: Dedicated SSL parameters (production)
+   - **Control Detection**: Dedicated SSL parameters (production)
+   - **Pawn Structure**: Dedicated SSL parameters (experimental, disabled by default)
+   - **King Safety**: Dedicated SSL parameters (experimental, disabled by default)
 3. **Parameter Tracking**: Monitor SSL learning effectiveness
 4. **SSL Performance**: Track task balancing and contribution
 
@@ -403,15 +406,15 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 ## Current Project Status
 
 ### Training Pipeline
-- **Status**: ✅ **FULLY OPERATIONAL** with complete SSL integration
-- **SSL Integration**: ✅ **COMPLETE** - All 7 SSL tasks working simultaneously
+- **Status**: ✅ **FULLY OPERATIONAL** with production 5-task SSL integration
+- **SSL Integration**: ✅ **COMPLETE** - Five SSL tasks (piece, threat, pin, fork, control) training simultaneously; pawn structure and king safety heads remain experimental and disabled
 - **Multi-Task Learning**: ✅ **ACTIVE** - Policy, value, and SSL training combined
 - **Real-time Monitoring**: ✅ **ENHANCED** - WebUI provides comprehensive monitoring
 
 ### Model Architecture
 - **Parameters**: 53M+ (ResNet-24 with complete SSL integration)
-- **SSL Heads**: **7 specialized SSL heads** (piece, threat, pin, fork, control, pawn_structure, king_safety)
-- **SSL Parameters**: Dedicated SSL parameters with weighted loss functions
+- **SSL Heads**: **5 production SSL heads** (piece, threat, pin, fork, control) active; pawn_structure and king_safety heads implemented but disabled by default
+- **SSL Parameters**: Dedicated SSL parameters with weighted loss functions for production heads and reserved capacity for experimental ones
 - **Memory Usage**: 14GB MPS limit with SSL processing optimization
 - **Performance**: ~3-4 seconds per training step with SSL
 

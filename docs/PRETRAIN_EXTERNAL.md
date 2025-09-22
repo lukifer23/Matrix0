@@ -7,8 +7,9 @@ The `pretrain_external.py` tool is designed for large-scale pretraining runs usi
 ## Features
 
 ### SSL Architecture Integration
-- **7 SSL Tasks**: piece, threat, pin, fork, control, pawn_structure, king_safety
-- **Individual Task Weights**: Configurable weights for each SSL task
+- **Production SSL Tasks**: piece, threat, pin, fork, control (enabled in config.yaml)
+- **Experimental SSL Tasks**: pawn_structure, king_safety (implemented but disabled by default)
+- **Individual Task Weights**: Configurable weights for each active SSL task
 - **SSL Warmup**: Gradual SSL weight increase over first 500 steps
 - **Enhanced SSL Loss**: Multi-task SSL learning with proper loss computation
 
@@ -90,8 +91,10 @@ python -m azchess.tools.pretrain_external \
 - `--ssl-pin-weight 0.7`: Pin detection task weight
 - `--ssl-fork-weight 0.6`: Fork detection task weight
 - `--ssl-control-weight 0.5`: Square control task weight
-- `--ssl-pawn-structure-weight 0.4`: Pawn structure task weight
-- `--ssl-king-safety-weight 0.4`: King safety task weight
+
+#### Experimental SSL (optional)
+- `--ssl-pawn-structure-weight 0.4`: Pawn structure task weight (requires enabling experimental head)
+- `--ssl-king-safety-weight 0.4`: King safety task weight (requires enabling experimental head)
 
 #### Training Configuration
 - `--steps 100000`: Total training steps
@@ -181,7 +184,7 @@ Every 5 minutes, the system logs:
 
 ### With Main Training Pipeline
 - **Checkpoint Compatibility**: Seamless integration with enhanced_best.pt
-- **SSL Architecture**: Full compatibility with 7-task SSL system
+- **SSL Architecture**: Full compatibility with the production 5-task SSL system (experimental pawn structure and king safety heads supported but disabled by default)
 - **Model Format**: Standard checkpoint format for orchestrator integration
 
 ### Evaluation
