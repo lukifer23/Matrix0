@@ -495,8 +495,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         else:
             value_loss = nn.functional.mse_loss(v, z)
 
-        ssl_loss = 0.0
-        if enable_ssl and ssl_targets is not None and ssl_out is not None:
+        ssl_active = bool(enable_ssl and ssl_targets is not None and ssl_out is not None)
+        ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
+        ramp = 1.0
+        if ssl_active:
             # DEBUG: Log SSL computation conditions
             if torch.rand(1).item() < 0.05:  # 5% chance to log
                 logger.info(f"SSL COMPUTATION: enable_ssl={enable_ssl}, ssl_targets is not None={ssl_targets is not None}, ssl_out is not None={ssl_out is not None}")
@@ -600,11 +602,21 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         target_dtype = policy_loss.dtype
         if value_loss.dtype != target_dtype:
             value_loss = value_loss.to(dtype=target_dtype)
-        if ssl_loss.dtype != target_dtype:
-            ssl_loss = ssl_loss.to(dtype=target_dtype)
+        if isinstance(ssl_loss, torch.Tensor):
+            if ssl_loss.dtype != target_dtype:
+                ssl_loss = ssl_loss.to(dtype=target_dtype)
+        else:
+            if ssl_loss is None:
+                scalar_ssl = 0.0
+            else:
+                try:
+                    scalar_ssl = float(ssl_loss)
+                except (TypeError, ValueError):
+                    scalar_ssl = 0.0
+            ssl_loss = torch.tensor(scalar_ssl, device=device, dtype=target_dtype)
 
         # Combine losses with consistent dtypes
-        if enable_ssl and (isinstance(ssl_loss, torch.Tensor) and ssl_loss.detach().item() > 0):
+        if ssl_active and isinstance(ssl_loss, torch.Tensor) and ssl_loss.detach().item() > 0:
             loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         else:
             loss = policy_loss + policy_reg_loss + value_loss
@@ -687,7 +699,20 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         logger.warning("Skipping backward for this batch (loss not set or non-finite)")
     
     # Optimizer stepping and clipping are handled by the caller to support grad accumulation
-    return loss.item(), policy_loss.item(), value_loss.item(), (ssl_loss.item() if ssl_targets is not None else 0.0), (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0)
+    if isinstance(ssl_loss, torch.Tensor):
+        try:
+            ssl_loss_return = float(ssl_loss.detach().item())
+        except RuntimeError:
+            ssl_loss_return = float(ssl_loss.detach().mean().item())
+    elif ssl_loss is None:
+        ssl_loss_return = 0.0
+    else:
+        ssl_loss_return = float(ssl_loss)
+
+    if not ssl_active:
+        ssl_loss_return = 0.0
+
+    return loss.item(), policy_loss.item(), value_loss.item(), ssl_loss_return, (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0)
 
 def get_lr_scheduler(optimizer, total_steps: int, warmup_steps: int):
     """Creates a learning rate scheduler with linear warmup and cosine decay."""
