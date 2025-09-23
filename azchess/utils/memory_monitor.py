@@ -69,7 +69,7 @@ class MemoryMonitor:
         """Start the memory monitoring thread."""
         if self.is_monitoring:
             logger.warning("Memory monitoring is already running")
-            return
+            return False
 
         self.is_monitoring = True
         self.stop_event.clear()
@@ -81,11 +81,12 @@ class MemoryMonitor:
         )
         self.monitor_thread.start()
         logger.info(f"Memory monitoring started for device: {device}")
+        return True
 
-    def stop_monitoring(self) -> None:
+    def stop_monitoring(self) -> bool:
         """Stop the memory monitoring thread."""
-        if not self.is_monitoring:
-            return
+        if not self.is_monitoring and not (self.monitor_thread and self.monitor_thread.is_alive()):
+            return False
 
         self.is_monitoring = False
         self.stop_event.set()
@@ -93,7 +94,9 @@ class MemoryMonitor:
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=5.0)
 
+        self.monitor_thread = None
         logger.info("Memory monitoring stopped")
+        return True
 
     def _monitor_loop(self, device: str) -> None:
         """Main monitoring loop."""
@@ -202,6 +205,16 @@ class MemoryMonitor:
         """Add a callback function to be called when alerts are generated."""
         self.alert_callbacks.append(callback)
 
+    def remove_alert_callback(self, callback: Callable[[MemoryAlert], None]) -> bool:
+        """Remove a previously registered alert callback."""
+        try:
+            self.alert_callbacks.remove(callback)
+            logger.debug("Removed memory alert callback: %s", getattr(callback, "__name__", repr(callback)))
+            return True
+        except ValueError:
+            logger.debug("Attempted to remove unregistered memory alert callback: %s", getattr(callback, "__name__", repr(callback)))
+            return False
+
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get comprehensive memory statistics."""
         stats = {
@@ -235,19 +248,19 @@ class MemoryMonitor:
 memory_monitor = MemoryMonitor()
 
 
-def start_memory_monitoring(device: str = 'auto', **kwargs) -> None:
+def start_memory_monitoring(device: str = 'auto', **kwargs) -> bool:
     """Convenience function to start memory monitoring."""
     # Update monitor settings if provided
     for key, value in kwargs.items():
         if hasattr(memory_monitor, key):
             setattr(memory_monitor, key, value)
 
-    memory_monitor.start_monitoring(device)
+    return memory_monitor.start_monitoring(device)
 
 
-def stop_memory_monitoring() -> None:
+def stop_memory_monitoring() -> bool:
     """Convenience function to stop memory monitoring."""
-    memory_monitor.stop_monitoring()
+    return memory_monitor.stop_monitoring()
 
 
 def get_memory_stats() -> Dict[str, Any]:
@@ -258,3 +271,8 @@ def get_memory_stats() -> Dict[str, Any]:
 def add_memory_alert_callback(callback: Callable[[MemoryAlert], None]) -> None:
     """Convenience function to add alert callback."""
     memory_monitor.add_alert_callback(callback)
+
+
+def remove_memory_alert_callback(callback: Callable[[MemoryAlert], None]) -> bool:
+    """Convenience function to remove alert callback."""
+    return memory_monitor.remove_alert_callback(callback)
