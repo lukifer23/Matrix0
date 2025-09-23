@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -123,6 +123,44 @@ def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tenso
     except Exception as e:
         logger.error(f"Policy masking failed: {e}")
         return p
+
+
+def _handle_memory_thresholds(
+    memory_usage_gb: float,
+    memory_limit_gb: float,
+    warning_threshold: float,
+    critical_threshold: float,
+    last_memory_warning: float,
+    memory_warning_cooldown: float,
+    device: str,
+    *,
+    now_fn: Callable[[], float] = time.time,
+) -> float:
+    """Apply training-specific memory threshold handling and return the updated timestamp."""
+
+    if memory_limit_gb <= 0 or memory_usage_gb <= 0:
+        return last_memory_warning
+
+    current_time = now_fn()
+    memory_ratio = memory_usage_gb / memory_limit_gb if memory_limit_gb else 0.0
+
+    if memory_ratio >= critical_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
+        logger.warning(
+            f"CRITICAL MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})"
+        )
+        logger.warning("Consider reducing batch size or enabling gradient checkpointing")
+        emergency_memory_cleanup(device)
+        return current_time
+
+    if memory_ratio >= warning_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
+        logger.warning(
+            f"HIGH MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})"
+        )
+        clear_memory_cache(device)
+        return current_time
+
+    return last_memory_warning
+
 
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
@@ -1076,6 +1114,10 @@ def train_comprehensive(
     memory_warning_threshold = safe_config_get(cfg, 'memory_warning_threshold', 0.85, section='training')  # 85% default
     memory_critical_threshold = safe_config_get(cfg, 'memory_critical_threshold', 0.95, section='training')  # 95% default
 
+    # Default warning state for heartbeat monitoring
+    last_memory_warning = 0.0
+    memory_warning_cooldown = 300.0  # 5 minutes between warnings
+
     # Start comprehensive memory monitoring
     try:
         start_memory_monitoring(
@@ -1098,8 +1140,8 @@ def train_comprehensive(
     except Exception as e:
         logger.warning(f"Could not start advanced memory monitoring: {e}")
         # Fallback to basic monitoring
-        last_memory_warning = 0
-        memory_warning_cooldown = 300  # 5 minutes between warnings
+        last_memory_warning = 0.0
+        memory_warning_cooldown = 300.0  # 5 minutes between warnings
 
     def get_system_memory_usage():
         """Get current system memory usage in GB for heartbeat monitoring."""
@@ -1417,20 +1459,15 @@ def train_comprehensive(
                         # Memory monitoring and alerting (threshold-driven cache clears only)
                         memory_usage_gb = get_system_memory_usage()
                         if memory_limit_gb > 0 and memory_usage_gb > 0:
-                            memory_ratio = memory_usage_gb / memory_limit_gb
-                            current_time = time.time()
-
-                            if memory_ratio >= memory_critical_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
-                                logger.warning(f"CRITICAL MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})")
-                                logger.warning("Consider reducing batch size or enabling gradient checkpointing")
-                                emergency_memory_cleanup(device)
-                                last_memory_warning = current_time
-
-                            elif memory_ratio >= memory_warning_threshold and (current_time - last_memory_warning) > memory_warning_cooldown:
-                                logger.warning(f"HIGH MEMORY USAGE: {memory_usage_gb:.2f}GB / {memory_limit_gb:.2f}GB ({memory_ratio:.1%})")
-                                # Threshold-based cleanup only
-                                clear_memory_cache(device)
-                                last_memory_warning = current_time
+                            last_memory_warning = _handle_memory_thresholds(
+                                memory_usage_gb=memory_usage_gb,
+                                memory_limit_gb=memory_limit_gb,
+                                warning_threshold=memory_warning_threshold,
+                                critical_threshold=memory_critical_threshold,
+                                last_memory_warning=last_memory_warning,
+                                memory_warning_cooldown=memory_warning_cooldown,
+                                device=device,
+                            )
 
                         logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} (updates={updates_done}) | "
                                   f"BatchLoss: {max(0.0, float(loss)):.4f} | EMA: {running_loss:.4f} | "
