@@ -120,11 +120,16 @@ class MemoryMonitor:
             self.memory_history.append(memory_usage_gb)
             self.history_timestamps.append(current_time)
 
-            # Calculate memory ratio
+            # Calculate memory ratio and human-readable usage string
             if memory_limit_gb > 0:
                 memory_ratio = memory_usage_gb / memory_limit_gb
+                usage_message = (
+                    f"memory {memory_usage_gb:.1f}/{memory_limit_gb:.1f} GB "
+                    f"({memory_ratio:.0%})"
+                )
             else:
                 memory_ratio = 0
+                usage_message = f"memory {memory_usage_gb:.1f} GB (limit unknown)"
 
             # Check for alerts
             alert = None
@@ -135,7 +140,7 @@ class MemoryMonitor:
                 if current_time - self.last_alert_time > self.alert_cooldown:
                     alert = MemoryAlert(
                         alert_type='critical',
-                        message=".1f",
+                        message=usage_message,
                         memory_usage_gb=memory_usage_gb,
                         memory_limit_gb=memory_limit_gb,
                         timestamp=current_time,
@@ -156,7 +161,7 @@ class MemoryMonitor:
                 if current_time - self.last_alert_time > self.alert_cooldown:
                     alert = MemoryAlert(
                         alert_type='warning',
-                        message=".1f",
+                        message=usage_message,
                         memory_usage_gb=memory_usage_gb,
                         memory_limit_gb=memory_limit_gb,
                         timestamp=current_time,
