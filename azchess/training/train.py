@@ -35,8 +35,9 @@ from azchess.ssl_algorithms import ChessSSLAlgorithms
 from azchess.training.npz_dataset import build_training_dataloader
 from azchess.utils import (add_memory_alert_callback, clear_memory_cache,
                            emergency_memory_cleanup, get_memory_usage,
-                           log_tensor_stats, safe_config_get,
-                           start_memory_monitoring)
+                           log_tensor_stats, remove_memory_alert_callback,
+                           safe_config_get, start_memory_monitoring,
+                           stop_memory_monitoring)
 
 # Setup logging
 logger = setup_logging(level=logging.INFO)
@@ -1076,15 +1077,25 @@ def train_comprehensive(
     memory_warning_threshold = safe_config_get(cfg, 'memory_warning_threshold', 0.85, section='training')  # 85% default
     memory_critical_threshold = safe_config_get(cfg, 'memory_critical_threshold', 0.95, section='training')  # 95% default
 
+    # Track monitor lifecycle for cleanup and fallback warnings
+    memory_monitor_started = False
+    training_callback_registered = False
+    training_memory_alert_callback = None
+    last_memory_warning = 0
+    memory_warning_cooldown = 300  # 5 minutes between warnings (fallback path)
+
     # Start comprehensive memory monitoring
     try:
-        start_memory_monitoring(
+        memory_monitor_started = start_memory_monitoring(
             device=device,
             warning_threshold=memory_warning_threshold,
             critical_threshold=memory_critical_threshold,
             check_interval=30.0  # Check every 30 seconds
         )
-        logger.info("Advanced memory monitoring system started")
+        if memory_monitor_started:
+            logger.info("Advanced memory monitoring system started")
+        else:
+            logger.info("Advanced memory monitoring system already running; reusing existing monitor")
 
         # Add custom alert callback for training-specific actions
         def training_memory_alert_callback(alert):
@@ -1094,12 +1105,14 @@ def train_comprehensive(
                 logger.warning(f"HIGH MEMORY: Monitor training stability. Memory: {alert.memory_usage_gb:.2f}GB")
 
         add_memory_alert_callback(training_memory_alert_callback)
+        training_callback_registered = True
 
     except Exception as e:
         logger.warning(f"Could not start advanced memory monitoring: {e}")
         # Fallback to basic monitoring
-        last_memory_warning = 0
-        memory_warning_cooldown = 300  # 5 minutes between warnings
+        memory_monitor_started = False
+        training_memory_alert_callback = None
+        training_callback_registered = False
 
     def get_system_memory_usage():
         """Get current system memory usage in GB for heartbeat monitoring."""
@@ -1544,6 +1557,23 @@ def train_comprehensive(
         raise
     finally:
         pbar.close()
+
+        # Clean up memory monitoring callbacks and threads
+        if training_callback_registered and training_memory_alert_callback is not None:
+            try:
+                removed = remove_memory_alert_callback(training_memory_alert_callback)
+                if removed:
+                    logger.debug("Removed training memory alert callback")
+            except Exception as callback_error:
+                logger.warning(f"Failed to remove training memory alert callback: {callback_error}")
+
+        if memory_monitor_started:
+            try:
+                stopped = stop_memory_monitoring()
+                if stopped:
+                    logger.debug("Advanced memory monitoring system stopped")
+            except Exception as monitor_error:
+                logger.warning(f"Failed to stop memory monitoring: {monitor_error}")
 
         # Save final checkpoint with enhanced prefix, but handle KeyboardInterrupt gracefully
         if not locals().get('interrupted', False):

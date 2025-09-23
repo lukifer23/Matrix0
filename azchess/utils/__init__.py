@@ -31,6 +31,7 @@ from .memory import (MemoryManager, clear_memory_cache,
                      emergency_memory_cleanup, get_memory_usage)
 from .memory_monitor import (MemoryAlert, MemoryMonitor,
                              add_memory_alert_callback, get_memory_stats,
+                             remove_memory_alert_callback,
                              start_memory_monitoring, stop_memory_monitoring)
 from .model_loader import load_model_and_mcts
 from .performance_utils import (PerformanceMetric, PerformanceMonitor,
@@ -63,6 +64,7 @@ __all__ = [
     "stop_memory_monitoring",
     "get_memory_stats",
     "add_memory_alert_callback",
+    "remove_memory_alert_callback",
 
     # Device management
     "DeviceManager",
