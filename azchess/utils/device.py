@@ -61,7 +61,11 @@ class DeviceManager:
                     selected = "cpu"
                 elif ":" in requested_device:
                     # Specific CUDA device
-                    device_idx = int(requested_device.split(":")[1])
+                    try:
+                        device_idx = int(requested_device.split(":")[1])
+                    except ValueError:
+                        logger.warning(f"Invalid CUDA device spec '{requested_device}', using cuda:0")
+                        device_idx = 0
                     if device_idx >= torch.cuda.device_count():
                         logger.warning(f"CUDA device {device_idx} not available, using cuda:0")
                         selected = "cuda:0"
@@ -93,7 +97,15 @@ class DeviceManager:
             if device == "cpu":
                 return True
             elif device.startswith("cuda"):
-                return torch.cuda.is_available()
+                if not torch.cuda.is_available():
+                    return False
+                idx = 0
+                if ":" in device:
+                    try:
+                        idx = int(device.split(":")[1])
+                    except ValueError:
+                        return False
+                return 0 <= idx < torch.cuda.device_count()
             elif device == "mps":
                 return torch.backends.mps.is_available()
             else:
@@ -114,7 +126,16 @@ class DeviceManager:
             import torch
 
             if device.startswith("cuda") and info["available"]:
-                props = torch.cuda.get_device_properties(device)
+                idx = 0
+                if ":" in device:
+                    try:
+                        idx = int(device.split(":")[1])
+                    except ValueError:
+                        logger.debug(f"Invalid CUDA device spec '{device}', defaulting to index 0")
+                        idx = 0
+                if not (0 <= idx < torch.cuda.device_count()):
+                    raise ValueError(f"CUDA device index out of range: {idx}")
+                props = torch.cuda.get_device_properties(idx)
                 info.update({
                     "name": props.name,
                     "memory_gb": props.total_memory / (1024**3),

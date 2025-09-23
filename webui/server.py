@@ -312,6 +312,7 @@ def start_orchestrator(req: OrchestratorStartRequest):
             _ORCH_CYCLE = 0
 
             def _supervisor():
+                global _ORCH_PROC, _ORCH_START_TS, _ORCH_CONTINUOUS
                 nonlocal workers, target_games, games_per_worker, total_games
                 while not _ORCH_STOP_EVENT.is_set():
                     try:

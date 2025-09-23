@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 from azchess.config import Config
 from azchess.model import PolicyValueNet
@@ -71,18 +72,18 @@ def export_to_coreml(checkpoint_path: str, output_path: str, device: str = "cpu"
     input_spec = ct.TensorType(
         name="board_state",
         shape=(1, 19, 8, 8),
-        dtype=ct.TensorType.np.float32
+        dtype=np.float32,
     )
 
     # Outputs: policy logits and value
     policy_spec = ct.TensorType(
         name="policy_logits",
-        dtype=ct.TensorType.np.float32
+        dtype=np.float32,
     )
 
     value_spec = ct.TensorType(
         name="value",
-        dtype=ct.TensorType.np.float32
+        dtype=np.float32,
     )
 
     # Convert to CoreML with optimizations
