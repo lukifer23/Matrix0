@@ -1550,13 +1550,10 @@ class DataManager:
         for shard_path in shard_paths:
             try:
                 with np.load(shard_path, mmap_mode='r') as data:
-                    states = data['s']
-                    policies = data['pi']
-                    values = data['z']
-                    legal_mask_all = data.get('legal_mask', None)
+                    states, policies, values, legal_mask_all, ssl_targets_all = self._extract_training_arrays(data)
 
                     # Check if this is SSL-enabled data
-                    ssl_keys = [k for k in data.keys() if k.startswith('ssl_')]
+                    ssl_keys = list(ssl_targets_all.keys())
                     # Note: SSL filtering will be handled at a higher level if needed
 
                     if values.ndim == 2 and values.shape[1] == 1:
@@ -1577,7 +1574,7 @@ class DataManager:
                     ssl_targets = {}
                     for ssl_key in ssl_keys:
                         try:
-                            ssl_data = data[ssl_key]
+                            ssl_data = ssl_targets_all[ssl_key]
 
                             # Convert control task from single-channel to 3-channel format
                             if ssl_key == 'ssl_control':
