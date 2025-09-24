@@ -54,7 +54,7 @@ training:
   ssl_target_weight: 1.0           # Normalize SSL magnitude
   # CRITICAL FIX: Force external data usage
   data_mode: "mixed"               # Use mixed mode to access external data
-  dataloader_workers: 2            # Maintain parallel loading
+  dataloader_workers: 6            # Increase worker threads for faster data loading
   prefetch_factor: 2               # Maintain prefetching
   ssl_piece_weight: 1.0            # Weight for piece recognition
   ssl_threat_weight: 0.8           # Weight for threat detection
