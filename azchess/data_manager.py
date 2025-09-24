@@ -80,6 +80,14 @@ class DataManager:
         self._warned_teacher_portion_failure = False
         # Track failed SSL teacher files to avoid repeated warnings
         self._failed_ssl_teacher_files = set()
+
+        # Field aliases allow importing legacy or curriculum NPZ bundles that
+        # use descriptive keys (e.g., positions/policy_targets/value_targets).
+        self._field_aliases = {
+            's': ("s", "states", "positions"),
+            'pi': ("pi", "policy", "policy_targets"),
+            'z': ("z", "value", "values", "value_targets"),
+        }
         
     def _connect(self) -> sqlite3.Connection:
         """Create a SQLite connection with WAL and busy timeout enabled."""
@@ -223,7 +231,7 @@ class DataManager:
         """Add self-play data to the buffer."""
         filepath, checksum = self._save_npz_shard(data, self.selfplay_dir)
         file_size = filepath.stat().st_size
-        sample_count = len(data.get('s', []))
+        sample_count = self._infer_sample_count(data)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source="selfplay")
         logger.info(f"Added self-play data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
@@ -234,7 +242,7 @@ class DataManager:
         """Add processed training data to replay buffer."""
         filepath, checksum = self._save_npz_shard(data, self.replays_dir)
         file_size = filepath.stat().st_size
-        sample_count = len(data.get('s', []))
+        sample_count = self._infer_sample_count(data)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._record_shard(str(filepath), file_size, sample_count, timestamp, checksum, source=source)
         # Diagnostics for legal mask persistence
@@ -311,16 +319,7 @@ class DataManager:
             try:
                 # Memory-map to reduce RSS and speed IO
                 with np.load(shard_path, mmap_mode='r') as data:
-                    states = data['s']
-                    policies = data['pi']
-                    values = data['z']
-                    legal_mask_all = data.get('legal_mask', None)
-
-                    # Extract SSL targets if present
-                    ssl_targets = {}
-                    for key in data.keys():
-                        if key.startswith('ssl_'):
-                            ssl_targets[key] = data[key]
+                    states, policies, values, legal_mask_all, ssl_targets = self._extract_training_arrays(data)
 
                     # Normalize common shape variants proactively
                     # values can be (N,) or (N,1); normalize to (N,)
@@ -1405,10 +1404,9 @@ class DataManager:
                     if dest_path.resolve() != f.resolve():
                         dest_path.write_bytes(f.read_bytes())
                         f.unlink(missing_ok=True)
-                # Load to get sample count quickly
+                # Load to get sample count quickly (supports aliased fields)
                 with np.load(dest_path, mmap_mode='r') as data:
-                    s = data['s']
-                    sample_count = int(s.shape[0])
+                    sample_count = int(self._infer_sample_count(data))
                 size_bytes = dest_path.stat().st_size
                 ts = datetime.now().isoformat()
                 checksum = self._calculate_checksum(dest_path)
@@ -1417,6 +1415,41 @@ class DataManager:
             except Exception as e:
                 logger.error(f"Failed to import shard {f}: {e}")
         return count
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_field(self, data: "np.lib.npyio.NpzFile", field: str) -> np.ndarray:
+        aliases = self._field_aliases.get(field, (field,))
+        available = set(data.files) if hasattr(data, 'files') else set(data.keys())
+        for alias in aliases:
+            if alias in available:
+                return data[alias]
+        raise KeyError(f"Field '{field}' not found in shard (aliases tried: {aliases})")
+
+    def _infer_sample_count(self, data: Dict[str, np.ndarray]) -> int:
+        try:
+            if hasattr(data, 'files'):
+                available = set(data.files)
+                for alias in self._field_aliases['s']:
+                    if alias in available:
+                        return int(data[alias].shape[0])
+            else:
+                for alias in self._field_aliases['s']:
+                    if alias in data:
+                        return int(data[alias].shape[0])
+        except Exception:
+            pass
+        return 0
+
+    def _extract_training_arrays(self, data: "np.lib.npyio.NpzFile") -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], Dict[str, np.ndarray]]:
+        states = self._resolve_field(data, 's')
+        policies = self._resolve_field(data, 'pi')
+        values = self._resolve_field(data, 'z')
+        legal_mask = data.get('legal_mask', None)
+        ssl_targets = {key: data[key] for key in data.files if key.startswith('ssl_')}
+        return states, policies, values, legal_mask, ssl_targets
 
     def import_stockfish_tree(self, root_dir: str, move_files: bool = False) -> int:
         """Recursively import NPZ files from a Stockfish-generated tree, tagging sources.

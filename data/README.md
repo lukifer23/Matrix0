@@ -6,17 +6,20 @@ This directory contains processed training data for the Matrix0 chess AI model.
 
 ```
 data/
-├── training/                    # Main training data
-│   ├── tactical_training_data.npz      # 10,000 tactical positions
-│   └── openings_training_data.npz      # 5,000 opening positions
-├── tactical/                    # Raw tactical data
-│   ├── tactical_positions.npz          # Processed tactical positions
-│   └── tactical_metadata.json          # Tactical data metadata
-├── openings/                    # Raw openings data
-│   ├── openings_positions.npz          # Processed opening positions
-│   └── openings_metadata.json          # Openings metadata
-├── selfplay/                    # Self-play games (existing)
-└── validation/                  # Validation data (existing)
+├── tactical/                    # Processed tactical curriculum bundle
+│   ├── tactical_positions.npz          # Tactical positions (ready for DataManager)
+│   └── tactical_metadata.json          # Tactical metadata
+├── openings/                    # Processed opening curriculum bundle
+│   ├── openings_positions.npz          # Opening positions (ready for DataManager)
+│   └── openings_metadata.json          # Opening metadata
+├── teacher_games/               # Teacher-guided replay data
+│   └── enhanced_teacher/*.npz          # Tagged NPZ shards (auto-ingested)
+├── stockfish_games/             # Stockfish-generated replay trees (tagged NPZ/json)
+├── selfplay/                    # Recent self-play episodes (compacted into replays/)
+├── replays/                     # Compacted training shards consumed by trainer
+├── backups/                     # Archived self-play NPZs retained post-compaction
+├── syzygy/                      # Installed Syzygy tablebases (currently 3-5 man WDL)
+└── validation/                  # Validation splits (if configured)
 ```
 
 ## 🎯 Data Sources
@@ -33,68 +36,20 @@ data/
 - **Format**: Board states, opening moves, quality scores
 - **Purpose**: Teach proper opening principles and theory
 
-## 🚀 Usage
+## 🚀 Usage in Training
 
-### **Simple Integration**
-```python
-from comprehensive_data_loader import ComprehensiveDataLoader
+- The orchestrator/trainer now ingests these sources automatically via `training.extra_replay_dirs` in `config.yaml` (tactical, openings, teacher, and stockfish directories).
+- Keep `selfplay/` lean by letting the orchestrator compact runs into `replays/`; archived copies are preserved under `backups/` if you need to restore.
 
-# Initialize loader
-loader = ComprehensiveDataLoader()
+## 📊 Data Notes
 
-# Get mixed training batch
-batch = loader.get_mixed_batch(512)
+- Tactical bundle: Winning motifs curated from Lichess, stored in `data/tactical/`.
+- Opening bundle: High-quality lines stored in `data/openings/`.
+- Teacher games: Enhanced scenarios in `data/teacher_games/enhanced_teacher/` with source tags for curriculum filters.
+- Stockfish trees: Tagged NPZ/JSON pairs under `data/stockfish_games/` for flexible slicing (e.g., openings, tactics, endgames).
 
-# Get curriculum-specific batch
-batch = loader.get_curriculum_batch(512, phase="openings")  # Focus on openings
-batch = loader.get_curriculum_batch(512, phase="tactics")   # Focus on tactics
-batch = loader.get_curriculum_batch(512, phase="mixed")     # Balanced mix
-```
+## 🔄 Maintenance Tips
 
-### **Training Integration**
-```python
-# In your training loop
-for epoch in range(num_epochs):
-    # Determine curriculum phase
-    if epoch < 20:
-        phase = "openings"
-    elif epoch < 50:
-        phase = "tactics"
-    else:
-        phase = "mixed"
-    
-    # Get appropriate training batch
-    batch = loader.get_curriculum_batch(batch_size, phase=phase)
-    
-    # Train step
-    loss = train_step(model, optimizer, batch, device)
-```
-
-## 📊 Data Statistics
-
-| Data Source | Samples | Size | Purpose |
-|-------------|---------|------|---------|
-| **Tactical** | 10,000 | 745KB | Winning combinations |
-| **Openings** | 5,000 | 422KB | Opening knowledge |
-| **Total** | **15,000** | **1.2MB** | **Comprehensive training** |
-
-## 🔄 Data Processing
-
-The raw data has been processed and filtered for quality:
-- **Tactical**: Minimum 150 centipawn advantage
-- **Openings**: Minimum 2000 performance rating, 100+ games
-- **Format**: Compatible with Matrix0 encoding (19 planes, 8x8 boards)
-
-## 🎓 Curriculum Learning
-
-The data supports progressive learning:
-1. **Phase 1**: Opening mastery (80% openings, 20% tactics)
-2. **Phase 2**: Tactical training (80% tactics, 20% openings)  
-3. **Phase 3**: Mixed training (30% each + 40% self-play)
-
-## 📝 Notes
-
-- All data is pre-processed and ready for training
-- Use `comprehensive_data_loader.py` for access
-- Data can be mixed with existing self-play data
-- Supports both batch and curriculum-based training
+- Periodically prune or archive `data/backups/` if disk usage becomes a concern.
+- Install additional Syzygy tables in `data/syzygy/` before raising `tablebases.max_pieces` above 5.
+- If you add new curated directories, append them to `training.extra_replay_dirs` or import them via `DataManager.import_replay_dir`.

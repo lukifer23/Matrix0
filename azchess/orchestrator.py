@@ -420,8 +420,12 @@ def orchestrate(
                 # Create shared memory resources for each worker with optimized batch sizes
                 model_params = sp_cfg["model"]
                 sp_params = sp_cfg["selfplay"]
-                # Use larger batch sizes for better GPU utilization
-                optimized_batch_size = max(32, sp_params.get('batch_size', 32))
+                # Allow explicit cap for shared inference micro-batches to avoid oversized buffers
+                shared_batch = sp_params.get('shared_inference_batch_size')
+                if shared_batch is None:
+                    shared_batch = min(64, sp_params.get('batch_size', 32))
+                optimized_batch_size = max(16, int(shared_batch))
+                logger.info(f"Shared inference max batch size per worker: {optimized_batch_size}")
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
                         worker_id=i,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -270,6 +271,8 @@ class PolicyValueNet(nn.Module):
         super().__init__()
         C = cfg.channels
         self.cfg = cfg
+        # Track running SSL statistics for diagnostic logging
+        self._ssl_loss_stats: Dict[str, Dict[str, float]] = {}
         # Guard: Only legacy 4672 policy is supported until 1858 path is implemented
         try:
             _ps = int(getattr(cfg, 'policy_size', 4672))
@@ -441,7 +444,11 @@ class PolicyValueNet(nn.Module):
             self.aux_move_type = None
 
         # Learnable logit scale for the dense policy branch (replaces LN on logits)
-        self.policy_logit_scale = nn.Parameter(torch.tensor(0.2))
+        self._policy_logit_scale_eps = 1e-3
+        init_scale = float(getattr(cfg, 'policy_logit_init_scale', 0.2))
+        safe_init = max(init_scale - self._policy_logit_scale_eps, 1e-6)
+        raw_init = math.log(math.expm1(safe_init))
+        self._policy_logit_scale_raw = nn.Parameter(torch.tensor(raw_init, dtype=torch.float32))
         
         # Dense branch: preserves original capacity (4096 → 4672) or factorized when enabled
         _rank = int(getattr(cfg, 'policy_factor_rank', 0))
@@ -625,7 +632,9 @@ class PolicyValueNet(nn.Module):
             p = self.policy_fc2(p)
 
         # Apply learnable logit scale; keep dtype consistent
-        p = p * self.policy_logit_scale.to(dtype=p.dtype, device=p.device)
+        logit_scale = F.softplus(self._policy_logit_scale_raw) + self._policy_logit_scale_eps
+        logit_scale = torch.clamp(logit_scale, max=5.0)
+        p = p * logit_scale.to(dtype=p.dtype, device=p.device)
 
         if torch.isnan(p).any() or torch.isinf(p).any():
             logger.warning(f"Policy output contains NaN/Inf: total={torch.isnan(p).sum() + torch.isinf(p).sum()}")
@@ -819,32 +828,66 @@ class PolicyValueNet(nn.Module):
             logger.info(f"SSL TASKS CONFIG: enabled={ssl_tasks}, available_heads={list(self.ssl_heads.keys())}")
 
         # Compute shared features once for all tasks that need them
-        feats_shared: Optional[torch.Tensor] = None
+        feats_shared: Optional[torch.Tensor] = feats if feats is not None else None
         active_advanced_tasks = [t for t in ['threat', 'pin', 'fork', 'control', 'pawn_structure', 'king_safety']
                                 if t in targets and t in ssl_tasks and t in self.ssl_heads]
+        piece_task_enabled = (
+            'piece' in targets
+            and self.ssl_piece_head is not None
+            and 'piece' in ssl_tasks
+        )
 
-        if active_advanced_tasks and feats is None:
+        needs_shared_features = bool(active_advanced_tasks) or piece_task_enabled
+        if feats_shared is None and needs_shared_features:
             feats_shared = self._forward_features(x, None)
-        elif feats is not None:
-            feats_shared = feats
 
         # Process each SSL task
         task_losses = {}
+        task_scalar_losses: Dict[str, float] = {}
 
         # 1. Piece recognition (primary SSL task)
-        if 'piece' in targets and self.ssl_piece_head is not None and 'piece' in ssl_tasks:
+        if piece_task_enabled:
             try:
                 # Handle different target formats
                 piece_targets = targets['piece']
                 if isinstance(piece_targets, torch.Tensor) and piece_targets.dim() == 4:
                     # One-hot format: convert to class indices for cross-entropy
                     piece_targets = torch.argmax(piece_targets, dim=1)
+                piece_targets = piece_targets.long()
+                piece_targets = piece_targets.clamp_(0, 12)
 
-                piece_loss = self.get_ssl_loss(x, piece_targets)
+                if feats_shared is None:
+                    feats_shared = self._forward_features(x, None)
+
+                chunk_size_cfg = int(getattr(self.cfg, 'ssl_chunk_size', 0))
+                piece_feat_batches = [(feats_shared, piece_targets)]
+                use_chunking = chunk_size_cfg > 0 and feats_shared.size(0) > chunk_size_cfg
+                if use_chunking:
+                    piece_feat_batches = []
+                    for start_idx in range(0, feats_shared.size(0), chunk_size_cfg):
+                        end_idx = min(start_idx + chunk_size_cfg, feats_shared.size(0))
+                        piece_feat_batches.append(
+                            (feats_shared[start_idx:end_idx], piece_targets[start_idx:end_idx])
+                        )
+
+                piece_loss_accum = None
+                total_positions = 0
+                for feat_chunk, target_chunk in piece_feat_batches:
+                    logits_chunk = self.ssl_piece_head(feat_chunk)
+                    logits_flat = logits_chunk.permute(0, 2, 3, 1).reshape(-1, logits_chunk.size(1))
+                    targets_flat = target_chunk.reshape(-1).long()
+                    loss_chunk = F.cross_entropy(logits_flat, targets_flat, reduction='sum')
+                    piece_loss_accum = loss_chunk if piece_loss_accum is None else (piece_loss_accum + loss_chunk)
+                    total_positions += targets_flat.numel()
+
+                if piece_loss_accum is None or total_positions == 0:
+                    piece_loss = torch.zeros((), device=device, dtype=total_loss.dtype)
+                else:
+                    piece_loss = piece_loss_accum / float(total_positions)
                 if torch.isfinite(piece_loss) and piece_loss > 0:
                     task_losses['piece'] = piece_loss
+                    task_scalar_losses['piece'] = float(piece_loss.detach())
                     total_loss += piece_loss
-                    logger.debug(".6f")
             except Exception as e:
                 logger.warning(f"Piece SSL loss failed: {e}")
 
@@ -870,8 +913,8 @@ class PolicyValueNet(nn.Module):
                     task_weight = getattr(self.cfg, f'ssl_{task}_weight', 1.0)
                     weighted_loss = task_weight * task_loss
                     task_losses[task] = weighted_loss
+                    task_scalar_losses[task] = float(weighted_loss.detach())
                     total_loss += weighted_loss
-                    logger.debug(".6f")
                 else:
                     logger.debug(f"SSL {task} loss invalid or zero: {task_loss}")
 
@@ -880,9 +923,55 @@ class PolicyValueNet(nn.Module):
                 continue
 
         # Log summary if any SSL loss was computed
-        if len(task_losses) > 0 and torch.rand(1).item() < 0.05:  # Log 5% of the time
-            task_summary = ", ".join([f"{k}: {v.item():.4f}" for k, v in task_losses.items()])
-            logger.info(f"SSL LOSS SUMMARY: total={total_loss.item():.6f}, tasks=[{task_summary}]")
+        if len(task_losses) > 0:
+            total_scalar = float(total_loss.detach())
+            stats_records: Dict[str, Dict[str, float]] = {}
+
+            def _update_stats(name: str, value: float, decay: float = 0.95) -> Dict[str, float]:
+                entry = self._ssl_loss_stats.setdefault(name, {"ema": value, "count": 0.0, "max": value})
+                if entry["count"] == 0:
+                    entry["ema"] = value
+                    entry["max"] = value
+                else:
+                    entry["ema"] = decay * entry["ema"] + (1.0 - decay) * value
+                    entry["max"] = max(entry.get("max", value), value)
+                entry["count"] += 1
+                entry["last"] = value
+                ratio = value / (entry["ema"] + 1e-6)
+                stats_records[name] = {"value": value, "ema": entry["ema"], "ratio": ratio, "count": entry["count"]}
+                return stats_records[name]
+
+            # Update stats for tasks and total
+            for name, value in task_scalar_losses.items():
+                _update_stats(f"task:{name}", value)
+            total_stats = _update_stats("total", total_scalar)
+
+            # Detect spikes versus the running EMA
+            spike_threshold = 1.25
+            spike_notes = []
+            for name, record in stats_records.items():
+                if record["count"] <= 10:
+                    continue  # allow EMA to warm up
+                if record["ratio"] >= spike_threshold:
+                    label = name.replace("task:", "")
+                    spike_notes.append(f"{label} x{record['ratio']:.2f} (ema {record['ema']:.4f})")
+
+            random_sample = random.random() < 0.02
+            should_log = random_sample or spike_notes
+            if should_log:
+                task_summary = ", ".join(
+                    [
+                        f"{name}: {stats_records[f'task:{name}']['value']:.4f} (ema {stats_records[f'task:{name}']['ema']:.4f})"
+                        for name in sorted(task_scalar_losses.keys())
+                    ]
+                )
+                msg = (
+                    f"SSL LOSS SUMMARY: total={total_scalar:.6f} (ema {total_stats['ema']:.6f})"
+                    + (f", tasks=[{task_summary}]" if task_summary else "")
+                )
+                if spike_notes:
+                    msg += f" | spikes={'; '.join(spike_notes)}"
+                logger.info(msg)
 
         return total_loss
 

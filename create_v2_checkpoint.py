@@ -7,6 +7,7 @@ This script initializes the V2 model architecture and saves it as a starting che
 import logging
 import os
 import sys
+from dataclasses import asdict
 
 import torch
 
@@ -18,6 +19,7 @@ sys.path.insert(0, project_root)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from azchess.config import Config
 from azchess.model.resnet import NetConfig, PolicyValueNet
 
 
@@ -25,16 +27,10 @@ def create_v2_checkpoint():
     """Create a fresh V2 model checkpoint."""
 
     try:
-        # Load configuration from config.yaml in the same directory
+        # Load configuration from config.yaml via unified Config helper
         config_path = os.path.join(project_root, 'config.yaml')
-
-        # Simple config loading without external dependencies
-        import yaml
-        with open(config_path, 'r') as f:
-            config_data = yaml.safe_load(f)
-
-        # Get model configuration from the config
-        model_cfg = config_data.get('model', {})
+        cfg = Config.load(config_path)
+        model_cfg = cfg.model()
 
         logger.info("Creating FRESH V2 CHECKPOINT - ALIGNED WITH CURRENT CONFIG!")
         logger.info(f"Model config: {model_cfg}")
@@ -42,37 +38,14 @@ def create_v2_checkpoint():
         # Create model with V2 architecture
         device = torch.device('cpu')  # Create on CPU first, then move if needed
 
-        # Create NetConfig using the same approach as the main training code
-        net_config = NetConfig(
-            planes=model_cfg.get('planes', 19),
-            channels=model_cfg.get('channels', 320),
-            blocks=model_cfg.get('blocks', 24),
-            policy_size=model_cfg.get('policy_size', 4672),
-            se=model_cfg.get('se', True),
-            se_ratio=model_cfg.get('se_ratio', 0.25),
-            attention=model_cfg.get('attention', True),
-            attention_heads=model_cfg.get('attention_heads', 20),
-            # Use a sane float default and coerce to float to avoid boolean spillover
-            attention_unmasked_mix=float(model_cfg.get('attention_unmasked_mix', 0.2)),
-            attention_relbias=model_cfg.get('attention_relbias', True),
-            attention_every_k=model_cfg.get('attention_every_k', 3),
-            chess_features=model_cfg.get('chess_features', True),
-            self_supervised=model_cfg.get('self_supervised', False),  # Match current config
-            piece_square_tables=model_cfg.get('piece_square_tables', True),
-            wdl=model_cfg.get('wdl', False),
-            policy_factor_rank=model_cfg.get('policy_factor_rank', 128),
-            norm=model_cfg.get('norm', 'group'),
-            activation=model_cfg.get('activation', 'silu'),
-            preact=model_cfg.get('preact', True),
-            droppath=model_cfg.get('droppath', 0.1),
-            aux_policy_from_square=model_cfg.get('aux_policy_from_square', True),
-            aux_policy_move_type=model_cfg.get('aux_policy_move_type', True),
-            enable_visual=model_cfg.get('enable_visual', False),
-            visual_encoder_channels=model_cfg.get('visual_encoder_channels', 64),
-            ssl_tasks=model_cfg.get('ssl_tasks', ['piece']),  # Match current config with advanced SSL
-            ssl_curriculum=model_cfg.get('ssl_curriculum', True),
-            ssrl_tasks=model_cfg.get('ssrl_tasks', [])  # Match current config (disabled)
-        )
+        # Build NetConfig by intersecting config keys with dataclass fields
+        net_kwargs = {name: model_cfg[name] for name in NetConfig.__dataclass_fields__ if name in model_cfg}
+        net_config = NetConfig(**net_kwargs)
+
+        # Preserve any extra model attributes (e.g., policy_logit_init_scale) for PolicyValueNet getters
+        for key, value in model_cfg.items():
+            if key not in NetConfig.__dataclass_fields__:
+                setattr(net_config, key, value)
 
         model = PolicyValueNet(net_config)
         
@@ -97,19 +70,7 @@ def create_v2_checkpoint():
             'best_loss': float('inf'),
             'config': model_cfg,
             'version': 'v2_fresh_clean',
-            'model_config': {
-                'planes': net_config.planes,
-                'channels': net_config.channels,
-                'blocks': net_config.blocks,
-                'policy_size': net_config.policy_size,
-                'attention_heads': net_config.attention_heads,
-                'policy_factor_rank': net_config.policy_factor_rank,
-                'ssl_tasks': net_config.ssl_tasks,
-                'ssrl_tasks': net_config.ssrl_tasks,
-                'ssl_enabled': net_config.self_supervised,
-                'ssl_head_count': len(net_config.ssl_tasks) if net_config.ssl_tasks else 0,
-                'ssl_curriculum': net_config.ssl_curriculum
-            }
+            'model_config': asdict(net_config)
         }
 
         # Save the checkpoint
@@ -119,6 +80,14 @@ def create_v2_checkpoint():
         # Also save as the main v2_base.pt for compatibility
         main_checkpoint_path = os.path.join(checkpoints_dir, 'v2_base.pt')
         torch.save(checkpoint, main_checkpoint_path)
+
+        # Seed best.pt if none exists so orchestrator/self-play start from the fresh weights
+        best_checkpoint_path = os.path.join(checkpoints_dir, 'best.pt')
+        if not os.path.exists(best_checkpoint_path):
+            torch.save(checkpoint, best_checkpoint_path)
+            logger.info(f"   - Seeded best checkpoint: {best_checkpoint_path}")
+        else:
+            logger.info(f"   - Preserved existing best checkpoint: {best_checkpoint_path}")
 
         # Log model parameters
         total_params = sum(p.numel() for p in model.parameters())
@@ -146,6 +115,14 @@ def create_v2_checkpoint():
         test_model = PolicyValueNet(net_config)
         test_model.load_state_dict(loaded_checkpoint['model_state_dict'])
         logger.info("✅ Checkpoint loading test successful!")
+
+        # Log initial policy logit scale for transparency
+        try:
+            initial_scale = (torch.nn.functional.softplus(test_model._policy_logit_scale_raw).item()
+                             + test_model._policy_logit_scale_eps)
+            logger.info(f"   - Initial policy logit scale: {initial_scale:.4f}")
+        except Exception:
+            pass
 
         return checkpoint_path
 

@@ -24,16 +24,17 @@ model:
 selfplay:
   num_workers: 3                   # Default worker count
   batch_size: 256                  # Increased from 128 for better efficiency
+  shared_inference_batch_size: 48  # Cap shared inference micro-batch (avoid oversized buffers)
   max_games: 420                    # TEST RUN: 20 games total
   max_game_len: 180                # Encourage decisive results
-  min_resign_plies: 50             # Avoid premature resignations
-  resign_threshold: -0.80          # Slightly earlier resigns to end lost games
+  min_resign_plies: 40             # Allow resigned games slightly earlier
+  resign_threshold: -0.70          # Encourage decisive results
   opening_random_plies: 8          # Randomize first N plies to reduce draws
   num_simulations: 200             # Increased from 160 for better quality
   draw:
-    min_plies: 60                  # Require more play before draw checks
-    window: 16                     # Wider window
-    min_unique: 8                  # More unique positions
+    min_plies: 50                  # Require more play before draw checks
+    window: 12                     # Narrower window
+    min_unique: 6                  # Allow faster detection of repetition
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
@@ -66,7 +67,7 @@ training:
   warmup_steps: 500                # Longer warmup for extended steps
   memory_limit_gb: 14              # MPS limit
   gradient_checkpointing_strategy: "adaptive"    # Enable only if memory is high
-  steps_per_epoch: 12000           # Train over more samples per cycle
+  steps_per_epoch: 6000            # Shorter sanity runs per cycle
   use_curriculum: true
   curriculum_phases:
     - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
@@ -77,7 +78,10 @@ training:
   value_loss: "huber"              # Robust value regression
   huber_delta: 1.0                 # Huber threshold
   extra_replay_dirs:
-    - data/stockfish_games
+    - data/stockfish_games        # Curated Stockfish datasets (tagged)
+    - data/tactical               # Processed tactical NPZ bundle
+    - data/openings               # Processed openings NPZ bundle
+    - data/teacher_games          # Teacher-guided replay data
 
 orchestrator:
   initial_games: 210               # 3 workers × 70 games (more self-play data per cycle)
@@ -96,15 +100,16 @@ orchestrator:
 # Endgame tablebases (Syzygy) for self-play adjudication and correctness
 tablebases:
   enabled: true
-  path: "data/syzygy"            # Place 3-7 man Syzygy tables here (wdl/)
-  max_pieces: 7                   # Probe only at low piece count to minimize overhead
+  path: "data/syzygy"            # Place 3-5 man Syzygy tables here (wdl/)
+  max_pieces: 5                   # Match currently installed tables to avoid missing-probe warnings
 
 eval:
-  games: 4                         # Light orchestrator eval; use enhanced_eval for deep
-  max_moves: 160                   # Avoid early auto-draws
+  games: 20                        # Expanded evaluation sample per cycle
+  max_moves: 180                   # Allow decisive finishes before adjudication
   external_engines: ["stockfish"]  # Compare against Stockfish
   tournament_rounds: 4             # More tournament rounds
   strength_estimation_games: 4     # More strength estimation games
+  openings_pgn: "data/openings/main_eval_book.pgn"  # Optional PGN book for varied starts
 
 engines:
   stockfish:
