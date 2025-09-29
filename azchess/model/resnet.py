@@ -253,6 +253,7 @@ class NetConfig:
     policy_factor_rank: int = 0
     norm: str = "batch"  # batch|group
     activation: str = "relu"  # relu|silu
+    value_activation: str = "silu"  # relu|silu|leaky_relu
     preact: bool = False
     droppath: float = 0.0 # DropPath regularization
     aux_policy_from_square: bool = False # Auxiliary from-square head
@@ -285,6 +286,9 @@ class PolicyValueNet(nn.Module):
             )
         
         activation = nn.SiLU(inplace=True) if cfg.activation == "silu" else nn.ReLU(inplace=True)
+
+        self._value_activation_name = getattr(cfg, 'value_activation', 'silu')
+        logger.info(f"Value head activation set to {self._value_activation_name}")
 
         # Enhanced stem with chess-specific features
         self.stem = nn.Sequential(
@@ -536,6 +540,13 @@ class PolicyValueNet(nn.Module):
             self.ssl_difficulty = 0.0  # Start with easy tasks
             self.ssl_difficulty_step = 0.1  # Increase difficulty gradually
 
+    def _value_activation(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self._value_activation_name == "silu":
+            return F.silu(tensor)
+        if self._value_activation_name == "leaky_relu":
+            return F.leaky_relu(tensor, negative_slope=0.05)
+        return F.relu(tensor)
+
     def _init_weights(self):
         """Initialize weights properly for chess policy learning."""
         # Policy head initialization - CRITICAL: More conservative initialization
@@ -646,11 +657,11 @@ class PolicyValueNet(nn.Module):
         # Value - ensure contiguity throughout
         v = self.value_head(feats)
         v = v.contiguous().reshape(v.size(0), -1)
-        v = F.relu(self.value_fc1(v), inplace=True)
+        v = self._value_activation(self.value_fc1(v))
         if torch.isnan(v).any() or torch.isinf(v).any():
             logger.warning("Value head intermediate contains NaN/Inf after fc1; sanitizing")
             v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
-        v = F.relu(self.value_fc2(v), inplace=True)
+        v = self._value_activation(self.value_fc2(v))
         if torch.isnan(v).any() or torch.isinf(v).any():
             logger.warning("Value head intermediate contains NaN/Inf after fc2; sanitizing")
             v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)

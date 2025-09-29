@@ -11,6 +11,7 @@ model:
   policy_size: 4672                # Policy output size
   norm: "group"                    # GroupNorm instead of BatchNorm
   activation: "silu"               # SiLU activation instead of ReLU
+  value_activation: "silu"         # Use smooth value activations to prevent dead heads
   preact: true                     # Pre-activation residual blocks
   droppath: 0.0                    # Temporarily disable DropPath to avoid MPS tiny alloc OOMs
   policy_factor_rank: 128          # Factorized policy head (32M model)

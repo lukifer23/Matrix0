@@ -19,6 +19,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 ### Model Architecture
 - **Model Size**: ✅ 53,206,724 parameters (53.2M) - ResNet-24 with complete architecture
 - **Architecture**: ✅ 320 channels, 24 blocks, 20 attention heads, full attention features
+- **Value Stability**: ✅ Configurable value-head activation (default SiLU) prevents collapse and keeps gradients flowing
 - **SSL Integration**: ✅ **ARCHITECTURE READY** - All 5 SSL tasks: piece, threat, pin, fork, control detection integrated
 - **Training Stability**: ✅ **RESOLVED** - Scheduler stepping fixed, gradient management optimized
 

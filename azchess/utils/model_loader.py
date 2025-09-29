@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Tuple
 
+import logging
+
 import torch
 
 from ..config import Config, select_device
@@ -16,7 +18,15 @@ def load_model_and_mcts(cfg: Config, checkpoint: str) -> Tuple[PolicyValueNet, M
     MCTS configuration so that callers can rely on a consistent behaviour.
     """
     device = select_device(cfg.get("device", "auto"))
-    mcfg_dict = cfg.eval() or cfg.mcts()
+    mcfg_dict = dict(cfg.mcts())
+    eval_section = cfg.eval()
+    if isinstance(eval_section, dict) and eval_section:
+        allowed = set(MCTSConfig.__dataclass_fields__.keys())
+        overrides = {k: v for k, v in eval_section.items() if k in allowed}
+        if overrides:
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Applying MCTS overrides from eval config: {sorted(overrides.keys())}")
+            mcfg_dict.update(overrides)
     mcfg = MCTSConfig.from_dict(mcfg_dict)
 
     model = PolicyValueNet.from_config(cfg.model()).to(device)

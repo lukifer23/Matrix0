@@ -160,6 +160,19 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     s = torch.from_numpy(s)
     pi = torch.from_numpy(pi)
     z = torch.from_numpy(z)
+
+    # Ensure policy targets form a valid probability distribution.
+    # External curriculum shards sometimes contain multi-hot or count-based
+    # targets; normalise them so each row sums to 1 (and avoid division by 0).
+    try:
+        if pi.dtype != torch.float32:
+            pi = pi.to(dtype=torch.float32)
+        row_sum = pi.sum(dim=1, keepdim=True)
+        if (row_sum <= 0).any():
+            row_sum = row_sum + (row_sum <= 0).to(pi.dtype)
+        pi = pi / row_sum
+    except Exception:
+        pass
     legal_mask_t = None
     if legal_mask_np is not None:
         try:

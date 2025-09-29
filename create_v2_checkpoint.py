@@ -53,6 +53,16 @@ def create_v2_checkpoint():
         # This includes conservative SSL head initialization and policy head stability fixes
         logger.info("Model created with proper weight initialization")
 
+        # Sanity check value head does not collapse at initialization
+        with torch.no_grad():
+            dummy_states = torch.zeros(2, net_config.planes, 8, 8)
+            policy_logits, value_logits = model(dummy_states)
+            logger.info(
+                "   - Value sanity check (min/max): %.6f / %.6f",
+                float(value_logits.min().item()),
+                float(value_logits.max().item()),
+            )
+
         # Create checkpoint directory if it doesn't exist
         checkpoints_dir = os.path.join(project_root, 'checkpoints')
         os.makedirs(checkpoints_dir, exist_ok=True)

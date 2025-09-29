@@ -35,3 +35,4 @@ data/backups/*.npz
 data/data_metadata.db
 artifacts/
 chessData.csv
+quick_commands.md
