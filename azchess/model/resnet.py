@@ -196,39 +196,51 @@ class ChessAttention(nn.Module):
 
 class ChessSpecificFeatures(nn.Module):
     """Chess-specific feature extraction and enhancement."""
-    
-    def __init__(self, channels: int, piece_square_tables: bool = True):
+
+    def __init__(
+        self,
+        channels: int,
+        piece_square_tables: bool = True,
+        norm: str = "batch",
+        activation: str = "relu",
+    ):
         super().__init__()
         self.piece_square_tables = piece_square_tables
-        
+
+        activation_cls = nn.SiLU if activation == "silu" else nn.ReLU
+
         if piece_square_tables:
             # Piece-square table features
             self.pst_conv = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
-            self.pst_norm = _norm(channels)
-            
+            self.pst_norm = _norm(channels, norm)
+            self.pst_activation = activation_cls(inplace=True)
+
         # Chess-specific convolutions for piece interactions
         self.interaction_conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.interaction_norm = _norm(channels)
-        
+        self.interaction_norm = _norm(channels, norm)
+        self.interaction_activation = activation_cls(inplace=True)
+
         # Position encoding for chess board (8x8 for chess)
         self.position_encoding = nn.Parameter(torch.randn(1, channels, 8, 8))
-        
+
         # Initialize position encoding properly
         nn.init.normal_(self.position_encoding, mean=0.0, std=0.1)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Add position encoding
         x = x + self.position_encoding
-        
+
         if self.piece_square_tables:
             # Apply PST features
-            pst_features = F.relu(self.pst_norm(self.pst_conv(x)))
+            pst_features = self.pst_activation(self.pst_norm(self.pst_conv(x)))
             x = x + pst_features
-        
+
         # Apply interaction features
-        interaction_features = F.relu(self.interaction_norm(self.interaction_conv(x)))
+        interaction_features = self.interaction_activation(
+            self.interaction_norm(self.interaction_conv(x))
+        )
         x = x + interaction_features
-        
+
         return x
 
 
@@ -299,7 +311,12 @@ class PolicyValueNet(nn.Module):
         
         # Add chess-specific features if enabled
         if cfg.chess_features:
-            self.chess_features = ChessSpecificFeatures(C, cfg.piece_square_tables)
+            self.chess_features = ChessSpecificFeatures(
+                C,
+                cfg.piece_square_tables,
+                norm=cfg.norm,
+                activation=cfg.activation,
+            )
         else:
             self.chess_features = None
             
