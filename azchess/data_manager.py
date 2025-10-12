@@ -526,7 +526,14 @@ class DataManager:
         
         try:
             with np.load(tactical_path, allow_pickle=True) as data:
-                indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                total_positions = len(data['positions'])
+                if total_positions == 0:
+                    logger.warning("Tactical training data is empty")
+                    return None
+                draw_size = min(batch_size, total_positions)
+                replace = batch_size > total_positions
+                target_size = batch_size if replace else draw_size
+                indices = np.random.choice(total_positions, target_size, replace=replace)
                 batch_states = data['positions'][indices]  # curriculum format: (N, 19, 8, 8)
                 batch_policies = data['policy_targets'][indices]  # curriculum format: (N, 4672)
                 batch_values = data['value_targets'][indices]  # curriculum format: (N,)
@@ -572,7 +579,14 @@ class DataManager:
         
         try:
             with np.load(openings_path, allow_pickle=True) as data:
-                indices = np.random.choice(len(data['positions']), batch_size, replace=False)
+                total_positions = len(data['positions'])
+                if total_positions == 0:
+                    logger.warning("Openings training data is empty")
+                    return None
+                draw_size = min(batch_size, total_positions)
+                replace = batch_size > total_positions
+                target_size = batch_size if replace else draw_size
+                indices = np.random.choice(total_positions, target_size, replace=replace)
                 batch_states = data['positions'][indices]  # curriculum format: (N, 19, 8, 8)
                 batch_policies = data['policy_targets'][indices]  # curriculum format: (N, 4672)
                 batch_values = data['value_targets'][indices]  # curriculum format: (N,)
