@@ -1,5 +1,6 @@
 import chess
 import pytest
+from fastapi.testclient import TestClient
 
 from webui import server
 from webui.server import HTTPException, NewGameRequest
@@ -9,6 +10,9 @@ from webui.server import HTTPException, NewGameRequest
 def stub_dependencies(monkeypatch):
     monkeypatch.setattr(server, "_load_matrix0", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_jsonl_write", lambda *args, **kwargs: None)
+    server._matrix0_model = None
+    server._matrix0_model_params = None
+    server._cfg = None
     server.GAMES.clear()
 
 
@@ -56,3 +60,30 @@ def test_system_metrics_endpoint(monkeypatch):
     assert isinstance(metrics["timestamp"], float)
 
     server.GAMES.clear()
+
+
+def test_health_caches_model_parameter_count(monkeypatch):
+    call_count = 0
+
+    class DummyModel:
+        def count_parameters(self):
+            return 123
+
+    def fake_from_config(cfg):
+        nonlocal call_count
+        call_count += 1
+        return DummyModel()
+
+    monkeypatch.setattr(server.PolicyValueNet, "from_config", staticmethod(fake_from_config))
+
+    client = TestClient(server.app)
+
+    resp1 = client.get("/health")
+    assert resp1.status_code == 200
+    assert resp1.json()["model_params"] == 123
+
+    resp2 = client.get("/health")
+    assert resp2.status_code == 200
+    assert resp2.json()["model_params"] == 123
+
+    assert call_count == 1

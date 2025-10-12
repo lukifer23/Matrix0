@@ -173,6 +173,7 @@ async def favicon():
 
 # Lazy-loaded engines
 _matrix0_model = None
+_matrix0_model_params: Optional[int] = None
 _matrix0_mcts = None
 _device = None
 _cfg: Config | None = None
@@ -736,7 +737,7 @@ def orchestrator_workers():
 
 
 def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, device_pref: str = "cpu"):
-    global _matrix0_model, _matrix0_mcts, _device, _cfg
+    global _matrix0_model, _matrix0_mcts, _device, _cfg, _matrix0_model_params
     if _matrix0_model is not None and _matrix0_mcts is not None:
         return
     _cfg = Config.load(cfg_path)
@@ -753,6 +754,10 @@ def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, dev
         state = torch.load(ckpt_path, map_location=_device, weights_only=False)
         model.load_state_dict(state.get("model_ema", state.get("model", {})))
     _matrix0_model = model.to(_device)
+    try:
+        _matrix0_model_params = _matrix0_model.count_parameters()
+    except Exception:
+        _matrix0_model_params = None
     e = cfg.eval()
     mcfg_dict = dict(cfg.mcts())
     mcfg_dict.update(
@@ -767,6 +772,38 @@ def _load_matrix0(cfg_path: str = "config.yaml", ckpt: Optional[str] = None, dev
         }
     )
     _matrix0_mcts = MCTS(_matrix0_model, MCTSConfig.from_dict(mcfg_dict), _device)
+
+
+def _get_matrix0_param_count() -> Optional[int]:
+    """Return the cached parameter count, computing it lazily if needed."""
+
+    global _matrix0_model_params, _cfg
+
+    if _matrix0_model_params is not None:
+        return _matrix0_model_params
+
+    if _matrix0_model is not None:
+        try:
+            _matrix0_model_params = _matrix0_model.count_parameters()
+            return _matrix0_model_params
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("Failed to count parameters on loaded model: %s", exc)
+            return None
+
+    try:
+        cfg = _cfg or Config.load("config.yaml")
+        if _cfg is None:
+            _cfg = cfg
+        model_cfg = cfg.model() if cfg else {}
+        model = PolicyValueNet.from_config(model_cfg)
+        try:
+            _matrix0_model_params = model.count_parameters()
+        finally:
+            del model
+        return _matrix0_model_params
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("Unable to compute Matrix0 parameter count: %s", exc)
+        return None
 
 
 def _load_stockfish() -> Optional["chess.engine.SimpleEngine"]:
@@ -1271,13 +1308,7 @@ def get_pgn(name: str):
 
 @app.get("/health")
 def health():
-    # lightweight model info
-    try:
-        cfg = Config.load("config.yaml")
-        model = PolicyValueNet.from_config(cfg.model())
-        params = model.count_parameters()
-    except Exception:
-        params = None
+    params = _get_matrix0_param_count()
     sf_available = _load_stockfish() is not None
     return {"stockfish": sf_available, "model_params": params, "device": _device}
 
