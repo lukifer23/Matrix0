@@ -257,10 +257,13 @@ class DataManager:
             logger.info(f"Added training data: {filepath.name} ({sample_count} samples, {file_size/1024:.1f}KB)")
         return str(filepath)
     
-    def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    def get_training_batch(self, batch_size: int, device: str = "cpu") -> Iterator[Dict[str, np.ndarray]]:
         """Get training batches from replay buffer with balanced external data mixing.
 
-        Returns tuples (s, pi, z, legal_mask) where legal_mask may be None if not present.
+        Each yielded batch is a dictionary containing the core training targets
+        (``s``, ``pi``, ``z``). When present, ``legal_mask`` and any
+        self-supervised learning targets (keys prefixed with ``ssl_``) are also
+        included.
         """
         all_shards = self._get_all_shards()
         valid_shards = [s for s in all_shards if not s.corrupted]
@@ -377,8 +380,29 @@ class DataManager:
                         if batch_values.dtype != np.float32:
                             batch_values = batch_values.astype(np.float32, copy=False)
 
-                        # Only yield tuples expected by train_step: (s, pi, z[, legal_mask])
-                        yield (batch_states, batch_policies, batch_values, batch_legal) if batch_legal is not None else (batch_states, batch_policies, batch_values)
+                        batch_dict: Dict[str, np.ndarray] = {
+                            's': batch_states,
+                            'pi': batch_policies,
+                            'z': batch_values,
+                        }
+                        if batch_legal is not None:
+                            if isinstance(batch_legal, np.ndarray) and not batch_legal.flags['C_CONTIGUOUS']:
+                                batch_legal = np.ascontiguousarray(batch_legal)
+                            batch_dict['legal_mask'] = batch_legal
+
+                        for ssl_key, ssl_array in ssl_targets.items():
+                            try:
+                                batch_ssl = ssl_array[i:i+batch_size]
+                                if isinstance(batch_ssl, np.ndarray) and not batch_ssl.flags['C_CONTIGUOUS']:
+                                    batch_ssl = np.ascontiguousarray(batch_ssl)
+                                if isinstance(batch_ssl, np.ndarray) and batch_ssl.dtype == np.float64:
+                                    batch_ssl = batch_ssl.astype(np.float32, copy=False)
+                                batch_dict[ssl_key] = batch_ssl
+                            except Exception:
+                                logger.warning("Failed to slice SSL target %s for shard %s", ssl_key, shard_path)
+                                continue
+
+                        yield batch_dict
                             
             except Exception as e:
                 logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)

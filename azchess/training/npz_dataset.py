@@ -37,22 +37,21 @@ class NPZBatchIterableDataset(IterableDataset):
         self.device = device
         self.mode = str(mode)
 
-    def __iter__(self) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    def __iter__(self) -> Iterator[
+        Dict[str, np.ndarray]
+        | Tuple[np.ndarray, np.ndarray, np.ndarray]
+        | Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]
+    ]:
         # Replay mode: stream shards via DataManager iterator
         if self.mode == "replay":
             for batch in self.dm.get_training_batch(self.batch_size, self.device):
-                # Ensure we return a 3- or 4-tuple matching train_step expectations
+                if isinstance(batch, dict):
+                    yield batch
+                    continue
+
+                # Fallback for legacy tuple batches
                 if isinstance(batch, tuple) and (len(batch) == 3 or len(batch) == 4):
                     yield batch
-                else:
-                    try:
-                        s = batch.get("s")
-                        pi = batch.get("pi")
-                        z = batch.get("z")
-                        lm = batch.get("legal_mask", None)
-                        yield (s, pi, z, lm) if lm is not None else (s, pi, z)
-                    except Exception:
-                        continue
             return
 
         # Mixed or specific curriculum phase: query DM each time
