@@ -1,163 +1,203 @@
 """
-Unified Tensor Utilities for Matrix0
-Centralizes tensor operations, validation, and utilities.
+Unified tensor utilities for Matrix0 chess AI.
+
+This module provides consistent tensor handling utilities across the entire codebase,
+eliminating duplication and ensuring MPS compatibility.
 """
 
-from __future__ import annotations
-
 import logging
-from typing import Any, Dict, Optional, Union
-
-import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
 
 
 class TensorUtils:
-    """Unified tensor utilities for consistent tensor handling."""
+    """Unified tensor utility class."""
 
     @staticmethod
-    def ensure_contiguous(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
-        """Ensure tensor is contiguous with logging."""
+    def ensure_contiguous_tensor(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
+        """Ensure tensor is contiguous, with debug logging for MPS compatibility.
+
+        Args:
+            tensor: Input tensor that may need to be made contiguous
+            name: Name for logging purposes
+
+        Returns:
+            Contiguous tensor
+        """
         if not tensor.is_contiguous():
-            logger.debug(f"Making {name} contiguous (shape: {tensor.shape}, device: {tensor.device})")
+            logger.debug(f"Making tensor {name} contiguous")
             return tensor.contiguous()
         return tensor
 
+
     @staticmethod
-    def ensure_contiguous_array(array: np.ndarray, name: str = "array") -> np.ndarray:
-        """Ensure numpy array is contiguous."""
-        if not array.flags.c_contiguous:
-            logger.debug(f"Making {name} contiguous (shape: {array.shape})")
+    def ensure_contiguous_array(array, name: str = "array"):
+        """Ensure numpy array is contiguous for MPS compatibility.
+
+        Args:
+            array: Input numpy array that may need to be made contiguous
+            name: Name for logging purposes
+
+        Returns:
+            Contiguous numpy array
+        """
+        if hasattr(array, 'flags') and not array.flags.c_contiguous:
+            logger.debug(f"Making array {name} contiguous")
+            import numpy as np
             return np.ascontiguousarray(array)
         return array
 
     @staticmethod
-    def validate_shapes(*tensors: torch.Tensor, names: Optional[list] = None) -> bool:
-        """Validate tensor shapes are compatible."""
-        if not tensors:
-            return True
+    def check_contiguous(outputs: dict) -> None:
+        """Validate that output tensors (or dicts of tensors) are contiguous.
 
-        base_shape = tensors[0].shape
-        names = names or [f"tensor_{i}" for i in range(len(tensors))]
+        Args:
+            outputs: Dictionary of tensors to check
 
-        for i, (tensor, name) in enumerate(zip(tensors, names)):
-            if tensor.shape != base_shape:
-                logger.error(f"Shape mismatch for {name}: expected {base_shape}, got {tensor.shape}")
-                return False
+        Raises:
+            RuntimeError: if any tensor is not contiguous.
+        """
+        for name, tensor in outputs.items():
+            if tensor is None:
+                continue
+            if torch.is_tensor(tensor):
+                if not tensor.is_contiguous():
+                    raise RuntimeError(
+                        f"{name} output tensor is not contiguous. Shape: {tensor.shape}, strides: {tensor.stride()}"
+                    )
+            elif isinstance(tensor, dict):
+                for sub_name, sub_tensor in tensor.items():
+                    if torch.is_tensor(sub_tensor) and not sub_tensor.is_contiguous():
+                        raise RuntimeError(
+                            f"{name}[{sub_name}] tensor is not contiguous. Shape: {sub_tensor.shape}, strides: {sub_tensor.stride()}"
+                        )
 
-        return True
 
+    # Additional utility methods
     @staticmethod
-    def check_tensor_health(tensor: torch.Tensor, name: str = "tensor") -> Dict[str, Any]:
-        """Check tensor for NaN/Inf values and other issues."""
-        health = {
-            "name": name,
-            "shape": tensor.shape,
-            "dtype": tensor.dtype,
-            "device": tensor.device,
-            "contiguous": tensor.is_contiguous(),
-            "has_nan": False,
-            "has_inf": False,
-            "nan_count": 0,
-            "inf_count": 0
-        }
+    def check_tensor_health(tensor: torch.Tensor) -> dict:
+        """Check tensor health and return diagnostic information.
 
-        if tensor.dtype.is_floating_point:
-            health["has_nan"] = torch.isnan(tensor).any().item()
-            health["has_inf"] = torch.isinf(tensor).any().item()
-            health["nan_count"] = torch.isnan(tensor).sum().item()
-            health["inf_count"] = torch.isinf(tensor).sum().item()
+        Args:
+            tensor: Tensor to check
 
-        return health
-
-    @staticmethod
-    def safe_tensor_to_device(tensor: torch.Tensor, device: str, name: str = "tensor") -> torch.Tensor:
-        """Safely move tensor to device with error handling."""
-        try:
-            return tensor.to(device)
-        except Exception as e:
-            logger.warning(f"Failed to move {name} to {device}: {e}")
-            return tensor
-
-    @staticmethod
-    def create_tensor(*args, device: str = "cpu", dtype: Optional[torch.dtype] = None,
-                     **kwargs) -> torch.Tensor:
-        """Create tensor with unified device and dtype handling."""
-        try:
-            tensor = torch.tensor(*args, **kwargs)
-            if dtype is not None:
-                tensor = tensor.to(dtype=dtype)
-            if device != "cpu":
-                tensor = tensor.to(device)
-            return tensor
-        except Exception as e:
-            logger.error(f"Failed to create tensor: {e}")
-            # Fallback to CPU tensor
-            return torch.tensor(*args, **kwargs)
-
-    @staticmethod
-    def log_tensor_stats(tensor: torch.Tensor, name: str = "tensor", level: int = logging.DEBUG) -> None:
-        """Log comprehensive tensor statistics."""
-        if not logger.isEnabledFor(level):
-            return
-
-        stats = {
-            "shape": tensor.shape,
+        Returns:
+            Dictionary with health metrics
+        """
+        return {
+            "shape": list(tensor.shape),
             "dtype": str(tensor.dtype),
             "device": str(tensor.device),
             "contiguous": tensor.is_contiguous(),
-            "memory_mb": tensor.numel() * tensor.element_size() / (1024 * 1024)
+            "requires_grad": tensor.requires_grad,
+            "nan_count": torch.isnan(tensor).sum().item(),
+            "inf_count": torch.isinf(tensor).sum().item(),
         }
 
-        if tensor.dtype.is_floating_point:
-            stats.update({
-                "min": tensor.min().item(),
-                "max": tensor.max().item(),
-                "mean": tensor.mean().item(),
-                "std": tensor.std().item(),
-                "has_nan": torch.isnan(tensor).any().item(),
-                "has_inf": torch.isinf(tensor).any().item()
-            })
+    @staticmethod
+    def create_tensor(*args, **kwargs) -> torch.Tensor:
+        """Create a tensor with proper device placement.
 
-        logger.log(level, f"{name} stats: {stats}")
+        Args:
+            *args: Positional arguments for torch.tensor
+            **kwargs: Keyword arguments for torch.tensor
+
+        Returns:
+            Created tensor
+        """
+        return torch.tensor(*args, **kwargs)
+
+    @staticmethod
+    def log_tensor_stats(tensor: torch.Tensor, name: str) -> None:
+        """Log tensor statistics for debugging.
+
+        Args:
+            tensor: Tensor to analyze
+            name: Name for logging
+        """
+        if logger.isEnabledFor(logging.DEBUG):
+            stats = TensorUtils.check_tensor_health(tensor)
+            logger.debug(f"Tensor {name} stats: {stats}")
+
+    @staticmethod
+    def safe_to_device(tensor: torch.Tensor, device: str) -> torch.Tensor:
+        """Safely move tensor to device.
+
+        Args:
+            tensor: Tensor to move
+            device: Target device
+
+        Returns:
+            Tensor on target device
+        """
+        try:
+            return tensor.to(device)
+        except Exception as e:
+            logger.warning(f"Failed to move tensor to device {device}: {e}")
+            return tensor
+
+    @staticmethod
+    def validate_tensor_shapes(tensors: dict) -> bool:
+        """Validate that tensors have expected shapes.
+
+        Args:
+            tensors: Dictionary of tensors to validate
+
+        Returns:
+            True if all tensors have valid shapes
+        """
+        for name, tensor in tensors.items():
+            if tensor is None:
+                continue
+            if torch.is_tensor(tensor):
+                if tensor.numel() == 0:
+                    logger.warning(f"Tensor {name} is empty")
+                    return False
+        return True
 
 
-# Global instance for easy access
-tensor_utils = TensorUtils()
+# Backward compatibility - export functions directly
+def ensure_contiguous_tensor(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
+    """Ensure tensor is contiguous, with debug logging for MPS compatibility."""
+    return TensorUtils.ensure_contiguous_tensor(tensor, name)
+
+
+def ensure_contiguous_array(array, name: str = "array"):
+    """Ensure numpy array is contiguous for MPS compatibility."""
+    return TensorUtils.ensure_contiguous_array(array, name)
+
+
+def check_contiguous(outputs: dict) -> None:
+    """Validate that output tensors (or dicts of tensors) are contiguous."""
+    return TensorUtils.check_contiguous(outputs)
 
 
 def ensure_contiguous(tensor: torch.Tensor, name: str = "tensor") -> torch.Tensor:
-    """Convenience function."""
-    return tensor_utils.ensure_contiguous(tensor, name)
+    """Ensure tensor is contiguous (alias for ensure_contiguous_tensor)."""
+    return TensorUtils.ensure_contiguous_tensor(tensor, name)
 
 
-def ensure_contiguous_array(array: np.ndarray, name: str = "array") -> np.ndarray:
-    """Convenience function."""
-    return tensor_utils.ensure_contiguous_array(array, name)
+def check_tensor_health(tensor: torch.Tensor) -> dict:
+    """Check tensor health and return diagnostic information."""
+    return TensorUtils.check_tensor_health(tensor)
 
 
-def validate_tensor_shapes(*tensors: torch.Tensor, names: Optional[list] = None) -> bool:
-    """Convenience function."""
-    return tensor_utils.validate_shapes(*tensors, names=names)
+def create_tensor(*args, **kwargs) -> torch.Tensor:
+    """Create a tensor with proper device placement."""
+    return TensorUtils.create_tensor(*args, **kwargs)
 
 
-def check_tensor_health(tensor: torch.Tensor, name: str = "tensor") -> Dict[str, Any]:
-    """Convenience function."""
-    return tensor_utils.check_tensor_health(tensor, name)
+def log_tensor_stats(tensor: torch.Tensor, name: str) -> None:
+    """Log tensor statistics for debugging."""
+    return TensorUtils.log_tensor_stats(tensor, name)
 
 
-def safe_to_device(tensor: torch.Tensor, device: str, name: str = "tensor") -> torch.Tensor:
-    """Convenience function."""
-    return tensor_utils.safe_tensor_to_device(tensor, device, name)
+def safe_to_device(tensor: torch.Tensor, device: str) -> torch.Tensor:
+    """Safely move tensor to device."""
+    return TensorUtils.safe_to_device(tensor, device)
 
 
-def create_tensor(*args, device: str = "cpu", dtype: Optional[torch.dtype] = None, **kwargs) -> torch.Tensor:
-    """Convenience function."""
-    return tensor_utils.create_tensor(*args, device=device, dtype=dtype, **kwargs)
-
-
-def log_tensor_stats(tensor: torch.Tensor, name: str = "tensor", level: int = logging.DEBUG) -> None:
-    """Convenience function."""
-    tensor_utils.log_tensor_stats(tensor, name, level)
+def validate_tensor_shapes(tensors: dict) -> bool:
+    """Validate that tensors have expected shapes."""
+    return TensorUtils.validate_tensor_shapes(tensors)

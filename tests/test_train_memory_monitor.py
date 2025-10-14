@@ -40,7 +40,14 @@ class DummyDataManager:
         return self._stats
 
     def get_external_data_stats(self):
-        return {"external_total": 0, "tactical_samples": 0, "openings_samples": 0}
+        return {
+            "external_total": 0,
+            "tactical_samples": 0,
+            "openings_samples": 0,
+            "stockfish_samples": 0,
+            "teacher_samples": 0,
+            "external_import_samples": 0,
+        }
 
     def get_curriculum_batch(self, *_args, **_kwargs):
         return None

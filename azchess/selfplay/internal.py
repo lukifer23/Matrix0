@@ -23,6 +23,7 @@ from ..draw import should_adjudicate_draw
 from ..encoding import encode_board, move_to_index, move_encoder
 from ..mcts import MCTS, MCTSConfig
 from ..model import PolicyValueNet
+from ..ssl_algorithms import ChessSSLAlgorithms
 from .inference import InferenceClient
 
 
@@ -189,7 +190,13 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             logger.info("No checkpoint provided, using untrained model")
 
     sp_cfg = cfg_dict["selfplay"]
-    draw_cfg = cfg_dict.get("draw", {})
+    # Use unified draw configuration merging top-level and selfplay.draw
+    try:
+        from ..config import Config as _Cfg
+        _cfg_obj = _Cfg(cfg_dict)
+        draw_cfg = _cfg_obj.draw()
+    except Exception:
+        draw_cfg = cfg_dict.get("draw", {})
 
     # Detect value orientation (side-to-move vs absolute White) and pass to MCTS
     def _detect_value_from_white() -> bool:
@@ -285,6 +292,14 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         device=device,
         inference_backend=infer_backend,
     )
+
+    # Initialize SSL algorithms for target generation (gated by selfplay.generate_ssl)
+    sp_flags = cfg_dict.get("selfplay", {})
+    generate_ssl = bool(sp_flags.get("generate_ssl", False))
+    ssl_algorithms = ChessSSLAlgorithms() if generate_ssl else None
+    ssl_enabled = generate_ssl and cfg_dict.get("model", {}).get("self_supervised", False)
+    ssl_tasks = cfg_dict.get("model", {}).get("ssl_tasks", []) if ssl_enabled else []
+
     data_manager = DataManager(
         base_dir=cfg_dict.get("data_dir", "data"),
         expected_planes=cfg_dict.get("model", {}).get("planes", 19),
@@ -307,6 +322,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             entropy_sum: float = 0.0
             entropy_count: int = 0
             legal_masks: List[np.ndarray] = []
+            ssl_targets: Dict[str, List[np.ndarray]] = {}
             
             t0 = perf_counter()
             last_hb = t0
@@ -434,12 +450,43 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 search_values.append(v)
                 # Record perspective of this position (side to move at this state)
                 turns.append(turn_sign)
-                # Save legal mask for this position
-                try:
-                    lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
-                except Exception:
-                    lm = np.zeros(4672, dtype=np.uint8)
-                legal_masks.append(lm)
+                # Save legal mask if enabled
+                if bool(sp_flags.get("save_legal_mask", False)):
+                    try:
+                        lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
+                    except Exception:
+                        lm = np.zeros(4672, dtype=np.uint8)
+                    legal_masks.append(lm)
+
+                # Generate SSL targets if enabled
+                if ssl_enabled and ssl_tasks:
+                    board_state = encode_board(board)
+                    ssl_batch = torch.from_numpy(np.expand_dims(board_state, axis=0)).float()
+
+                    for task in ssl_tasks:
+                        if task not in ssl_targets:
+                            ssl_targets[task] = []
+
+                        try:
+                            if task == "threat":
+                                target = ssl_algorithms.detect_threats_batch(ssl_batch)
+                            elif task == "pin":
+                                target = ssl_algorithms.detect_pins_batch(ssl_batch)
+                            elif task == "fork":
+                                target = ssl_algorithms.detect_forks_batch(ssl_batch)
+                            else:
+                                # Skip unsupported tasks for now
+                                continue
+
+                            # Convert to numpy and remove batch dimension
+                            if target is not None:
+                                target_np = target.squeeze(0).detach().cpu().numpy()
+                                ssl_targets[task].append(target_np)
+                            else:
+                                ssl_targets[task].append(np.zeros((8, 8)))
+                        except Exception as e:
+                            logger.warning(f"Failed to generate SSL target for {task}: {e}")
+                            ssl_targets[task].append(np.zeros((8, 8)))
                 # Track sims used
                 try:
                     sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
@@ -523,9 +570,23 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                         except Exception as e:
                             logger.warning(f"Tablebase probe failed: {e}")
     
-            # If the game didn't end by tablebase, get the result normally
+            # If the game didn't end by tablebase, get the result normally.
+            # When the loop exited due to max_game_len or early adjudication where
+            # no claimable draw exists, avoid blindly labeling as draw; instead,
+            # fall back to final search value sign to provide a decisive target.
             if 'z' not in locals():
-                z = game_result(board)
+                # Detect whether a terminal/claimable result exists
+                terminal = board.is_game_over(claim_draw=True)
+                if terminal:
+                    z = game_result(board)
+                else:
+                    # No formal result (e.g., length cap). Use last search value if available.
+                    if search_values:
+                        v_last = float(search_values[-1])
+                        # Use raw v_last; it is already in [-1,1] and blends later
+                        z = v_last
+                    else:
+                        z = 0.0
             
             # Debug: log the final game result
             if resigned:
@@ -551,7 +612,6 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "s": np.array(states, dtype=np.float32),
                     "pi": np.array(pis, dtype=np.float32),
                     "z": np.array(value_target, dtype=np.float32),
-                    "legal_mask": np.stack(legal_masks, axis=0).astype(np.uint8, copy=False),
                     # Per-game metadata arrays
                     "meta_moves": np.array([len(states)], dtype=np.int32),
                     "meta_result": np.array([z], dtype=np.float32),
@@ -560,6 +620,17 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
                     "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
                 }
+                if bool(sp_flags.get("save_legal_mask", False)) and legal_masks:
+                    try:
+                        game_data["legal_mask"] = np.stack(legal_masks, axis=0).astype(np.uint8, copy=False)
+                    except Exception:
+                        pass
+
+                # Add SSL targets if they were generated
+                if ssl_targets:
+                    for task, targets in ssl_targets.items():
+                        if targets:
+                            game_data[f"ssl_{task}"] = np.stack(targets, axis=0).astype(np.float32)
                 try:
                     filepath = data_manager.add_selfplay_data(game_data, worker_id=proc_id, game_id=g)
                 except Exception as e:

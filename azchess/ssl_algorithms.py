@@ -115,8 +115,9 @@ class ChessSSLAlgorithms:
 
         # White attacks
         white_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
-        white_att += _shift(wp, +1, -1)
-        white_att += _shift(wp, +1, +1)
+        # White pawns attack diagonally forward (increasing rank)
+        white_att += _shift(wp, +1, -1)  # Forward-left attack
+        white_att += _shift(wp, +1, +1)  # Forward-right attack
         for dr, dc in knight_moves:
             white_att += _shift(wn, dr, dc)
         for dr, dc in king_moves:
@@ -126,8 +127,9 @@ class ChessSSLAlgorithms:
 
         # Black attacks
         black_att = torch.zeros(B, 8, 8, device=device, dtype=torch.float32)
-        black_att += _shift(bp, -1, -1)
-        black_att += _shift(bp, -1, +1)
+        # Black pawns attack diagonally backward (decreasing rank)
+        black_att += _shift(bp, -1, -1)  # Backward-left attack
+        black_att += _shift(bp, -1, +1)  # Backward-right attack
         for dr, dc in knight_moves:
             black_att += _shift(bn, dr, dc)
         for dr, dc in king_moves:
@@ -301,26 +303,45 @@ class ChessSSLAlgorithms:
             (ortho_dirs, (enemy_rook + enemy_queen) > 0),
         ]:
             for dr, dc in dirs:
-                ray = _ray_stack(king_plane, dr, dc)  # (B,7,8,8)
-                occ_steps = (ray * occ.unsqueeze(1)).flatten(2).sum(dim=2) > 0
-                own_steps = (ray * own_any.unsqueeze(1)).flatten(2).sum(dim=2) > 0
-                slider_steps = (ray * slider_mask.unsqueeze(1)).flatten(2).sum(dim=2) > 0
+                # Create rays from king position in this direction
+                king_rays = _ray_stack(king_plane, dr, dc)  # (B,7,8,8)
 
-                occ_cum = torch.cumsum(occ_steps.int(), dim=1)
-                first_occ = occ_steps & (occ_cum == 1)
-                own_first = first_occ & own_steps
+                # Check for occupied squares along each ray
+                occ_rays = (king_rays * occ.unsqueeze(1)) > 0  # (B,7,8,8)
 
-                after_first = (torch.cumsum(first_occ.int(), dim=1) > 0) & (~first_occ)
-                occ_after = occ_steps & after_first
-                occ_after_cum = torch.cumsum(occ_after.int(), dim=1)
-                second_occ = occ_after & (occ_after_cum == 1)
+                # Check for own pieces along each ray
+                own_rays = (king_rays * own_any.unsqueeze(1)) > 0  # (B,7,8,8)
 
-                valid_slider_after = (second_occ & slider_steps).any(dim=1, keepdim=True)
-                has_own_first = own_first.any(dim=1, keepdim=True)
-                gate = (valid_slider_after & has_own_first).to(torch.float32).view(B, 1, 1)
+                # Check for enemy sliders along each ray
+                slider_rays = (king_rays * slider_mask.unsqueeze(1)) > 0  # (B,7,8,8)
 
-                own_first_board = (ray * own_first.view(B, 7, 1, 1).to(ray.dtype)).sum(dim=1)
-                pin_map = pin_map + (own_first_board * gate)
+                # For each position along the ray, check if it's the first occupied square
+                # and if there's an enemy slider immediately after
+                for step in range(7):  # Check each position along the ray
+                    # Current position in ray
+                    current_pos = king_rays[:, step]  # (B,8,8)
+
+                    # Check if this position is occupied by own piece
+                    is_own_piece = (current_pos * own_any) > 0  # (B,8,8)
+
+                    # Check positions beyond current one for enemy sliders
+                    if step < 6:  # Not the last position
+                        next_pos = king_rays[:, step + 1]  # (B,8,8)
+                        has_slider_beyond = (next_pos * slider_mask) > 0  # (B,8,8)
+
+                        # Check that there are no other occupied squares between current and next
+                        between_clear = True
+                        for between_step in range(step + 1):
+                            if between_step != step:
+                                between_pos = king_rays[:, between_step]
+                                if (between_pos * occ).sum() > 0:
+                                    between_clear = False
+                                    break
+
+                        # Mark as pinned if: own piece at current pos, enemy slider beyond,
+                        # and no pieces in between
+                        is_pinned = is_own_piece & has_slider_beyond & torch.tensor(between_clear, device=device)
+                        pin_map += is_pinned.to(torch.float32)
 
         return torch.clamp(pin_map, 0.0, 1.0)
 

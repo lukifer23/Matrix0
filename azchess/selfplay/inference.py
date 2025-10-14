@@ -255,15 +255,15 @@ def run_inference_server(
         heartbeat_interval = 30.0  # Log heartbeat every 30 seconds
 
         device_type = device.split(":")[0]
-        # On MPS, AMP often slows inference due to cast overhead; keep AMP only on CUDA
-        use_amp = (device_type == "cuda")
+        # Enable AMP on CUDA and MPS for faster matmul/convs when beneficial
+        use_amp = (device_type in ("cuda", "mps"))
 
         # Target batch size tuned per device to avoid long waits/timeouts.
         # Allow environment overrides for quick tuning without code changes.
         # Defaults: MPS=4 (safe), CUDA=16 (typical), CPU=4.
         try:
             if device_type == "mps":
-                target_batch_for_device = int(os.environ.get("MATRIX0_MPS_TARGET_BATCH", "4"))
+                target_batch_for_device = int(os.environ.get("MATRIX0_MPS_TARGET_BATCH", "8"))
             elif device_type == "cuda":
                 target_batch_for_device = int(os.environ.get("MATRIX0_CUDA_TARGET_BATCH", "16"))
             else:

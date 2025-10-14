@@ -17,7 +17,13 @@ def load_model_and_mcts(cfg: Config, checkpoint: str) -> Tuple[PolicyValueNet, M
     This function centralizes device selection, handling of EMA weights and
     MCTS configuration so that callers can rely on a consistent behaviour.
     """
-    device = select_device(cfg.get("device", "auto"))
+    # Use explicit device if set, otherwise auto-select
+    requested_device = cfg.get("device", "auto")
+    if requested_device == "cpu":
+        # Force CPU usage when explicitly requested
+        device = "cpu"
+    else:
+        device = select_device(requested_device)
     mcfg_dict = dict(cfg.mcts())
     eval_section = cfg.eval()
     if isinstance(eval_section, dict) and eval_section:

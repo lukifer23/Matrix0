@@ -6,7 +6,7 @@ Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation.
+Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation. *Note: SSRL experimentation is currently paused to prioritize core SSL throughput; the design remains in-place for future reactivation.*
 
 ### Key Specifications
 - **Total Parameters**: 53,217,919 (53M)
@@ -538,4 +538,3 @@ llm_tutor:
 ---
 
 This enhanced V2 design represents a significant evolution of Matrix0, combining architectural improvements with production SSL coverage and a clear path for optional head expansion. The phased implementation approach ensures stability while enabling cutting-edge features like LLM-guided training and multi-modal learning. All features are configurable and can be enabled/disabled independently, providing maximum flexibility and risk mitigation.
-

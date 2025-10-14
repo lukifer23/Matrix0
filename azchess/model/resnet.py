@@ -277,6 +277,9 @@ class NetConfig:
     ssrl_tasks: List[str] = field(default_factory=list) # No SSRL tasks by default
     enable_llm_tutor: bool = False # LLM integration
     llm_model_path: str = "" # Path to LLM model
+    # Inference-only optimizations
+    infer_attention_stride: int = 1  # Run every Nth attention block at inference (training unaffected)
+    infer_amp_tower: bool = False    # Use AMP for tower at inference only (training unaffected)
 
 
 class PolicyValueNet(nn.Module):
@@ -284,6 +287,11 @@ class PolicyValueNet(nn.Module):
         super().__init__()
         C = cfg.channels
         self.cfg = cfg
+        # Inference-only attention stride (>=2 to skip some attention blocks)
+        try:
+            self.infer_attention_stride = max(1, int(getattr(cfg, 'infer_attention_stride', 1)))
+        except Exception:
+            self.infer_attention_stride = 1
         # Track running SSL statistics for diagnostic logging
         self._ssl_loss_stats: Dict[str, Dict[str, float]] = {}
         # Guard: Only legacy 4672 policy is supported until 1858 path is implemented
@@ -484,14 +492,21 @@ class PolicyValueNet(nn.Module):
         
         # Enhanced value head
         self.value_head = nn.Sequential(
-            nn.Conv2d(C, 64, kernel_size=1, bias=False),  # Increased from 32
-            _norm(64, cfg.norm),
+            nn.Conv2d(C, 128, kernel_size=1, bias=False),
+            _norm(128, cfg.norm),
             activation,
-            nn.Dropout(0.1),  # Add dropout for regularization
+            nn.Conv2d(128, 128, kernel_size=1, bias=False),
+            _norm(128, cfg.norm),
+            activation,
+            nn.Dropout(0.1),
         )
-        self.value_fc1 = nn.Linear(64 * 8 * 8, C)
-        self.value_fc2 = nn.Linear(C, C // 2)
-        self.value_fc3 = nn.Linear(C // 2, 1)
+        self.value_fc1 = nn.Linear(128 * 8 * 8, 2 * C)
+        self.value_fc2 = nn.Linear(2 * C, C)
+        self.value_gate = nn.Sequential(
+            nn.Linear(C, C),
+            nn.Sigmoid(),
+        )
+        self.value_fc3 = nn.Linear(C, 1)
 
         # Optional WDL auxiliary head
         if cfg.wdl:
@@ -508,7 +523,7 @@ class PolicyValueNet(nn.Module):
         # SSRL tasks if enabled
         ssrl_tasks = getattr(cfg, 'ssrl_tasks', [])
         if ssrl_tasks:
-            self.ssrl_heads = {}
+            self.ssrl_heads = nn.ModuleDict()
             for task in ssrl_tasks:
                 if task == 'position':
                     # Position prediction head
@@ -528,8 +543,17 @@ class PolicyValueNet(nn.Module):
                         nn.ReLU(inplace=True),
                         nn.Linear(C // 2, 12),  # 12 piece types
                     )
+                elif task == 'rotation':
+                    # Rotation classification encourages orientation awareness
+                    self.ssrl_heads[task] = nn.Sequential(
+                        nn.AdaptiveAvgPool2d(1),
+                        nn.Flatten(),
+                        nn.Linear(C, C // 2),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(C // 2, 4),  # 0°, 90°, 180°, 270°
+                    )
         else:
-            self.ssrl_heads = {}
+            self.ssrl_heads = nn.ModuleDict()
         
         # Initialize weights properly for training
         self._init_weights()
@@ -583,14 +607,17 @@ class PolicyValueNet(nn.Module):
         
         # Value head initialization
         nn.init.kaiming_normal_(self.value_head[0].weight, mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.value_head[3].weight, mode='fan_out', nonlinearity='relu')
         nn.init.xavier_uniform_(self.value_fc1.weight, gain=1.0)
         nn.init.xavier_uniform_(self.value_fc2.weight, gain=1.0)
         nn.init.xavier_uniform_(self.value_fc3.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.value_gate[0].weight, gain=1.0)
         
         # Initialize biases to reasonable values
         nn.init.constant_(self.value_fc1.bias, 0.0)
         nn.init.constant_(self.value_fc2.bias, 0.0)
         nn.init.constant_(self.value_fc3.bias, 0.0)
+        nn.init.constant_(self.value_gate[0].bias, 0.0)
         
         # CRITICAL: Scale policy output weights to prevent NaN explosion
         with torch.no_grad():
@@ -619,6 +646,13 @@ class PolicyValueNet(nn.Module):
                     nn.init.xavier_uniform_(m.weight, gain=1.0)
                     nn.init.constant_(m.bias, 0.0)
 
+        if getattr(self, 'ssrl_heads', None):
+            for head in self.ssrl_heads.values():
+                for m in head.modules():
+                    if isinstance(m, nn.Linear):
+                        nn.init.xavier_uniform_(m.weight, gain=1.0)
+                        nn.init.constant_(m.bias, 0.0)
+
     def _forward_features(self, x: torch.Tensor, visual_input: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Run stem in fp32 regardless of autocast to satisfy MPS conv dtype rules
         try:
@@ -638,9 +672,21 @@ class PolicyValueNet(nn.Module):
             visual_features = self.visual_encoder(visual_input)
             x = x + visual_features  # Add visual features to chess features
         
-        # Run the tower in fp32 to avoid half-precision normalization/softmax instabilities
-        with torch.autocast(device_type=device_type, enabled=False):
-            x = self.tower(x)
+        # Run the tower in fp32; optionally skip some attention blocks at inference
+        use_infer_amp = (not self.training) and bool(getattr(self.cfg, 'infer_amp_tower', False))
+        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_infer_amp):
+            if (not self.training) and (self.infer_attention_stride > 1):
+                att_seen = 0
+                for layer in self.tower:
+                    # Skip some attention modules at inference to reduce compute
+                    if isinstance(layer, ChessAttention):
+                        att_seen += 1
+                        if (att_seen % self.infer_attention_stride) != 0:
+                            # Bypass this attention layer
+                            continue
+                    x = layer(x)
+            else:
+                x = self.tower(x)
 
         # Sanitize features if any non-finite values slipped through
         if not torch.isfinite(x).all():
@@ -682,6 +728,9 @@ class PolicyValueNet(nn.Module):
         if torch.isnan(v).any() or torch.isinf(v).any():
             logger.warning("Value head intermediate contains NaN/Inf after fc2; sanitizing")
             v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+        if hasattr(self, 'value_gate') and self.value_gate is not None:
+            gate = self.value_gate(v)
+            v = v * gate
         v = torch.tanh(self.value_fc3(v))
 
         # SSL - compute outputs for all enabled SSL heads
@@ -1086,6 +1135,7 @@ class PolicyValueNet(nn.Module):
         SSRL focuses on general representation learning tasks:
         - position: Predict board positions (rotation invariance)
         - material: Predict material counts (counting skills)
+        - rotation: Classify board rotation for augmented inputs
 
         This differs from SSL (chess-specific tactical tasks) in that SSRL learns
         general visual and counting abilities rather than chess-specific tactics.
@@ -1105,6 +1155,8 @@ class PolicyValueNet(nn.Module):
                 elif task == 'material':
                     # Material count loss - encourages counting skills
                     loss = F.mse_loss(output, target.float(), reduction='mean')
+                elif task == 'rotation':
+                    loss = F.cross_entropy(output, target.long(), reduction='mean')
                 else:
                     continue
                 total_loss += loss

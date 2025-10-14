@@ -62,45 +62,8 @@ class EMA:
                 p.copy_(self.shadow[k])
 
 
-def _ensure_contiguous(t: torch.Tensor, name: str) -> torch.Tensor:
-    """Force a tensor into standard contiguous memory format.
-
-    Some backends (e.g., MPS) are sensitive to tensors with channels_last
-    layout.  We attempt to set the contiguous memory format and log a warning
-    if that fails before falling back to the default ``contiguous`` call.
-    """
-    if t is None:
-        return None
-    try:
-        return t.contiguous(memory_format=torch.contiguous_format)
-    except Exception as e:  # pragma: no cover - backend specific
-        logger.warning(f"Failed to set contiguous format for {name}: {e}")
-        return t.contiguous()
-
-
-def _check_contiguous(outputs: dict):
-    """Validate that output tensors (or dicts of tensors) are contiguous.
-
-    Raises:
-        RuntimeError: if any tensor is not contiguous.
-    """
-    for name, tensor in outputs.items():
-        if tensor is None:
-            continue
-        if torch.is_tensor(tensor):
-            if not tensor.is_contiguous():
-                raise RuntimeError(
-                    f"{name} output tensor is not contiguous. Shape: {tensor.shape}, strides: {tensor.stride()}"
-                )
-        elif isinstance(tensor, dict):
-            for sub_name, sub_tensor in tensor.items():
-                if torch.is_tensor(sub_tensor) and not sub_tensor.is_contiguous():
-                    raise RuntimeError(
-                        f"{name}[{sub_name}] tensor is not contiguous. Shape: {sub_tensor.shape}, strides: {sub_tensor.stride()}"
-                    )
-        else:
-            # Non-tensor outputs are ignored
-            continue
+# Import unified tensor utilities
+from azchess.utils.tensor import ensure_contiguous_tensor as _ensure_contiguous, check_contiguous as _check_contiguous
 
 
 def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tensor = None) -> torch.Tensor:
@@ -128,6 +91,7 @@ def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tenso
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
+               ssrl_weight: float = 0.0, enable_ssrl: bool = False,
                label_smoothing: float = 0.0, value_loss_type: str = 'mse', huber_delta: float = 1.0,
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                ssl_targets_provider: str = "auto",
@@ -244,6 +208,11 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     z = z.to(device, non_blocking=True)
     if legal_mask_t is not None:
         legal_mask_t = legal_mask_t.to(device, non_blocking=True)
+
+    # SSRL temporarily disabled for stability and performance
+    enable_ssrl = False
+    ssrl_input = None
+    ssrl_targets = None
 
     # Data Augmentation: geometric transforms aligned with action space
     if augment:
@@ -629,11 +598,15 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     scalar_ssl = 0.0
             ssl_loss = torch.tensor(scalar_ssl, device=device, dtype=target_dtype)
 
+        ssrl_active = False
+        ssrl_loss = torch.zeros((), device=device, dtype=target_dtype)
+
         # Combine losses with consistent dtypes
-        if ssl_active and isinstance(ssl_loss, torch.Tensor) and ssl_loss.detach().item() > 0:
-            loss = policy_loss + policy_reg_loss + value_loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
-        else:
-            loss = policy_loss + policy_reg_loss + value_loss
+        loss = policy_loss + policy_reg_loss + value_loss
+        if ssl_active and ssl_weight > 0.0:
+            loss = loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
+        if ssrl_active and ssrl_weight > 0.0:
+            loss = loss + float(ssrl_weight) * ssrl_loss
 
         # Optional WDL auxiliary head
         wdl_loss = torch.tensor(0.0, device=device, dtype=target_dtype)
@@ -726,7 +699,16 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     if not ssl_active:
         ssl_loss_return = 0.0
 
-    return loss.item(), policy_loss.item(), value_loss.item(), ssl_loss_return, (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0)
+    ssrl_loss_return = 0.0
+
+    return (
+        loss.item(),
+        policy_loss.item(),
+        value_loss.item(),
+        ssl_loss_return,
+        ssrl_loss_return,
+        (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0),
+    )
 
 def get_lr_scheduler(optimizer, total_steps: int, warmup_steps: int):
     """Creates a learning rate scheduler with linear warmup and cosine decay."""
@@ -996,7 +978,15 @@ def train_comprehensive(
         raise ValueError("No training data found by DataManager!")
     
     logger.info(f"DataManager found {data_stats.total_shards} shards with {data_stats.total_samples} total samples.")
-    logger.info(f"External training data: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples.")
+    logger.info(
+        "External training data: tactical=%d openings=%d stockfish=%d teacher=%d imported=%d total=%d",
+        external_stats['tactical_samples'],
+        external_stats['openings_samples'],
+        external_stats['stockfish_samples'],
+        external_stats['teacher_samples'],
+        external_stats['external_import_samples'],
+        external_stats['external_total'],
+    )
     
     # Check if curriculum learning is enabled
     use_curriculum = safe_config_get(cfg, "use_curriculum", False, section='training')
@@ -1244,6 +1234,7 @@ def train_comprehensive(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
                 augment_rotate180=safe_config_get(cfg, 'augment_rotate180', True, section='training'),
                 ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(cfg.model().get('self_supervised', False)),
+                ssrl_weight=float(tr_cfg.get('ssrl_weight', 0.0)), enable_ssrl=False,
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
                 huber_delta=float(tr_cfg.get('huber_delta', 1.0)),
@@ -1270,7 +1261,7 @@ def train_comprehensive(
                 if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                     logger.info(f"PERF: train_step call: {train_step_time:.3f}s")
 
-                loss, policy_loss, value_loss, ssl_loss, wdl_loss = loss_values
+                loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss = loss_values
 
                 # PERFORMANCE PROFILING: Start post-processing
                 post_proc_start = time.time()
@@ -1290,8 +1281,10 @@ def train_comprehensive(
                         # Fallback: assume not finite if unknown type
                         return False
 
-                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss)):
-                    logger.warning(f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}")
+                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss) and _finite(ssrl_loss)):
+                    logger.warning(
+                        f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}, ssrl={ssrl_loss}"
+                    )
                     # Skip this batch and continue training
                     continue
                     
@@ -1458,14 +1451,16 @@ def train_comprehensive(
                                 clear_memory_cache(device)
                                 last_memory_warning = current_time
 
-                        logger.info(f"TRAINING_HB: Step {current_step}/{total_steps} (updates={updates_done}) | "
-                                  f"BatchLoss: {max(0.0, float(loss)):.4f} | EMA: {running_loss:.4f} | "
-                                  f"Policy(EMA): {running_policy_loss:.4f} | "
-                                  f"Value(EMA): {running_value_loss:.4f} | "
-                                  f"SSL(EMA): {running_ssl_loss:.4f} | "
-                                  f"LR: {lr_current:.6f} | "
-                                  f"Memory: {memory_usage}GB{memory_info} | "
-                                  f"Device: {device}")
+                        logger.info(
+                            f"TRAINING_HB: Step {current_step}/{total_steps} (updates={updates_done}) | "
+                            f"BatchLoss: {max(0.0, float(loss)):.4f} | EMA: {running_loss:.4f} | "
+                            f"Policy(EMA): {running_policy_loss:.4f} | "
+                            f"Value(EMA): {running_value_loss:.4f} | "
+                            f"SSL(EMA): {running_ssl_loss:.4f} | "
+                            f"LR: {lr_current:.6f} | "
+                            f"Memory: {memory_usage}GB{memory_info} | "
+                            f"Device: {device}"
+                        )
 
                         last_heartbeat = current_time
 
@@ -1560,7 +1555,11 @@ def train_comprehensive(
             # Log validation info based on configuration
             validation_freq = cfg.get("validation_freq", 500)
             if current_step % validation_freq == 0:
-                logger.info(f"Step {current_step}: Validation checkpoint - BatchLoss: {max(0.0, float(loss)):.4f}, EMA: {running_loss:.4f}, Policy(EMA): {running_policy_loss:.4f}, Value(EMA): {running_value_loss:.4f}, SSL(EMA): {running_ssl_loss:.4f}")
+                logger.info(
+                    f"Step {current_step}: Validation checkpoint - BatchLoss: {max(0.0, float(loss)):.4f}, "
+                    f"EMA: {running_loss:.4f}, Policy(EMA): {running_policy_loss:.4f}, Value(EMA): {running_value_loss:.4f}, "
+                    f"SSL(EMA): {running_ssl_loss:.4f}"
+                )
 
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")

@@ -670,6 +670,14 @@ def play_match(
         b_ent_sum = 0.0
         a_ent_count = 0
         b_ent_count = 0
+        tiebreak_active = False
+        # Trigger tiebreak mode after this many plies if still non-decisive
+        tiebreak_after = int(e.get("tiebreak_after", 160))
+        tiebreak_sims = int(e.get("tiebreak_sims", max(num_sims, 500)))
+        tiebreak_cpuct = float(e.get("tiebreak_cpuct", 0.9))
+        tiebreak_fpu = float(e.get("tiebreak_fpu", 0.1))
+        tiebreak_draw_penalty = float(e.get("tiebreak_draw_penalty", -0.4))
+
         while (not board.is_game_over(claim_draw=True)) and (moves_count < max_moves):
             stm_is_white = board.turn == chess.WHITE
             mcts = engines[0] if stm_is_white else engines[1]
@@ -741,6 +749,52 @@ def play_match(
                         print(f"    🔎 [{actor_id}] Root v={vroot:.3f} | Top: " + " | ".join(dbg))
                 except Exception:
                     pass
+            # Escalate to tiebreak mode to avoid capped draws if needed
+            if (not tiebreak_active) and moves_count >= tiebreak_after:
+                # Rebuild MCTS for both engines with more decisive parameters
+                try:
+                    mcfg_t = dict(cfg.mcts())
+                    mcfg_t.update({
+                        "num_simulations": tiebreak_sims,
+                        "cpuct": tiebreak_cpuct,
+                        "fpu": tiebreak_fpu,
+                        "draw_penalty": tiebreak_draw_penalty,
+                        "dirichlet_frac": 0.0,
+                        "enable_entropy_noise": False,
+                    })
+                    mcts_tcfg = MCTSConfig.from_dict(mcfg_t)
+                    # Recreate both engines in-place
+                    # Determine current pairing for white/black and swap accordingly
+                    if g % 2 == 1:
+                        # B vs A
+                        _, mcts_a = load_model_and_mcts(Config({
+                            "model": cfg.model(),
+                            "mcts": mcfg_t,
+                            "device": cfg.get("device", "auto"),
+                        }), ckpt_b)
+                        _, mcts_b = load_model_and_mcts(Config({
+                            "model": cfg.model(),
+                            "mcts": mcfg_t,
+                            "device": cfg.get("device", "auto"),
+                        }), ckpt_a)
+                        engines = [mcts_b, mcts_a]
+                    else:
+                        # A vs B
+                        _, mcts_a = load_model_and_mcts(Config({
+                            "model": cfg.model(),
+                            "mcts": mcfg_t,
+                            "device": cfg.get("device", "auto"),
+                        }), ckpt_a)
+                        _, mcts_b = load_model_and_mcts(Config({
+                            "model": cfg.model(),
+                            "mcts": mcfg_t,
+                            "device": cfg.get("device", "auto"),
+                        }), ckpt_b)
+                        engines = [mcts_a, mcts_b]
+                    tiebreak_active = True
+                except Exception:
+                    pass
+
             # Temperature control: sample from visit counts for first temp_plies
             if temp > 1e-3 and moves_count < temp_plies:
                 moves = list(visits.keys())

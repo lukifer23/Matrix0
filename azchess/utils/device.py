@@ -188,6 +188,12 @@ def validate_device(device: str) -> bool:
     return device_manager.validate_device(device)
 
 
+def _check_mps_performance() -> bool:
+    """Check for known MPS performance issues (module-level function)."""
+    manager = DeviceManager()
+    return manager._check_mps_performance()
+
+
 def get_device_info(device: str) -> Dict[str, Any]:
     """Convenience function to get device info."""
     return device_manager.get_device_info(device)

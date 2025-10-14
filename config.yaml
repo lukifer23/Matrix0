@@ -2,40 +2,44 @@
 # Optimized for performance and strong play
 
 model:
-  # V2 Architecture Features
-  planes: 19                       # Input planes for chess board
-  channels: 320                    # Number of channels in residual blocks (32M model)
-  blocks: 24                       # Number of residual blocks (32M model)
-  attention: true                  # Enable attention mechanisms
-  attention_heads: 20              # Number of attention heads (32M model)
-  policy_size: 4672                # Policy output size
-  norm: "group"                    # GroupNorm instead of BatchNorm
-  activation: "silu"               # SiLU activation instead of ReLU
-  value_activation: "silu"         # Use smooth value activations to prevent dead heads
-  preact: true                     # Pre-activation residual blocks
-  droppath: 0.0                    # Temporarily disable DropPath to avoid MPS tiny alloc OOMs
-  policy_factor_rank: 128          # Factorized policy head (32M model)
-  aux_policy_from_square: true     # Auxiliary from-square prediction
-  aux_policy_move_type: true       # Auxiliary move-type prediction
-  ssl_curriculum: true             # Self-supervised learning curriculum
-  self_supervised: true            # Enable SSL
+  # V2 Architecture Features (≈45M params)
+  planes: 19
+  channels: 288                    # Reduced from 320 for faster inference
+  blocks: 22                       # Reduced from 24
+  attention: true
+  attention_heads: 18              # Reduced from 20
+  policy_size: 4672
+  norm: "group"
+  activation: "silu"
+  value_activation: "leaky_relu"
+  preact: true
+  droppath: 0.0
+  policy_factor_rank: 160          # Trim dense policy head cost
+  infer_attention_stride: 2        # Inference-only: run every other attention block
+  infer_amp_tower: true            # Inference-only: AMP for tower on MPS
+  aux_policy_from_square: true
+  aux_policy_move_type: true
+  ssl_curriculum: true
+  self_supervised: true
   ssl_tasks: ["piece", "threat", "pin", "fork", "control"]
-  ssrl_tasks: []                   # Keep SSRL off for now (optional)
 
 selfplay:
   num_workers: 3                   # Default worker count
   batch_size: 256                  # Increased from 128 for better efficiency
-  shared_inference_batch_size: 48  # Cap shared inference micro-batch (avoid oversized buffers)
-  max_games: 420                    # TEST RUN: 20 games total
-  max_game_len: 180                # Encourage decisive results
-  min_resign_plies: 40             # Allow resigned games slightly earlier
-  resign_threshold: -0.70          # Encourage decisive results
-  opening_random_plies: 8          # Randomize first N plies to reduce draws
-  num_simulations: 200             # Increased from 160 for better quality
+  shared_inference_batch_size: 64  # Increased from 48 for better MPS batching
+  max_games: 420                   # Self-play games per orchestration cycle
+  max_game_len: 200                # Increased for more decisive games
+  min_resign_plies: 50             # Increased for more mature positions
+  resign_threshold: -0.85          # Less aggressive resignation
+  opening_random_plies: 12         # More opening randomization
+  num_simulations: 300             # Increased for better quality
+  temperature_start: 1.2           # Increased from 1.0 for more early exploration
+  temperature_end: 0.3             # Increased from 0.1 to maintain diversity longer
+  temperature_moves: 40            # Increased from 20 to maintain diversity for 20 full moves
   draw:
-    min_plies: 50                  # Require more play before draw checks
-    window: 12                     # Narrower window
-    min_unique: 6                  # Allow faster detection of repetition
+    min_plies: 30                  # Reduced from 40 for earlier draw adjudication
+    window: 8                      # Narrower window for faster detection
+    min_unique: 4                  # Reduced for better draw detection
     halfmove_cap: 100              # FIDE fifty-move close but more tolerant
 
 training:
@@ -48,10 +52,10 @@ training:
   accum_steps: 2                   # Effective batch 192
   progress_interval: 100           # Reduce per-step logging overhead
   grad_clip_norm: 0.5              # Stable
-  ssl_weight: 0.15                 # SSL learning contribution
+  ssl_weight: 0.08                 # Reduced from 0.15 to balance with policy/value learning
   ssl_warmup_steps: 1000           # Faster warmup for SSL integration
   ssl_every_n: 1                   # Compute SSL every step for consistent learning
-  ssl_chunk_size: 128              # Larger chunks for better efficiency
+  ssl_chunk_size: 64               # Reduced for MPS memory stability
   ssl_target_weight: 1.0           # Normalize SSL magnitude
   # CRITICAL FIX: Force external data usage
   data_mode: "mixed"               # Use mixed mode to access external data
@@ -62,7 +66,6 @@ training:
   ssl_pin_weight: 0.7              # Weight for pin detection
   ssl_fork_weight: 0.6             # Weight for fork detection
   ssl_control_weight: 0.5          # Weight for square control
-  # removed duplicate ssl_chunk_size key
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps
@@ -71,13 +74,13 @@ training:
   steps_per_epoch: 6000            # Shorter sanity runs per cycle
   use_curriculum: true
   curriculum_phases:
-    - { name: openings, steps: 1200, description: "Bootstrap with openings-heavy data" }
-    - { name: tactics,  steps: 3600, description: "Emphasize tactical calculation" }
-    - { name: mixed,    steps: 7600, description: "Blend external + self-play" }
+    - { name: openings, steps: 800, description: "Bootstrap with openings-heavy data" }
+    - { name: tactics,  steps: 2400, description: "Emphasize tactical calculation" }
+    - { name: mixed,    steps: 4800, description: "Blend external + self-play" }
   policy_masking: true             # Smart masking
-  policy_label_smoothing: 0.05     # Mild label smoothing for policy CE
+  policy_label_smoothing: 0.1      # Increased from 0.05 for more policy entropy
   value_loss: "huber"              # Robust value regression
-  huber_delta: 1.0                 # Huber threshold
+  huber_delta: 0.5                 # Reduced Huber threshold for stability
   extra_replay_dirs:
     - data/stockfish_games        # Curated Stockfish datasets (tagged)
     - data/tactical               # Processed tactical NPZ bundle
@@ -89,9 +92,10 @@ orchestrator:
   subsequent_games: 420            # 3 workers × 140 games for stronger data growth
   games_per_cycle: 420             # Total games per cycle
   train_epochs_per_cycle: 1        # One epoch per cycle
-  eval_games_per_cycle: 20         # More games per cycle for robust eval
+  eval_games_per_cycle: 200        # Increased from 150 for tighter confidence interval
   keep_top_k: 1                    # Keep only best model
   continuous_mode: true            # Continuous cycles enabled
+  promotion_threshold: 0.52        # Increased from 0.48 to require clear improvement
   # Use latest best checkpoint automatically (no override)
   # checkpoint_override: best.pt
   tui: "table"                     # Use table display mode
@@ -105,11 +109,11 @@ tablebases:
   max_pieces: 5                   # Match currently installed tables to avoid missing-probe warnings
 
 eval:
-  games: 20                        # Expanded evaluation sample per cycle
-  max_moves: 180                   # Allow decisive finishes before adjudication
+  games: 200                       # Increased from 150 for tighter confidence interval
+  max_moves: 250                   # Allow more decisive games
   external_engines: ["stockfish"]  # Compare against Stockfish
-  tournament_rounds: 4             # More tournament rounds
-  strength_estimation_games: 4     # More strength estimation games
+  tournament_rounds: 6             # More tournament rounds
+  strength_estimation_games: 6     # More strength estimation games
   openings_pgn: "data/openings/main_eval_book.pgn"  # Optional PGN book for varied starts
 
 engines:
@@ -123,25 +127,24 @@ engines:
     type: internal
 
 mcts:
-  num_threads: 3                    # Match worker count for optimal MPS performance
-  num_simulations: 200              # Increased from 96 for better accuracy
-  cpuct: 2.2                      # Restore original exploration level
-  cpuct_start: 2.8                  # Restore original early exploration
-  cpuct_end: 1.8                    # Restore original late exploitation
-  cpuct_plies: 40                   # Restore original schedule length
-  cpuct_c_base: 19652
-  cpuct_c_init: 1.25
+  num_threads: 4                    # Re-enable parallel leaf collection for faster rollouts
+  num_simulations: 300              # Increased for better evaluation quality
+  cpuct: 2.5                        # Increased from 1.5 for much stronger exploration
+  cpuct_start: 3.0                  # Increased from 1.8 for early-game exploration
+  cpuct_end: 2.0                    # Increased from 1.2 to maintain exploration in endgame
+  cpuct_plies: 40                   # Interpolate over first 40 plies
   dirichlet_alpha: 0.3
-  dirichlet_frac: 0.25
-  dirichlet_plies: 16
+  dirichlet_frac: 0.25              # Increased from 0.15 (standard AlphaZero)
+  dirichlet_plies: 30               # Increased from 10 for exploration throughout opening
   selection_jitter: 0.05
-  fpu: 0.2
-  fpu_reduction: 0.15
-  draw_penalty: -0.5
-  tt_capacity: 2000000             # Increased from 1M to 2M for better hit rates (conservative)
-  tt_cleanup_frequency: 750         # Reduced cleanup frequency to maintain more entries
+  fpu: 0.6                          # Increased from 0.4 for better unexplored node handling
+  fpu_reduction: 0.1                # Reduced FPU reduction for more exploration
+  draw_penalty: -0.05               # Increased from -0.02 for mild draw penalty
+  tt_capacity: 1500000              # Tuned for MPS: reduce memory pressure
+  tt_cleanup_frequency: 1000        # Tuned for MPS to reduce long cleanups
   tt_memory_limit_mb: 1024
-  batch_size: 24                    # Increased from 16 to 24 for better MPS utilization
+  batch_size: 32                    # Tuned for MPS: smaller batches reduce latency
+  mps_aggressive_stability: false   # New: gate MPS workarounds (disable overhead)
   encoder_cache: true
   legal_softmax: true               # Softmax over legal moves only for priors
   max_children: 0                   # Restore unlimited branching for full exploration
@@ -149,22 +152,19 @@ mcts:
   no_instant_backtrack: true
   parent_q_init: true
   tt_cleanup_interval_s: 5
-  value_from_white: true            # Use side-to-move value consistently
+  value_from_white: false           # Model outputs side-to-move values (standard AlphaZero)
   virtual_loss: 2.0                 # Restore original virtual loss level
   enable_memory_cleanup: true
   # Throughput optimizations
-  simulation_batch_size: 24         # Match batch_size for consistent processing
-  parallel_simulations: true        # Enable parallel simulation processing
-  tree_parallelism: true           # Enable tree-level parallelism
+  simulation_batch_size: 48         # Slightly larger mini-batches for MPS
+  parallel_simulations: true        # Allow concurrent simulations on MPS
+  tree_parallelism: true            # Allow tree-level parallelism
   memory_cleanup_threshold_mb: 512
-  max_tree_nodes: 70000
-  playout_random_frac: 0.15         # Conservative randomization for diversity
+  max_tree_nodes: 100000            # Increased for larger search trees
+  playout_random_frac: 0.05         # Mild playout randomization for diversity
   enable_entropy_noise: true
 
 presets:
   mps:
     device: "mps"
-    num_threads: 3  # Match default worker count
-    inference_batch_size: 32
-    mcts_threads: 3  # Match default worker count
     worker_threads: 1  # 1 core per worker (3 workers)

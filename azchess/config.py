@@ -35,8 +35,20 @@ class Config:
         return self.raw.get("selfplay", {})
 
     def draw(self) -> Dict[str, Any]:
-        """Draw adjudication configuration section."""
-        return self.raw.get("draw", {})
+        """Draw adjudication configuration section.
+
+        Merge top-level `draw` with `selfplay.draw`, with selfplay-specific
+        values taking precedence when present.
+        """
+        try:
+            top = self.raw.get("draw", {}) or {}
+            sp = (self.raw.get("selfplay", {}) or {}).get("draw", {}) or {}
+            # selfplay overrides top-level
+            merged = dict(top)
+            merged.update(sp)
+            return merged
+        except Exception:
+            return self.raw.get("draw", {})
 
     def training(self) -> Dict[str, Any]:
         """Training configuration section."""

@@ -34,7 +34,19 @@ def test_train_step_illegal_policy_shape(caplog):
     batch = (s, bad_pi, z)
     with caplog.at_level(logging.ERROR):
         with pytest.raises(RuntimeError):
-            train_step(model, optimizer, None, batch, "cpu", augment=False, enable_ssl=False, policy_masking=False, precision="fp32")
+            train_step(
+                model,
+                optimizer,
+                None,
+                batch,
+                "cpu",
+                augment=False,
+                enable_ssl=False,
+                ssrl_weight=0.0,
+                enable_ssrl=False,
+                policy_masking=False,
+                precision="fp32",
+            )
     assert "Policy tensor shape mismatch" in caplog.text
 
 

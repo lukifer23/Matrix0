@@ -256,7 +256,15 @@ def main():
 
     # Verify curated external data availability
     ext_stats = dm.get_external_data_stats()
-    logger.info(f"External data stats: tactical={ext_stats['tactical_samples']} openings={ext_stats['openings_samples']} total={ext_stats['external_total']}")
+    logger.info(
+        "External data stats: tactical=%d openings=%d stockfish=%d teacher=%d imported=%d total=%d",
+        ext_stats['tactical_samples'],
+        ext_stats['openings_samples'],
+        ext_stats['stockfish_samples'],
+        ext_stats['teacher_samples'],
+        ext_stats['external_import_samples'],
+        ext_stats['external_total'],
+    )
     if ext_stats['external_total'] == 0:
         logger.warning("No external curated data found. Ensure tactical/openings NPZ files exist under data/training/.")
 
@@ -406,6 +414,7 @@ def main():
                     model, optimizer, scaler, batch, device,
                     accum_steps=int(args.accum_steps), augment=True,
                     ssl_weight=float(args.ssl_weight), enable_ssl=True,
+                    ssrl_weight=0.0, enable_ssrl=False,
                     label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                     policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=current_step,
                     ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
@@ -414,7 +423,7 @@ def main():
                 )
                 if loss_values is None:
                     continue
-                loss, policy_loss, value_loss, ssl_loss, _ = loss_values
+                loss, policy_loss, value_loss, ssl_loss, _, _ = loss_values
 
                 # Optimizer step + scheduler
                 if scaler is not None:
@@ -495,6 +504,7 @@ def main():
                 model, optimizer, scaler, batch, device,
                 accum_steps=int(args.accum_steps), augment=True,
                 ssl_weight=float(args.ssl_weight), enable_ssl=True,
+                ssrl_weight=0.0, enable_ssrl=False,
                 label_smoothing=float(args.label_smoothing), value_loss_type=str(args.value_loss), huber_delta=float(args.huber_delta),
                 policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=step,
                 ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
@@ -503,7 +513,7 @@ def main():
             )
             if loss_values is None:
                 continue
-            loss, policy_loss, value_loss, ssl_loss, _ = loss_values
+            loss, policy_loss, value_loss, ssl_loss, _, _ = loss_values
 
             if scaler is not None:
                 try:

@@ -1181,32 +1181,49 @@ class DataManager:
             return None
     
     def get_external_data_stats(self) -> Dict[str, int]:
-        """Get statistics about external training data availability."""
+        """Report aggregate counts for non-self-play data sources."""
+
         stats = {
             'tactical_samples': 0,
             'openings_samples': 0,
-            'external_total': 0
+            'stockfish_samples': 0,
+            'teacher_samples': 0,
+            'external_import_samples': 0,
+            'external_total': 0,
         }
-        
-        # Check tactical data
+
+        # Legacy training bundles (data/training/*.npz)
         tactical_path = Path(self.base_dir) / "training" / "tactical_training_data.npz"
         if tactical_path.exists():
             try:
                 with np.load(tactical_path) as data:
-                    stats['tactical_samples'] = len(data['positions'])
+                    stats['tactical_samples'] = int(len(data['positions']))
             except Exception:
-                pass
-        
-        # Check openings data
+                logger.debug("Failed to read tactical_training_data.npz", exc_info=True)
+
         openings_path = Path(self.base_dir) / "training" / "openings_training_data.npz"
         if openings_path.exists():
             try:
                 with np.load(openings_path) as data:
-                    stats['openings_samples'] = len(data['positions'])
+                    stats['openings_samples'] = int(len(data['positions']))
             except Exception:
-                pass
-        
-        stats['external_total'] = stats['tactical_samples'] + stats['openings_samples']
+                logger.debug("Failed to read openings_training_data.npz", exc_info=True)
+
+        # Database registered shards (Stockfish, teacher, external imports)
+        for shard in self._get_all_shards():
+            source = (shard.source or "").lower()
+            if source.startswith('stockfish'):
+                stats['stockfish_samples'] += int(shard.sample_count)
+            elif source.startswith('teacher:'):
+                stats['teacher_samples'] += int(shard.sample_count)
+            elif source.startswith('external'):
+                stats['external_import_samples'] += int(shard.sample_count)
+
+        stats['external_total'] = (
+            stats['tactical_samples'] + stats['openings_samples'] +
+            stats['stockfish_samples'] + stats['teacher_samples'] +
+            stats['external_import_samples']
+        )
         return stats
     
     def cleanup_old_shards(self, keep_recent: int = 64):

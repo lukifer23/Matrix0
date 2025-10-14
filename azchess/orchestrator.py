@@ -8,7 +8,7 @@ import os
 import queue as pyqueue
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass
 from pathlib import Path
 import yaml
 from time import perf_counter, sleep
@@ -136,15 +136,25 @@ def orchestrate(
     if not mcts_cfg_dict:
         raise ValueError("MCTS config section is missing in config.yaml")
     
+    from dataclasses import MISSING
+
     _ = MCTSConfig.from_dict(mcts_cfg_dict)
-    required_keys = set(MCTSConfig.__dataclass_fields__.keys())
+    required_keys = {
+        name
+        for name, field in MCTSConfig.__dataclass_fields__.items()
+        if field.default is MISSING and field.default_factory is MISSING
+    }
     missing_keys = required_keys - set(mcts_cfg_dict.keys())
     if missing_keys:
         raise ValueError(f"Missing required MCTS config keys: {sorted(missing_keys)}")
 
+    # Normalize overrides early so device preference is honored everywhere
+    ov = overrides or OrchestratorOverrides()
+
     try:
         import os as _os
-        dev_req = safe_config_get(cfg, "device", "auto")
+        # Respect explicit override for device if provided
+        dev_req = ov.device if ov.device is not None else safe_config_get(cfg, "device", "auto")
         from .config import select_device as _sel
         dev_sel = _sel(dev_req)
         # Set MPS-friendly env if we are likely to use MPS
@@ -157,7 +167,7 @@ def orchestrate(
     except Exception:
         pass
 
-    overrides = overrides or OrchestratorOverrides()
+    overrides = ov
     orch = cfg.raw.get("orchestrator", {})
 
     # Dynamic game count logic: check if this is first run
@@ -202,11 +212,11 @@ def orchestrate(
 
     sp_cfg = cfg.to_dict()
 
-    # Apply device-specific presets if configured
+    # Apply device-specific presets if configured (honor explicit device override)
     try:
         from copy import deepcopy
         if bool(sp_cfg.get("use_presets", True)) and isinstance(sp_cfg.get("presets", None), dict):
-            dev = sp_cfg.get("device", cfg.get("device", "auto"))
+            dev = overrides.device if overrides.device is not None else sp_cfg.get("device", cfg.get("device", "auto"))
             from .config import select_device as _sel_dev
             dev_sel = _sel_dev(dev)
             preset = sp_cfg["presets"].get(dev_sel)
@@ -412,11 +422,19 @@ def orchestrate(
             except Exception:
                 dev = "cpu"
             shared_infer_enabled = bool(sp_cfg.get("selfplay", {}).get("shared_inference", True))
-            if shared_infer_enabled and dev != "cpu":
+            force_shared = str(os.environ.get("MATRIX0_FORCE_SHARED_INFER", "")).lower() in ("1", "true", "yes")
+            disable_mps_shared = str(os.environ.get("MATRIX0_DISABLE_MPS_SHARED_INFER", "")).lower() in ("1", "true", "yes")
+            use_shared_infer = shared_infer_enabled and dev != "cpu"
+            if dev == "mps" and disable_mps_shared:
+                use_shared_infer = False
+                logger.info("Shared inference on MPS disabled via MATRIX0_DISABLE_MPS_SHARED_INFER")
+            if dev == "mps" and shared_infer_enabled and not disable_mps_shared and not force_shared:
+                logger.info("Shared inference enabled on MPS (set MATRIX0_DISABLE_MPS_SHARED_INFER=1 to opt out)")
+            if use_shared_infer or (dev == "mps" and force_shared):
                 logger.info(f"Setting up shared memory and launching inference server on device: {dev}")
                 stop_event = MPEvent()
                 server_ready_event = MPEvent()
-                
+
                 # Create shared memory resources for each worker with optimized batch sizes
                 model_params = sp_cfg["model"]
                 sp_params = sp_cfg["selfplay"]
@@ -424,7 +442,17 @@ def orchestrate(
                 shared_batch = sp_params.get('shared_inference_batch_size')
                 if shared_batch is None:
                     shared_batch = min(64, sp_params.get('batch_size', 32))
-                optimized_batch_size = max(16, int(shared_batch))
+                shared_batch = int(max(1, shared_batch))
+                mcts_cfg = sp_cfg.get("mcts", {})
+                try:
+                    sim_batch = int(mcts_cfg.get("simulation_batch_size", shared_batch))
+                except Exception:
+                    sim_batch = shared_batch
+                sim_batch = max(1, sim_batch)
+                if dev == "mps":
+                    optimized_batch_size = sim_batch
+                else:
+                    optimized_batch_size = max(sim_batch, shared_batch, 16)
                 logger.info(f"Shared inference max batch size per worker: {optimized_batch_size}")
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
@@ -1163,7 +1191,15 @@ def _register_external_npz_dirs(cfg: Config, dm: DataManager) -> int:
         external_stats = dm.get_external_data_stats()
         if external_stats['external_total'] > 0:
             logger = setup_logging(cfg.training().get("log_dir", "logs"))
-            logger.info(f"External training data available: {external_stats['tactical_samples']} tactical + {external_stats['openings_samples']} openings = {external_stats['external_total']} total samples")
+            logger.info(
+                "External training data available: tactical=%d openings=%d stockfish=%d teacher=%d imported=%d total=%d",
+                external_stats['tactical_samples'],
+                external_stats['openings_samples'],
+                external_stats['stockfish_samples'],
+                external_stats['teacher_samples'],
+                external_stats['external_import_samples'],
+                external_stats['external_total'],
+            )
             
             # Check curriculum configuration
             if cfg.training().get('use_curriculum', False):

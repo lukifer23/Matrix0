@@ -93,10 +93,10 @@
 - **Checkpoint Management**: Advanced SSL-preserving checkpoint creation and merging
 
 #### 2. Complete SSL Architecture
-- **Model Size**: 53,206,724 parameters (53.2M) with SSL heads
+- **Model Size**: 58,146,466 parameters (58.1M) with SSL heads (SSRL temporarily disabled)
 - **SSL Heads**: 5 production SSL heads (piece, threat, pin, fork, control) active; pawn structure and king safety heads implemented but disabled pending validation
 - **SSL Parameters**: Dedicated parameters for active heads with weighted loss functions; additional capacity reserved for experimental heads
-- **Multi-Task Learning**: Perfect integration of SSL with policy/value learning
+- **Multi-Task Learning**: Perfect integration of SSL with policy/value learning; SSRL paused pending future reintroduction
 
 #### 3. Apple Silicon Optimization
 - **MPS Memory**: 14GB limit with SSL processing optimization
@@ -115,7 +115,7 @@
 #### 🚀 Active SSL Training Session
 - **Progress**: **FULLY OPERATIONAL** with complete SSL integration
 - **Base Model**: Multiple SSL-integrated checkpoints available (v2_base.pt, v2_merged.pt)
-- **SSL Status**: ✅ **COMPLETE INTEGRATION** - All 5 SSL tasks operational
+- **SSL Status**: ✅ **COMPLETE INTEGRATION** - All 5 SSL tasks operational (SSRL paused for performance)
 - **Memory Usage**: ~10.7-11.0GB MPS usage with SSL processing optimization
 - **Checkpoint Frequency**: Automatic SSL-preserving checkpoint creation
 - **Multi-Task Learning**: Simultaneous policy, value, and SSL optimization active
