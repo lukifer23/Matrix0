@@ -434,14 +434,33 @@ class MCTS:
             total_visits = sum(visit_counts.values())
             if total_visits == 0:
                 # No visits means MCTS didn't complete - check if root was expanded
-                if not root.is_expanded() and root.children:
-                    # Root has children but no visits - likely inference failure prevented backprop
-                    logger.error("MCTS completed with zero visits - inference failures prevented search completion")
-                    raise RuntimeError("MCTS search failed: zero visits after simulations (inference failures)")
-                elif not root.children:
+                if root.children:
+                    # Root has children but no visits - ALL inference batches failed
+                    error_msg = (
+                        f"MCTS search failed: zero visits after {sims_to_run} simulations. "
+                        f"Root node has {len(root.children)} children but none were visited. "
+                        f"This indicates ALL inference batches failed or timed out. "
+                        f"Check inference server status and logs. If using shared memory inference, "
+                        f"verify the inference server process is running and responsive."
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+                elif not root.is_expanded():
                     # Root wasn't expanded - initial inference failed
-                    logger.error("MCTS root node was never expanded - initial inference failed")
-                    raise RuntimeError("MCTS search failed: root node not expanded (inference failure)")
+                    error_msg = (
+                        f"MCTS search failed: root node was never expanded. "
+                        f"Initial inference call failed. Check inference server and model loading."
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+                else:
+                    # No children - terminal position or expansion failed silently
+                    error_msg = (
+                        f"MCTS search failed: root node has no children after expansion. "
+                        f"This may indicate a terminal position or expansion failure."
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
             
             policy = self._policy_from_root(root, board)
             self._last_sims_run = sims_to_run
@@ -502,6 +521,8 @@ class MCTS:
 
         total = int(max(0, num_simulations))
         sims_done = 0
+        inference_failures = 0
+        total_inference_attempts = 0
         
         # Optimization: For small simulation counts or single-threaded, use sequential collection
         # Threading overhead may outweigh benefits on MPS with GIL
@@ -595,11 +616,25 @@ class MCTS:
                             logger.debug(f"Batch tensor memory usage: {batch_tensor.nbytes / 1024:.1f} KB")
 
                         if hasattr(self, 'inference_backend') and self.inference_backend is not None:
+                            total_inference_attempts += 1
                             try:
                                 policies, values = self.inference_backend.infer_np(batch_tensor)
+                                inference_failures = 0  # Reset failure counter on success
                             except (TimeoutError, RuntimeError) as infer_err:
+                                inference_failures += 1
+                                # Fail fast if ALL inference attempts fail - indicates broken inference server
+                                if inference_failures >= 3 and total_inference_attempts >= 3:
+                                    error_msg = (
+                                        f"MCTS inference completely failed: {inference_failures} consecutive failures "
+                                        f"out of {total_inference_attempts} attempts. Last error: {infer_err}. "
+                                        f"This indicates the inference server is broken or unresponsive. "
+                                        f"Check inference server logs and ensure it's running correctly."
+                                    )
+                                    logger.error(error_msg)
+                                    raise RuntimeError(error_msg) from infer_err
+                                
                                 # Inference failed for this batch - skip it and continue with remaining simulations
-                                logger.warning(f"Inference failed for batch of {len(chunk)} positions: {infer_err}. Skipping batch and continuing.")
+                                logger.warning(f"Inference failed for batch of {len(chunk)} positions (failure {inference_failures}/{total_inference_attempts}): {infer_err}. Skipping batch and continuing.")
                                 sims_done += len(chunk)
                                 continue
 

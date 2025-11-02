@@ -466,6 +466,26 @@ def orchestrate(
                     if infer_proc.is_alive(): infer_proc.terminate()
                     raise RuntimeError("Inference server startup timeout")
                 logger.info("Inference server is ready.")
+                
+                # Verify inference server is actually working with a test inference
+                try:
+                    from .selfplay.inference import InferenceClient
+                    from .encoding import encode_board
+                    import chess
+                    test_client = InferenceClient(shared_memory_resources[0])
+                    test_board = chess.Board()
+                    test_encoded = encode_board(test_board)
+                    logger.info("Testing inference server with a single position...")
+                    test_policy, test_value = test_client.infer_np(test_encoded)
+                    if test_policy is None or test_value is None:
+                        raise RuntimeError("Test inference returned None results")
+                    logger.info(f"Inference server test successful: policy shape={test_policy.shape}, value={test_value}")
+                except Exception as test_err:
+                    logger.error(f"Inference server test failed: {test_err}. The server may not be working correctly.")
+                    logger.error("This will cause MCTS to fail. Check inference server logs and model checkpoint.")
+                    if infer_proc.is_alive():
+                        infer_proc.terminate()
+                    raise RuntimeError(f"Inference server test failed: {test_err}") from test_err
 
             for i in range(workers):
                 os.environ.setdefault('MATRIX0_WORKER_LOG_LEVEL', 'WARNING')
