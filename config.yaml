@@ -26,7 +26,6 @@ model:
 selfplay:
   num_workers: 3                   # Default worker count
   batch_size: 256                  # Increased from 128 for better efficiency
-  shared_inference_batch_size: 64  # Increased from 48 for better MPS batching
   max_games: 420                   # Self-play games per orchestration cycle
   max_game_len: 200                # Increased for more decisive games
   min_resign_plies: 50             # Increased for more mature positions
@@ -61,11 +60,11 @@ training:
   data_mode: "mixed"               # Use mixed mode to access external data
   dataloader_workers: 6            # Increase worker threads for faster data loading
   prefetch_factor: 2               # Maintain prefetching
-  ssl_piece_weight: 1.0            # Weight for piece recognition
-  ssl_threat_weight: 0.8           # Weight for threat detection
-  ssl_pin_weight: 0.7              # Weight for pin detection
-  ssl_fork_weight: 0.6             # Weight for fork detection
-  ssl_control_weight: 0.5          # Weight for square control
+  ssl_piece_weight: 1.0            # Weight for piece recognition (baseline)
+  ssl_threat_weight: 0.6           # Weight for threat detection (reduced due to variability)
+  ssl_pin_weight: 0.2              # Weight for pin detection (very rare, reduced)
+  ssl_fork_weight: 0.3             # Weight for fork detection (very rare, reduced)
+  ssl_control_weight: 0.7          # Weight for square control (increased for balance)
   precision: "fp16"                # Optimized mixed precision
   use_amp: true                    # AMP
   warmup_steps: 500                # Longer warmup for extended steps
@@ -78,9 +77,9 @@ training:
     - { name: tactics,  steps: 2400, description: "Emphasize tactical calculation" }
     - { name: mixed,    steps: 4800, description: "Blend external + self-play" }
   policy_masking: true             # Smart masking
-  policy_label_smoothing: 0.1      # Increased from 0.05 for more policy entropy
+  policy_label_smoothing: 0.05     # Reduced for faster policy learning
   value_loss: "huber"              # Robust value regression
-  huber_delta: 0.5                 # Reduced Huber threshold for stability
+  huber_delta: 1.0                 # Increased for more stable training
   extra_replay_dirs:
     - data/stockfish_games        # Curated Stockfish datasets (tagged)
     - data/tactical               # Processed tactical NPZ bundle
@@ -141,9 +140,8 @@ mcts:
   fpu_reduction: 0.1                # Reduced FPU reduction for more exploration
   draw_penalty: -0.05               # Increased from -0.02 for mild draw penalty
   tt_capacity: 1500000              # Tuned for MPS: reduce memory pressure
-  tt_cleanup_frequency: 1000        # Tuned for MPS to reduce long cleanups
+  tt_cleanup_frequency: 5000        # Increased from 1000 to reduce cleanup overhead
   tt_memory_limit_mb: 1024
-  batch_size: 32                    # Tuned for MPS: smaller batches reduce latency
   mps_aggressive_stability: false   # New: gate MPS workarounds (disable overhead)
   encoder_cache: true
   legal_softmax: true               # Softmax over legal moves only for priors
@@ -153,10 +151,10 @@ mcts:
   parent_q_init: true
   tt_cleanup_interval_s: 5
   value_from_white: false           # Model outputs side-to-move values (standard AlphaZero)
-  virtual_loss: 2.0                 # Restore original virtual loss level
+  virtual_loss: 1.0                 # Reduced from 2.0 for better exploration with lower contention
   enable_memory_cleanup: true
-  # Throughput optimizations
-  simulation_batch_size: 48         # Slightly larger mini-batches for MPS
+  # Throughput optimizations - unified batch size for all inference operations
+  inference_batch_size: 96          # Unified batch size for MCTS simulations and shared inference (optimized for MPS)
   parallel_simulations: true        # Allow concurrent simulations on MPS
   tree_parallelism: true            # Allow tree-level parallelism
   memory_cleanup_threshold_mb: 512

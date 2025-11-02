@@ -229,6 +229,10 @@ class DataManager:
     
     def add_selfplay_data(self, data: Dict[str, np.ndarray], worker_id: int, game_id: int) -> str:
         """Add self-play data to the buffer."""
+        # Validate policy targets before saving
+        if 'pi' in data:
+            if not self._validate_policy_targets(data['pi'], f"selfplay_worker{worker_id}_game{game_id}"):
+                logger.warning(f"Policy target validation failed for worker {worker_id} game {game_id}, saving anyway (will be normalized during training)")
         filepath, checksum = self._save_npz_shard(data, self.selfplay_dir)
         file_size = filepath.stat().st_size
         sample_count = self._infer_sample_count(data)
@@ -411,6 +415,13 @@ class DataManager:
                             if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
                                 self._mark_shard_corrupted(shard_path)
                                 continue
+                            if not self._validate_dtypes_and_ranges(states, policies, values, str(shard_path)):
+                                self._mark_shard_corrupted(shard_path)
+                                continue
+                            # Validate policy targets for correctness
+                            if not self._validate_policy_targets(policies, shard_path):
+                                logger.warning(f"Policy target validation failed for {shard_path}, marking as potentially corrupted")
+                                # Don't mark as corrupted immediately - may be fixable during training
 
                             legal_mask_processed: Optional[np.ndarray] = None
                             if legal_mask_all is not None:
@@ -539,6 +550,11 @@ class DataManager:
                 batch_values = data['value_targets'][indices]  # curriculum format: (N,)
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, tactical_path):
                     return None
+                if not self._validate_dtypes_and_ranges(batch_states, batch_policies, batch_values, str(tactical_path)):
+                    return None
+                if not self._validate_policy_targets(batch_policies, tactical_path):
+                    logger.warning(f"Policy target validation failed for tactical data, skipping batch")
+                    return None
                 out: Dict[str, np.ndarray] = {
                     's': batch_states,  # Map 'positions' -> 's'
                     'pi': batch_policies,  # Map 'policy_targets' -> 'pi'
@@ -591,6 +607,11 @@ class DataManager:
                 batch_policies = data['policy_targets'][indices]  # curriculum format: (N, 4672)
                 batch_values = data['value_targets'][indices]  # curriculum format: (N,)
                 if not self._validate_shapes(batch_states, batch_policies, batch_values, self.expected_planes, openings_path):
+                    return None
+                if not self._validate_dtypes_and_ranges(batch_states, batch_policies, batch_values, str(openings_path)):
+                    return None
+                if not self._validate_policy_targets(batch_policies, openings_path):
+                    logger.warning(f"Policy target validation failed for openings data, skipping batch")
                     return None
                 out: Dict[str, np.ndarray] = {
                     's': batch_states,  # Map 'positions' -> 's'
@@ -692,6 +713,11 @@ class DataManager:
 
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'mixed external'):
             return None
+        if not self._validate_dtypes_and_ranges(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'mixed external'):
+            return None
+        if not self._validate_policy_targets(combined_batch['pi'], 'mixed external'):
+            logger.warning("Policy target validation failed for mixed external batch, returning None")
+            return None
         return combined_batch
     
     def _get_curriculum_openings_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -748,6 +774,8 @@ class DataManager:
                 combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum openings'):
             return None
+        if not self._validate_dtypes_and_ranges(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum openings'):
+            return None
         return combined_batch
     
     def _get_curriculum_tactics_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -803,6 +831,8 @@ class DataManager:
             if key.startswith('ssl_'):
                 combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum tactics'):
+            return None
+        if not self._validate_dtypes_and_ranges(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum tactics'):
             return None
         return combined_batch
     
@@ -1102,6 +1132,8 @@ class DataManager:
                 combined_batch[key] = combined_batch[key][indices]
         if not self._validate_shapes(combined_batch['s'], combined_batch['pi'], combined_batch['z'], self.expected_planes, 'curriculum mixed'):
             return None
+        if not self._validate_dtypes_and_ranges(combined_batch['s'], combined_batch['pi'], combined_batch['z'], 'curriculum mixed'):
+            return None
         return combined_batch
 
     def _get_stockfish_mixed_batch(self, batch_size: int) -> Optional[Dict[str, np.ndarray]]:
@@ -1174,6 +1206,8 @@ class DataManager:
                     combined[key] = combined[key][idx]
 
             if not self._validate_shapes(combined['s'], combined['pi'], combined['z'], self.expected_planes, 'stockfish mixed'):
+                return None
+            if not self._validate_dtypes_and_ranges(combined['s'], combined['pi'], combined['z'], 'stockfish mixed'):
                 return None
             return combined
         except Exception as e:
@@ -1668,6 +1702,9 @@ class DataManager:
                     if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
                         self._mark_shard_corrupted(shard_path)
                         continue
+                    if not self._validate_dtypes_and_ranges(states, policies, values, str(shard_path)):
+                        self._mark_shard_corrupted(shard_path)
+                        continue
                     if legal_mask_all is not None:
                         try:
                             if legal_mask_all.ndim > 2:
@@ -1821,6 +1858,58 @@ class DataManager:
         except Exception:
             return False
 
+    def _validate_dtypes_and_ranges(self, states: np.ndarray, policies: np.ndarray, values: np.ndarray, source: str = "") -> bool:
+        """Validate data types and value ranges for training data.
+        
+        Args:
+            states: Board state encodings (N, C, H, W)
+            policies: Policy targets (N, policy_size)
+            values: Value targets (N,)
+            source: Source identifier for logging
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        try:
+            # Validate dtypes
+            if states.dtype != np.float32:
+                logger.warning(f"{source}: States dtype {states.dtype} != float32, converting")
+                return False
+            if policies.dtype != np.float32:
+                logger.warning(f"{source}: Policies dtype {policies.dtype} != float32, converting")
+                return False
+            if values.dtype != np.float32:
+                logger.warning(f"{source}: Values dtype {values.dtype} != float32, converting")
+                return False
+            
+            # Validate value ranges
+            if np.any(np.isnan(states)) or np.any(np.isinf(states)):
+                logger.error(f"{source}: States contain NaN/Inf values")
+                return False
+            
+            if np.any(np.isnan(policies)) or np.any(np.isinf(policies)):
+                logger.error(f"{source}: Policies contain NaN/Inf values")
+                return False
+            
+            if np.any(np.isnan(values)) or np.any(np.isinf(values)):
+                logger.error(f"{source}: Values contain NaN/Inf values")
+                return False
+            
+            # Validate value targets are in [-1, 1] range
+            if np.any(values < -1.0) or np.any(values > 1.0):
+                logger.warning(f"{source}: Value targets out of [-1, 1] range: min={values.min():.4f}, max={values.max():.4f}")
+                # Note: Clipping should be done by caller if needed - validation just warns
+            
+            # Validate states are reasonable (should be in [0, 1] or [-1, 1] depending on encoding)
+            state_min, state_max = states.min(), states.max()
+            if state_min < -2.0 or state_max > 2.0:
+                logger.warning(f"{source}: States have unusual range: [{state_min:.4f}, {state_max:.4f}]")
+            
+            return True
+        except Exception as e:
+            logger.error(f"{source}: Dtype/range validation failed: {e}")
+            return False
+    
     def _validate_shapes(self,
                          states: np.ndarray,
                          policies: np.ndarray,
@@ -1855,6 +1944,67 @@ class DataManager:
             )
             return False
         return True
+    
+    def _validate_policy_targets(self, policies: np.ndarray, source: str = "") -> bool:
+        """Validate policy targets: ensure they form valid probability distributions.
+        
+        Checks:
+        - No NaN/Inf values
+        - Sum approximately 1.0 per row (within tolerance)
+        - Non-negative values
+        - At least some non-zero values (not all zeros)
+        
+        Args:
+            policies: Policy tensor (N, policy_size)
+            source: Optional identifier for logging
+            
+        Returns:
+            True if policies are valid, False otherwise.
+        """
+        try:
+            # Check for NaN/Inf
+            has_nan = np.isnan(policies).any()
+            has_inf = np.isinf(policies).any()
+            if has_nan or has_inf:
+                logger.warning(f"Policy targets contain NaN/Inf in {source}: nan={has_nan}, inf={has_inf}")
+                return False
+            
+            # Check for negative values
+            has_negative = (policies < 0).any()
+            if has_negative:
+                logger.warning(f"Policy targets contain negative values in {source}")
+                return False
+            
+            # Check row sums (should be approximately 1.0)
+            row_sums = policies.sum(axis=1)
+            zero_sum_count = (row_sums <= 0).sum()
+            if zero_sum_count > 0:
+                logger.warning(f"Policy targets: {zero_sum_count}/{len(row_sums)} rows have zero or negative sum in {source}")
+                # Not fatal - may be intentional (e.g., all-illegal positions)
+            
+            # Check if distributions are reasonable (sum close to 1.0, tolerance 0.01)
+            valid_rows = row_sums > 0
+            if valid_rows.any():
+                normalized_sums = row_sums[valid_rows]
+                sum_deviation = np.abs(normalized_sums - 1.0)
+                high_deviation = (sum_deviation > 0.01).sum()
+                if high_deviation > len(normalized_sums) * 0.1:  # More than 10% have high deviation
+                    logger.warning(
+                        f"Policy targets: {high_deviation}/{len(normalized_sums)} rows have sum far from 1.0 "
+                        f"(mean_dev={sum_deviation.mean():.4f}) in {source}"
+                    )
+                    # Not fatal - will be normalized during training
+            
+            # Check for all-zero rows (may indicate data issues)
+            all_zero_rows = (policies.sum(axis=1) == 0).sum()
+            if all_zero_rows > len(policies) * 0.5:  # More than 50% all zeros
+                logger.warning(f"Policy targets: {all_zero_rows}/{len(policies)} rows are all zeros in {source}")
+                # Not fatal but suspicious
+            
+            return True
+        except Exception as e:
+            logger.error(f"Policy target validation failed in {source}: {e}")
+            return False
 
     def _mark_shard_corrupted(self, path: str):
         """Mark a shard as corrupted in the database."""

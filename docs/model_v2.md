@@ -6,11 +6,11 @@ Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **53M parameter ResNet-24** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation. *Note: SSRL experimentation is currently paused to prioritize core SSL throughput; the design remains in-place for future reactivation.*
+Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation. *Note: SSRL experimentation is currently paused to prioritize core SSL throughput; the design remains in-place for future reactivation.*
 
 ### Key Specifications
-- **Total Parameters**: 53,217,919 (53M)
-- **Architecture**: ResNet-24 with chess-specific attention
+- **Total Parameters**: 75,576,290 (75.6M) - ResNet architecture with SSL heads
+- **Architecture**: ResNet-22 with chess-specific attention and 5 SSL heads
 - **Input**: 19×8×8 chess board representation
 - **Policy Output**: 4,672 move logits (from-square × to-square)
 - **Value Output**: Scalar win probability

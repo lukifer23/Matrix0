@@ -4,7 +4,7 @@ from unittest.mock import patch
 import chess
 import torch
 
-from experiments.grpo.mcts.mcts_integration import MCTS, MCTSConfig
+from azchess.mcts import MCTS, MCTSConfig
 
 
 class DummyModel(torch.nn.Module):

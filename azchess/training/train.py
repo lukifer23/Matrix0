@@ -125,18 +125,51 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     pi = torch.from_numpy(pi)
     z = torch.from_numpy(z)
 
-    # Ensure policy targets form a valid probability distribution.
-    # External curriculum shards sometimes contain multi-hot or count-based
-    # targets; normalise them so each row sums to 1 (and avoid division by 0).
+    # Validate and normalize policy targets to form valid probability distributions.
+    # External curriculum shards sometimes contain multi-hot or count-based targets.
     try:
         if pi.dtype != torch.float32:
             pi = pi.to(dtype=torch.float32)
+        
+        # Validate policy targets before normalization
         row_sum = pi.sum(dim=1, keepdim=True)
+        invalid_rows = (row_sum <= 0).any()
+        has_nan = torch.isnan(pi).any()
+        has_inf = torch.isinf(pi).any()
+        
+        if invalid_rows or has_nan or has_inf:
+            if current_step % 100 == 0:  # Log periodically to avoid spam
+                logger.warning(
+                    f"Invalid policy targets detected: invalid_rows={invalid_rows}, "
+                    f"has_nan={has_nan}, has_inf={has_inf}. Normalizing."
+                )
+        
+        # Normalize: preserve zeros for illegal moves, only normalize valid rows
         if (row_sum <= 0).any():
-            row_sum = row_sum + (row_sum <= 0).to(pi.dtype)
-        pi = pi / row_sum
-    except Exception:
+            # For rows with zero sum, keep as-is (likely all zeros for illegal positions)
+            # Only normalize rows with positive sum
+            valid_mask = (row_sum > 0).squeeze(1)
+            if valid_mask.any():
+                pi[valid_mask] = pi[valid_mask] / row_sum[valid_mask]
+        else:
+            pi = pi / row_sum
+        
+        # Final validation: ensure no NaN/Inf after normalization
+        if torch.isnan(pi).any() or torch.isinf(pi).any():
+            logger.error("Policy targets contain NaN/Inf after normalization, zeroing invalid rows")
+            invalid_mask = torch.isnan(pi) | torch.isinf(pi)
+            pi[invalid_mask] = 0.0
+            # Renormalize valid rows
+            row_sum = pi.sum(dim=1, keepdim=True)
+            valid_mask = (row_sum > 0).squeeze(1)
+            if valid_mask.any():
+                pi[valid_mask] = pi[valid_mask] / row_sum[valid_mask]
+    except Exception as e:
+        logger.error(f"Policy normalization failed: {e}")
+        # Fallback: will use legal mask if available after it's loaded below
         pass
+    
+    # Load and validate legal mask
     legal_mask_t = None
     if legal_mask_np is not None:
         try:
@@ -150,8 +183,38 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             # Normalize to bool mask of shape (N, 4672)
             if legal_mask_t.dtype != torch.bool:
                 legal_mask_t = legal_mask_t.to(dtype=torch.bool)
-        except Exception:
+            
+            # Validate legal mask: ensure it matches policy shape
+            if legal_mask_t.shape != pi.shape:
+                if current_step % 100 == 0:
+                    logger.warning(
+                        f"Legal mask shape mismatch: mask={legal_mask_t.shape}, policy={pi.shape}. "
+                        f"Reshaping or ignoring mask."
+                    )
+                if legal_mask_t.numel() == pi.numel():
+                    legal_mask_t = legal_mask_t.view(pi.shape)
+                else:
+                    legal_mask_t = None
+            
+            # Validate: ensure at least one legal move per position
+            if legal_mask_t is not None:
+                legal_counts = legal_mask_t.sum(dim=1)
+                zero_legal = (legal_counts == 0).any()
+                if zero_legal and current_step % 100 == 0:
+                    logger.warning(f"Some positions have zero legal moves in mask (step {current_step})")
+        except Exception as e:
+            logger.warning(f"Failed to load legal mask: {e}")
             legal_mask_t = None
+    
+    # If policy normalization failed and we have legal mask, use fallback
+    if legal_mask_t is not None and (pi.sum(dim=1) <= 0).any():
+        logger.warning("Policy normalization failed, using legal mask fallback")
+        pi = torch.zeros_like(pi)
+        for i in range(pi.shape[0]):
+            legal_indices = legal_mask_t[i].nonzero(as_tuple=False).squeeze(1)
+            if len(legal_indices) > 0:
+                # Uniform over legal moves
+                pi[i, legal_indices] = 1.0 / len(legal_indices)
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0))
@@ -473,6 +536,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         if torch.isnan(v).any() or torch.isinf(v).any():
             logger.warning("Value output contains NaN/Inf; sanitizing")
             v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+        # Ensure shape compatibility: v is [batch, 1], z is [batch]
+        if v.dim() > 1 and v.shape[1] == 1:
+            v = v.squeeze(1)
+        elif z.dim() == 1 and v.dim() == 1 and v.shape != z.shape:
+            # Handle edge case where shapes don't match
+            if v.numel() == z.numel():
+                v = v.view_as(z)
         if value_loss_type == 'huber':
             value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
         else:
@@ -1369,6 +1439,30 @@ def train_comprehensive(
                         if grad_clip_norm > 0:
                             # CRITICAL: Ultra-aggressive gradient clipping to prevent NaN/Inf
                             total_norm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm, error_if_nonfinite=False)
+                            
+                            # Gradient monitoring: log gradient statistics periodically
+                            if current_step % 100 == 0 or torch.isnan(total_norm) or torch.isinf(total_norm):
+                                # Compute per-parameter gradient statistics
+                                param_norms = []
+                                param_counts = []
+                                zero_grad_count = 0
+                                for name, param in model.named_parameters():
+                                    if param.grad is not None:
+                                        param_norm = param.grad.data.norm(2).item()
+                                        param_norms.append(param_norm)
+                                        param_counts.append(param.numel())
+                                        if param_norm < 1e-8:
+                                            zero_grad_count += 1
+                                
+                                if param_norms:
+                                    max_grad = max(param_norms)
+                                    mean_grad = sum(p * c for p, c in zip(param_norms, param_counts)) / sum(param_counts)
+                                    logger.info(
+                                        f"GRAD_MONITOR: step={current_step}, total_norm={total_norm:.4f}, "
+                                        f"max_param_norm={max_grad:.4f}, mean_param_norm={mean_grad:.4f}, "
+                                        f"zero_grad_params={zero_grad_count}/{len(param_norms)}"
+                                    )
+                            
                             if torch.isnan(total_norm) or torch.isinf(total_norm):
                                 logger.warning(f"Gradient norm is NaN/Inf: {total_norm}, applying emergency clipping")
                                 # Emergency gradient clipping with very small norm

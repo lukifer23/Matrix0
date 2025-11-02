@@ -69,7 +69,6 @@ class MCTSConfig:
     selection_jitter: float = 0.01
     tt_cleanup_frequency: int = 5000
     tt_memory_limit_mb: int = 2048
-    batch_size: int = 16  # Reduced for better MPS performance
     fpu: float = 0.5  # First-Play Urgency (legacy bias)
     fpu_reduction: float = 0.15  # Leela-style FPU reduction: parent_q - fpu_reduction for unvisited children
     parent_q_init: bool = True # Initialize child Q with parent Q
@@ -99,7 +98,8 @@ class MCTSConfig:
     # NEW: Multi-threading optimizations
     num_threads: int = 6             # Use all 6 CPU cores
     parallel_simulations: bool = True # Enable parallel MCTS simulations
-    simulation_batch_size: int = 16   # Batch simulations for efficiency
+    inference_batch_size: int = 96    # Unified batch size for all inference operations (MPS optimized)
+    simulation_batch_size: int = 96   # Legacy alias for inference_batch_size (deprecated, use inference_batch_size)
     tree_parallelism: bool = True     # Enable tree-level parallelism
     # Optional: Playout cap randomization to diversify self-play
     playout_random_frac: float = 0.0  # 0.0 disables; e.g., 0.3 → ±30%
@@ -395,6 +395,26 @@ class MCTS:
                 logger.warning("MCTS setup took too long, reducing simulations")
                 sims_to_run = max(50, sims_to_run // 2)  # Minimum 50 sims for quality
 
+            # Expand root node if not already expanded (required before simulations)
+            if not root.is_expanded():
+                try:
+                    p_logits, v = self._infer(board)
+                    root._expand(
+                        board,
+                        p_logits,
+                        encoder=self._enc,
+                        legal_only=self.cfg.legal_softmax,
+                        allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
+                    )
+                    self._prune_children(root)
+                    self._register_children_in_tt(root, board, skip_lock=True)
+                    # Initialize root value
+                    v = float(np.clip(v, -1.0, 1.0))
+                    root.q = v
+                except Exception as root_expand_err:
+                    logger.error(f"Failed to expand root node: {root_expand_err}")
+                    raise RuntimeError(f"MCTS root expansion failed: {root_expand_err}") from root_expand_err
+
             # Enhanced batched-leaf inference path: always attempt batched collection
             # regardless of thread count. The collector already supports single-thread
             # fallback; this restores batching benefits on MPS where num_threads=1.
@@ -409,6 +429,20 @@ class MCTS:
                         t_expand += (time.time() - t0)
 
             visit_counts: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
+            
+            # Validate that we got at least some visits - if not, root expansion may have failed
+            total_visits = sum(visit_counts.values())
+            if total_visits == 0:
+                # No visits means MCTS didn't complete - check if root was expanded
+                if not root.is_expanded() and root.children:
+                    # Root has children but no visits - likely inference failure prevented backprop
+                    logger.error("MCTS completed with zero visits - inference failures prevented search completion")
+                    raise RuntimeError("MCTS search failed: zero visits after simulations (inference failures)")
+                elif not root.children:
+                    # Root wasn't expanded - initial inference failed
+                    logger.error("MCTS root node was never expanded - initial inference failed")
+                    raise RuntimeError("MCTS search failed: root node not expanded (inference failure)")
+            
             policy = self._policy_from_root(root, board)
             self._last_sims_run = sims_to_run
             # Expose last root for external inspection (e.g., debug prints)
@@ -454,43 +488,53 @@ class MCTS:
             return visit_counts, policy, root_q
             
         except Exception as e:
-            logger.error(f"MCTS run error: {e}")
-            # Return safe fallback values
-            policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-            return {}, np.zeros(policy_size, dtype=np.float32), 0.0
+            logger.error(f"MCTS run error: {e}", exc_info=True)
+            # Fail fast: raise exception instead of returning fallback zeros
+            raise RuntimeError(f"MCTS run failed: {e}") from e
 
     def _run_simulations_parallel_batched(self, board: chess.Board, root: Node, num_simulations: int):
         """Run simulations in batched chunks: collect → infer → backprop per mini-batch."""
         try:
-            max_batch_size = int(getattr(self.cfg, 'simulation_batch_size', 32))
+            # Use unified inference_batch_size, fallback to legacy simulation_batch_size for compatibility
+            max_batch_size = int(getattr(self.cfg, 'inference_batch_size', None) or getattr(self.cfg, 'simulation_batch_size', 96))
         except Exception:
-            max_batch_size = 32
+            max_batch_size = 96
 
         total = int(max(0, num_simulations))
         sims_done = 0
+        
+        # Optimization: For small simulation counts or single-threaded, use sequential collection
+        # Threading overhead may outweigh benefits on MPS with GIL
+        use_parallel = (
+            self.executor is not None and 
+            total > max_batch_size * 2 and  # Only parallelize for larger batches
+            getattr(self.cfg, 'parallel_simulations', True)
+        )
+        
         while sims_done < total:
             batch_n = min(max_batch_size, total - sims_done)
             # Collect leaf positions for this batch
             leaf_samples = []  # Each entry: {'board': chess.Board, 'node': Node, 'path': List[Node]}
-            append_lock = threading.Lock()
-
-            futures = []
-            for _ in range(batch_n):
-                if self.executor:
+            
+            if use_parallel:
+                append_lock = threading.Lock()
+                futures = []
+                for _ in range(batch_n):
                     futures.append(
                         self.executor.submit(
                             self._collect_leaf_position, board.copy(), root, leaf_samples, append_lock
                         )
                     )
-                else:
-                    self._collect_leaf_position(board.copy(), root, leaf_samples, append_lock)
-
-            if futures:
+                
                 done, not_done = wait(futures, timeout=30.0)
                 if not_done:
                     logger.warning("Position collection timed out for a batch; cancelling stragglers")
                     for f in not_done:
                         f.cancel()
+            else:
+                # Sequential collection (faster for small batches, avoids GIL overhead)
+                for _ in range(batch_n):
+                    self._collect_leaf_position(board.copy(), root, leaf_samples, None)
 
             if not leaf_samples:
                 sims_done += batch_n
@@ -499,32 +543,51 @@ class MCTS:
             # Split samples into those requiring network inference and already-complete ones
             pending_samples = [sample for sample in leaf_samples if sample.get("board") is not None]
             if pending_samples:
+                # Optimize encoding: pre-allocate array and encode in batch
                 encoded_samples = []
+                invalid_samples = []
                 for sample in pending_samples:
                     pos = sample.get("board")
-                    encoded = encode_board(pos) if pos is not None else None
-                    if encoded is None:
-                        logger.warning("Failed to encode board during batched MCTS; propagating zero value")
-                        self._backpropagate(sample.get("path", []), 0.0)
+                    if pos is None:
+                        invalid_samples.append(sample)
                         continue
-                    encoded_samples.append((sample, encoded))
+                    try:
+                        encoded = encode_board(pos)
+                        if encoded is None:
+                            invalid_samples.append(sample)
+                            continue
+                        encoded_samples.append((sample, encoded))
+                    except Exception as encode_err:
+                        logger.warning(f"Failed to encode board during batched MCTS: {encode_err}")
+                        invalid_samples.append(sample)
+                
+                # Handle invalid samples (terminal positions should be handled in _collect_leaf_position)
+                # Skip invalid samples - don't propagate zero values
+                if invalid_samples:
+                    logger.debug(f"Skipping {len(invalid_samples)} invalid samples (failed encoding)")
 
                 if encoded_samples:
-                    # Use configured simulation batch size when available
+                    # Use unified inference batch size, fallback to legacy key for compatibility
                     try:
-                        max_batch_size = int(getattr(self.cfg, 'simulation_batch_size', 32))
-                        if max_batch_size <= 0:
-                            max_batch_size = 32
+                        inference_batch_size = int(getattr(self.cfg, 'inference_batch_size', None) or getattr(self.cfg, 'simulation_batch_size', 96))
+                        if inference_batch_size <= 0:
+                            inference_batch_size = 96
                     except Exception:
-                        max_batch_size = 32
+                        inference_batch_size = 96
                     value_floats: List[float] = []
 
-                    # Mini-batch inference for this batch
+                    # Process in optimal batch sizes for inference
                     start_idx = 0
                     while start_idx < len(encoded_samples):
-                        chunk = encoded_samples[start_idx:start_idx + max_batch_size]
+                        chunk = encoded_samples[start_idx:start_idx + inference_batch_size]
                         start_idx += len(chunk)
+                        
+                        # Optimize tensor creation: stack all encodings at once
+                        # Pre-allocate array with known shape for better performance
                         batch_tensor = np.stack([enc for _, enc in chunk], axis=0)
+                        if not batch_tensor.flags['C_CONTIGUOUS']:
+                            batch_tensor = np.ascontiguousarray(batch_tensor, dtype=np.float32)
+                        
                         logger.debug(f"Running batched inference on {len(chunk)} positions")
 
                         if logger.isEnabledFor(logging.DEBUG):
@@ -532,14 +595,26 @@ class MCTS:
                             logger.debug(f"Batch tensor memory usage: {batch_tensor.nbytes / 1024:.1f} KB")
 
                         if hasattr(self, 'inference_backend') and self.inference_backend is not None:
-                            policies, values = self.inference_backend.infer_np(batch_tensor)
+                            try:
+                                policies, values = self.inference_backend.infer_np(batch_tensor)
+                            except (TimeoutError, RuntimeError) as infer_err:
+                                # Inference failed for this batch - skip it and continue with remaining simulations
+                                logger.warning(f"Inference failed for batch of {len(chunk)} positions: {infer_err}. Skipping batch and continuing.")
+                                sims_done += len(chunk)
+                                continue
 
+                            # Validate inference results - skip batch on errors
                             if policies is None or values is None:
-                                raise RuntimeError("Inference backend returned None results")
+                                logger.warning(f"Inference backend returned None results for batch of {len(chunk)}. Skipping batch.")
+                                sims_done += len(chunk)
+                                continue
                             if len(policies) != len(chunk) or len(values) != len(chunk):
-                                raise RuntimeError(
-                                    f"Inference result shape mismatch: expected {len(chunk)}, got policies={len(policies)}, values={len(values)}"
+                                logger.warning(
+                                    f"Inference result shape mismatch: expected {len(chunk)}, "
+                                    f"got policies={len(policies)}, values={len(values)}. Skipping batch."
                                 )
+                                sims_done += len(chunk)
+                                continue
 
                             for (sample, _), policy, value in zip(chunk, policies, values):
                                 node = sample.get("node")
@@ -605,43 +680,27 @@ class MCTS:
                                             self._register_children_in_tt(node, board_pos, skip_lock=True)
                                         value_float = float(np.clip(v, -1.0, 1.0))
                                     except Exception as infer_err:
-                                        logger.error(f"Batched inference expand/backprop failed: {infer_err}")
-                                        value_float = 0.0
+                                        # Skip this sample on error, continue with others in batch
+                                        logger.warning(f"Batched inference expand/backprop failed for sample: {infer_err}. Skipping sample.")
+                                        continue
                                     value_floats.append(value_float)
                                     self._backpropagate(sample.get("path", []), value_float)
                             except Exception as batched_err:
-                                logger.error(f"Batched model inference failed: {batched_err}")
-                                # Fallback per-sample inference within this chunk
-                                for sample, _ in chunk:
-                                    pos = sample.get("board")
-                                    node = sample.get("node")
-                                    try:
-                                        p_logits, v = self._infer(pos)
-                                        if node is not None and pos is not None and not node.is_expanded():
-                                            node._expand(
-                                                pos,
-                                                p_logits,
-                                                encoder=self._enc,
-                                                legal_only=self.cfg.legal_softmax,
-                                                allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
-                                            )
-                                            self._prune_children(node)
-                                            self._register_children_in_tt(node, pos, skip_lock=True)
-                                        value_float = float(np.clip(v, -1.0, 1.0))
-                                    except Exception as infer_err:
-                                        logger.error(f"Individual inference failed: {infer_err}")
-                                        value_float = 0.0
-                                    value_floats.append(value_float)
-                                    self._backpropagate(sample.get("path", []), value_float)
+                                logger.warning(f"Batched model inference failed for chunk of {len(chunk)}: {batched_err}. Skipping chunk.")
+                                sims_done += len(chunk)
+                                continue
 
                     if value_floats and all(abs(v) < 1e-6 for v in value_floats):
                         logger.warning("Batched MCTS inference produced near-zero values for all samples; verify model behaviour")
             # Note: errors inside batched inference are already caught per-chunk.
 
             # Handle samples that encountered errors before inference
+            # These should not occur if _collect_leaf_position is working correctly
             for sample in leaf_samples:
                 if sample.get("board") is None:
-                    self._backpropagate(sample.get("path", []), 0.0)
+                    # Skip invalid samples, log warning
+                    logger.warning("Leaf sample has None board - skipping (should not occur)")
+                    continue
 
             sims_done += batch_n
 
@@ -653,24 +712,26 @@ class MCTS:
             if leaf_board.is_game_over():
                 v_leaf = self._terminal_value(leaf_board)
                 self._backpropagate(path, v_leaf)
+                # Terminal positions don't need inference, don't add to samples
+                return
             else:
                 # Store position and node for later batched inference
                 path_snapshot = list(path)
-                with append_lock:
-                    leaf_samples.append({
-                        "board": leaf_board,
-                        "node": node,
-                        "path": path_snapshot,
-                    })
+                sample = {
+                    "board": leaf_board,
+                    "node": node,
+                    "path": path_snapshot,
+                }
+                if append_lock is not None:
+                    with append_lock:
+                        leaf_samples.append(sample)
+                else:
+                    # Sequential path - no lock needed
+                    leaf_samples.append(sample)
         except Exception as e:
             logger.error(f"Position collection error: {e}")
-            path_snapshot = list(path) if 'path' in locals() else []
-            with append_lock:
-                leaf_samples.append({
-                    "board": None,
-                    "node": None,
-                    "path": path_snapshot,
-                })
+            # Don't add invalid samples - they'll cause errors downstream
+            # Terminal positions should have been handled above
 
     def _run_simulation(self, board: chess.Board, root: Node):
         """Run a single MCTS simulation with robust error handling."""
@@ -902,9 +963,9 @@ class MCTS:
             # Encode board position using the correct function
             encoded = encode_board(board)
             if encoded is None:
-                logger.warning("Failed to encode board, using fallback values")
-                policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                return np.zeros(policy_size, dtype=np.float32), 0.0
+                error_msg = "Failed to encode board position"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             
             # Original tensor preparation (circular import workaround)
             from .utils.tensor import ensure_contiguous_array as _ensure_contiguous_array
@@ -928,8 +989,9 @@ class MCTS:
 
                         # Validate inference results
                         if policy_logits is None or value is None:
-                            logger.error("Inference backend returned None results")
-                            return np.zeros(4672, dtype=np.float32), 0.0
+                            error_msg = "Inference backend returned None results"
+                            logger.error(error_msg)
+                            raise RuntimeError(error_msg)
 
                     else:
                         # Direct inference for single-threaded (original implementation)
@@ -969,7 +1031,14 @@ class MCTS:
                                         pass
 
                                 try:
-                                    policy_logits, value_tensor = self.model(input_tensor)
+                                    # Enable AMP for MPS/CUDA for faster inference
+                                    dev_type = self.device.type
+                                    use_amp = dev_type in ("cuda", "mps")
+                                    if use_amp:
+                                        with torch.autocast(device_type=dev_type, enabled=True):
+                                            policy_logits, value_tensor = self.model(input_tensor)
+                                    else:
+                                        policy_logits, value_tensor = self.model(input_tensor)
                                     policy_logits = policy_logits.detach().cpu().numpy()
                                     value = value_tensor.detach().cpu().numpy().flatten()
                                 except RuntimeError as e:
@@ -1032,10 +1101,9 @@ class MCTS:
                         try:
                             policy_logits = policy_logits.reshape(policy_logits.shape[0], -1)
                         except Exception as reshape_err:
-                            logger.error(
-                                f"Failed to reshape policy logits {policy_logits.shape}: {reshape_err}"
-                            )
-                            return np.zeros(policy_size, dtype=np.float32), 0.0
+                            error_msg = f"Failed to reshape policy logits {policy_logits.shape}: {reshape_err}"
+                            logger.error(error_msg)
+                            raise RuntimeError(error_msg) from reshape_err
 
                     value = np.asarray(value, dtype=np.float32)
                     if value.ndim == 2 and value.shape[1] == 1:
@@ -1044,31 +1112,34 @@ class MCTS:
                         try:
                             value = value.reshape(value.shape[0])
                         except Exception as reshape_err:
-                            logger.error(
-                                f"Failed to reshape value tensor {value.shape}: {reshape_err}"
-                            )
-                            return np.zeros(policy_size, dtype=np.float32), 0.0
+                            error_msg = f"Failed to reshape value tensor {value.shape}: {reshape_err}"
+                            logger.error(error_msg)
+                            raise RuntimeError(error_msg) from reshape_err
 
                     if policy_logits.shape != expected_policy_shape:
-                        logger.error(
-                            f"Policy shape mismatch: got {policy_logits.shape}, expected {expected_policy_shape}"
-                        )
-                        return np.zeros(policy_size, dtype=np.float32), 0.0
+                        error_msg = f"Policy shape mismatch: got {policy_logits.shape}, expected {expected_policy_shape}"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
 
                     if value.shape != expected_value_shape:
-                        logger.error(
-                            f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}"
-                        )
-                        return np.zeros(policy_size, dtype=np.float32), 0.0
+                        error_msg = f"Value shape mismatch: got {value.shape}, expected {expected_value_shape}"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
 
-                    # Validate policy logits values
+                    # Validate policy logits values - fail fast on NaN/Inf
                     if np.any(np.isnan(policy_logits)) or np.any(np.isinf(policy_logits)):
-                        logger.warning("Policy logits contain NaN/Inf values, zeroing out")
-                        policy_logits = np.zeros_like(policy_logits, dtype=np.float32)
+                        nan_count = np.isnan(policy_logits).sum() if np.any(np.isnan(policy_logits)) else 0
+                        inf_count = np.isinf(policy_logits).sum() if np.any(np.isinf(policy_logits)) else 0
+                        error_msg = f"Policy logits contain NaN/Inf values: nan={nan_count}, inf={inf_count}"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
 
                     if np.any(np.isnan(value)) or np.any(np.isinf(value)):
-                        logger.warning("Value contains NaN/Inf values, using 0.0")
-                        value = np.zeros_like(value, dtype=np.float32)
+                        nan_count = np.isnan(value).sum() if np.any(np.isnan(value)) else 0
+                        inf_count = np.isinf(value).sum() if np.any(np.isinf(value)) else 0
+                        error_msg = f"Value contains NaN/Inf values: nan={nan_count}, inf={inf_count}"
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
 
                     # Clamp value to reasonable range
                     value = np.clip(value, -1.0, 1.0)
@@ -1089,10 +1160,10 @@ class MCTS:
                         time.sleep(0.1)  # Brief pause before retry
                         continue
                     else:
-                        logger.error(f"Inference timeout after {max_retries + 1} attempts: {e}")
-                        # Return fallback values to prevent MCTS crash
-                        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                        return np.zeros(policy_size, dtype=np.float32), 0.0
+                        error_msg = f"Inference timeout after {max_retries + 1} attempts: {e}"
+                        logger.error(error_msg)
+                        # Fail fast: raise exception instead of returning fallback zeros
+                        raise TimeoutError(error_msg) from e
                         
                 except Exception as e:
                     if attempt < max_retries:
@@ -1100,16 +1171,19 @@ class MCTS:
                         time.sleep(0.1)
                         continue
                     else:
-                        logger.error(f"Inference failed after {max_retries + 1} attempts: {e}")
-                        # Return fallback values to prevent MCTS crash
-                        policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-                        return np.zeros(policy_size, dtype=np.float32), 0.0
+                        error_msg = f"Inference failed after {max_retries + 1} attempts: {e}"
+                        logger.error(error_msg)
+                        # Fail fast: raise exception instead of returning fallback zeros
+                        raise RuntimeError(error_msg) from e
                         
+        except (TimeoutError, RuntimeError, ValueError) as e:
+            # Re-raise known exceptions (they've already been logged)
+            raise
         except Exception as e:
-            logger.error(f"Critical inference error: {e}")
-            # Return safe fallback values
-            policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
-            return np.zeros(policy_size, dtype=np.float32), 0.0
+            error_msg = f"Critical inference error: {e}"
+            logger.error(error_msg, exc_info=True)
+            # Fail fast: raise exception instead of returning fallback zeros
+            raise RuntimeError(error_msg) from e
 
     def _terminal_value(self, board: chess.Board) -> float:
         if board.is_checkmate():

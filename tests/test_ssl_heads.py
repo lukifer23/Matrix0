@@ -1,9 +1,10 @@
 import chess
+import numpy as np
 import torch
 
 from azchess.model.resnet import NetConfig, PolicyValueNet
 from azchess.ssl_algorithms import ChessSSLAlgorithms
-from experiments.grpo.utils.board_encoding import board_to_tensor
+from azchess.encoding import encode_board
 
 
 def _make_batch(batch_size: int = 2) -> torch.Tensor:
@@ -23,8 +24,8 @@ def _make_batch(batch_size: int = 2) -> torch.Tensor:
     if batch_size > len(boards):
         boards.extend(boards[: batch_size - len(boards)])
 
-    tensors = [board_to_tensor(b) for b in boards[:batch_size]]
-    return torch.cat(tensors, dim=0)
+    tensors = [encode_board(b) for b in boards[:batch_size]]
+    return torch.from_numpy(np.stack(tensors)).float()
 
 
 def test_enhanced_ssl_heads_outputs_and_loss():

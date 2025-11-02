@@ -159,8 +159,12 @@ class StockfishDataGenerator:
                 # If conversion fails, leave as all-zeros; sample still usable for value/SSL
                 pass
 
-        # Value target (normalize centipawn score)
-        z = np.tanh(analysis['score_cp'] / 200.0).astype(np.float32)  # Scale to [-1, 1]
+        # Value target: normalize centipawn score and convert to side-to-move perspective
+        # Stockfish returns score from white's perspective, model expects side-to-move values
+        score_cp = analysis['score_cp']
+        z_white_perspective = np.tanh(score_cp / 200.0).astype(np.float32)  # Scale to [-1, 1]
+        # Convert to side-to-move: flip if black to move
+        z = z_white_perspective if board.turn == chess.WHITE else -z_white_perspective
 
         # Legal move mask
         legal_moves = list(board.legal_moves)

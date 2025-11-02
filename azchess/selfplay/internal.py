@@ -199,6 +199,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         draw_cfg = cfg_dict.get("draw", {})
 
     # Detect value orientation (side-to-move vs absolute White) and pass to MCTS
+    # This is critical for correct value target generation in self-play
     def _detect_value_from_white() -> bool:
         try:
             import copy as _copy
@@ -221,17 +222,25 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     v1, v2 = float(v_np[0]), float(v_np[1])
             # If model is side-to-move oriented, values should flip sign when turn flips
             # Compare |v2 + v1| vs |v2 - v1|
-            if abs(v2 + v1) < abs(v2 - v1):
-                return False  # side-to-move
-            if abs(v2 - v1) < abs(v2 + v1):
-                return True   # absolute white perspective
-        except Exception:
-            pass
-        return False
+            # Side-to-move: v2 ≈ -v1 (opposite signs) → |v2 + v1| < |v2 - v1|
+            # Absolute white: v2 ≈ v1 (same sign) → |v2 - v1| < |v2 + v1|
+            flip_diff = abs(v2 + v1)
+            same_diff = abs(v2 - v1)
+            if flip_diff < same_diff:
+                detected = False  # side-to-move
+                logger.info(f"Worker {proc_id}: Detected side-to-move value orientation (v1={v1:.3f}, v2={v2:.3f}, flip_diff={flip_diff:.3f} < same_diff={same_diff:.3f})")
+            else:
+                detected = True   # absolute white perspective
+                logger.info(f"Worker {proc_id}: Detected absolute white value orientation (v1={v1:.3f}, v2={v2:.3f}, same_diff={same_diff:.3f} < flip_diff={flip_diff:.3f})")
+            return detected
+        except Exception as e:
+            logger.warning(f"Worker {proc_id}: Value orientation detection failed: {e}, defaulting to side-to-move")
+            return False
     
     # Allow config override; otherwise auto-detect
     force_vfw = bool(cfg_dict.get("mcts", {}).get("value_from_white", False))
     value_from_white = force_vfw or _detect_value_from_white()
+    logger.info(f"Worker {proc_id}: Using value_from_white={value_from_white} (forced={force_vfw})")
     
     # Load opening book
     book_path = sp_cfg.get("book_path")
@@ -266,7 +275,14 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     base_mcts.setdefault("cpuct", float(sp_cfg.get("cpuct", 2.5)))
     base_mcts.setdefault("dirichlet_alpha", float(sp_cfg.get("dirichlet_alpha", 0.3)))
     base_mcts.setdefault("dirichlet_frac", float(sp_cfg.get("dirichlet_frac", 0.25)))
-    base_mcts.setdefault("batch_size", int(sp_cfg.get("batch_size", 32)))
+    # Get unified inference batch size from config helper
+    try:
+        from ..config import Config as _Cfg
+        _cfg_obj = _Cfg(cfg_dict)
+        unified_batch_size = _cfg_obj.inference_batch_size()
+    except Exception:
+        unified_batch_size = 96
+    base_mcts.setdefault("inference_batch_size", unified_batch_size)
     base_mcts.setdefault("selection_jitter", float(sp_cfg.get("selection_jitter", 0.01)))
 
     mcfg_dict = dict(base_mcts)
@@ -278,7 +294,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             "dirichlet_frac": float(sp_cfg.get("dirichlet_frac", mcfg_dict.get("dirichlet_frac", 0.25))),
             "tt_capacity": int(mcfg_dict.get("tt_capacity", 2000000)),
             "selection_jitter": float(sp_cfg.get("selection_jitter", mcfg_dict.get("selection_jitter", 0.01))),
-            "batch_size": int(sp_cfg.get("batch_size", mcfg_dict.get("batch_size", 32))),
+            "inference_batch_size": int(mcfg_dict.get("inference_batch_size", unified_batch_size)),
             "fpu": float(sp_cfg.get("fpu", mcfg_dict.get("fpu", 0.5))),
             "parent_q_init": bool(sp_cfg.get("parent_q_init", mcfg_dict.get("parent_q_init", True))),
             "tt_cleanup_frequency": int(mcfg_dict.get("tt_cleanup_frequency", 500)),
@@ -293,12 +309,13 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
         inference_backend=infer_backend,
     )
 
-    # Initialize SSL algorithms for target generation (gated by selfplay.generate_ssl)
+    # Always generate SSL targets if model has SSL enabled (precomputed for training efficiency)
     sp_flags = cfg_dict.get("selfplay", {})
-    generate_ssl = bool(sp_flags.get("generate_ssl", False))
-    ssl_algorithms = ChessSSLAlgorithms() if generate_ssl else None
-    ssl_enabled = generate_ssl and cfg_dict.get("model", {}).get("self_supervised", False)
-    ssl_tasks = cfg_dict.get("model", {}).get("ssl_tasks", []) if ssl_enabled else []
+    model_cfg = cfg_dict.get("model", {})
+    model_has_ssl = bool(model_cfg.get("self_supervised", False))
+    ssl_tasks = model_cfg.get("ssl_tasks", []) if model_has_ssl else []
+    ssl_enabled = model_has_ssl and len(ssl_tasks) > 0
+    ssl_algorithms = ChessSSLAlgorithms() if ssl_enabled else None
 
     data_manager = DataManager(
         base_dir=cfg_dict.get("data_dir", "data"),
@@ -382,6 +399,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     logger.debug(f"Game {g + 1}: Move {move_count}")
     
                 # Capture turn perspective for this state BEFORE making a move
+                # This is used to convert game result to side-to-move value targets
                 turn_sign = 1 if board.turn == chess.WHITE else -1
     
                 try:
@@ -390,16 +408,12 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     visit_counts, pi, v = mcts.run(board, ply=len(states))
                     t_move1 = perf_counter()
                     
-                    # Validate visit counts
+                    # Validate visit counts - fail fast if MCTS search produced no valid results
                     if not visit_counts or all(count == 0 for count in visit_counts.values()):
-                        logger.debug(f"Invalid visit counts: {visit_counts}")
-                        # Fallback to random legal move
-                        legal_moves = list(board.legal_moves)
-                        if legal_moves:
-                            move = random.choice(legal_moves)
-                        else:
-                            logger.error("No legal moves available")
-                            break
+                        error_msg = f"MCTS returned invalid visit counts: {visit_counts}. This indicates a search failure."
+                        logger.error(error_msg)
+                        # Fail fast: raise exception instead of falling back to random moves
+                        raise RuntimeError(error_msg)
                     else:
                         # Low-visit fallback: increase temperature when search is shallow
                         try:
@@ -424,69 +438,65 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                             pass
                 
                 except Exception as e:
-                    logger.error(f"MCTS failed: {e}")
-                    # Fallback to random legal move
-                    legal_moves = list(board.legal_moves)
-                    if legal_moves:
-                        move = random.choice(legal_moves)
-                    else:
-                        logger.error("No legal moves available")
-                        break
-                    # Provide safe defaults for policy and value on failure
-                    # Uniform over legal moves
-                    legal = list(board.legal_moves)
-                    pi = np.zeros(4672, dtype=np.float32)
-                    if len(legal) > 0:
-                        p = 1.0 / float(len(legal))
-                        for mv in legal:
-                            try:
-                                pi[move_to_index(board, mv)] = p
-                            except Exception:
-                                pass
-                    v = 0.0
+                    error_msg = f"MCTS failed during move selection: {e}"
+                    logger.error(error_msg, exc_info=True)
+                    # Fail fast: raise exception instead of falling back to random moves
+                    # This ensures we catch and fix MCTS issues rather than silently using bad moves
+                    raise RuntimeError(error_msg) from e
                 
                 states.append(encode_board(board))
                 pis.append(pi)
                 search_values.append(v)
                 # Record perspective of this position (side to move at this state)
                 turns.append(turn_sign)
-                # Save legal mask if enabled
-                if bool(sp_flags.get("save_legal_mask", False)):
-                    try:
-                        lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
-                    except Exception:
-                        lm = np.zeros(4672, dtype=np.uint8)
-                    legal_masks.append(lm)
+                # Always compute and save legal mask (precomputed for training efficiency)
+                try:
+                    lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
+                except Exception:
+                    lm = np.zeros(4672, dtype=np.uint8)
+                legal_masks.append(lm)
 
-                # Generate SSL targets if enabled
-                if ssl_enabled and ssl_tasks:
+                # Always generate SSL targets if model has SSL enabled (precomputed for training efficiency)
+                if ssl_enabled and ssl_algorithms:
                     board_state = encode_board(board)
                     ssl_batch = torch.from_numpy(np.expand_dims(board_state, axis=0)).float()
 
-                    for task in ssl_tasks:
-                        if task not in ssl_targets:
-                            ssl_targets[task] = []
-
-                        try:
-                            if task == "threat":
-                                target = ssl_algorithms.detect_threats_batch(ssl_batch)
-                            elif task == "pin":
-                                target = ssl_algorithms.detect_pins_batch(ssl_batch)
-                            elif task == "fork":
-                                target = ssl_algorithms.detect_forks_batch(ssl_batch)
-                            else:
-                                # Skip unsupported tasks for now
-                                continue
-
-                            # Convert to numpy and remove batch dimension
-                            if target is not None:
-                                target_np = target.squeeze(0).detach().cpu().numpy()
+                    try:
+                        # Generate all SSL targets at once using enhanced method
+                        all_targets = ssl_algorithms.create_enhanced_ssl_targets(ssl_batch)
+                        
+                        # Filter to only requested tasks and convert to numpy
+                        for task in ssl_tasks:
+                            if task not in ssl_targets:
+                                ssl_targets[task] = []
+                            
+                            if task in all_targets:
+                                target = all_targets[task]
+                                # Handle different shapes: piece is (1, 13, 8, 8), others are (1, 8, 8)
+                                if target.dim() == 4:
+                                    # Multi-channel target (e.g., piece)
+                                    target_np = target.squeeze(0).detach().cpu().numpy()
+                                else:
+                                    # Single-channel target
+                                    target_np = target.squeeze(0).detach().cpu().numpy()
                                 ssl_targets[task].append(target_np)
                             else:
-                                ssl_targets[task].append(np.zeros((8, 8)))
-                        except Exception as e:
-                            logger.warning(f"Failed to generate SSL target for {task}: {e}")
-                            ssl_targets[task].append(np.zeros((8, 8)))
+                                # Fallback: zero target if task not supported
+                                logger.warning(f"SSL task '{task}' not found in generated targets")
+                                if task == "piece":
+                                    ssl_targets[task].append(np.zeros((13, 8, 8), dtype=np.float32))
+                                else:
+                                    ssl_targets[task].append(np.zeros((8, 8), dtype=np.float32))
+                    except Exception as e:
+                        logger.warning(f"Failed to generate SSL targets: {e}")
+                        # Initialize with zeros for all tasks if generation fails
+                        for task in ssl_tasks:
+                            if task not in ssl_targets:
+                                ssl_targets[task] = []
+                            if task == "piece":
+                                ssl_targets[task].append(np.zeros((13, 8, 8), dtype=np.float32))
+                            else:
+                                ssl_targets[task].append(np.zeros((8, 8), dtype=np.float32))
                 # Track sims used
                 try:
                     sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
@@ -594,17 +604,24 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             else:
                 logger.info(f"Game {g + 1}: Final result from game end: {z}")
             
-            # Blend final game result with search values for a more stable target
+            # Create value targets: use pure game result (no blending) in side-to-move format
+            # Model outputs side-to-move values (value_from_white=false), so targets must match
+            # z is from white's perspective (1.0 = white wins, -1.0 = black wins, 0.0 = draw)
+            # turns[i] = 1 if white to move, -1 if black to move
+            # final_z = z * turns[i] converts to side-to-move perspective
             value_target = []
             for i in range(len(states)):
+                # Convert game result to side-to-move perspective for this position
                 final_z = z * turns[i]
-                search_z = search_values[i]
-                blended_z = 0.7 * final_z + 0.3 * search_z
-                value_target.append(blended_z)
-                
-            # Debug: log the turns array and final calculations
-            logger.info(f"Game {g + 1}: Final game result z={z}, turns array (first 5): {turns[:5] if len(turns) >= 5 else turns}")
-            logger.info(f"Game {g + 1}: First few final_z values: {[z * turns[i] for i in range(min(3, len(turns)))]}")
+                value_target.append(final_z)
+            
+            # Validation: log sample values to verify orientation
+            if len(value_target) > 0 and (g == 0 or len(value_target) % 50 == 0):
+                sample_indices = [0, min(10, len(value_target) - 1), len(value_target) - 1]
+                sample_values = [(i, value_target[i], turns[i], "white" if turns[i] > 0 else "black") 
+                                for i in sample_indices if i < len(value_target)]
+                logger.debug(f"Game {g + 1}: Value target samples (idx, value, turn_sign, side): {sample_values}")
+                logger.debug(f"Game {g + 1}: Final result z={z:.3f} (white perspective), first value_target={value_target[0]:.3f} (side-to-move)")
     
             filepath = None
             if len(states) > 0:
@@ -620,7 +637,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
                     "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
                 }
-                if bool(sp_flags.get("save_legal_mask", False)) and legal_masks:
+                # Always include legal masks (precomputed for training efficiency)
+                if legal_masks:
                     try:
                         game_data["legal_mask"] = np.stack(legal_masks, axis=0).astype(np.uint8, copy=False)
                     except Exception:

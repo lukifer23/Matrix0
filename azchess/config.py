@@ -93,6 +93,29 @@ class Config:
             model_cfg.get("preact", False) or
             model_cfg.get("policy_factor_rank", 0) > 0
         )
+    
+    def inference_batch_size(self) -> int:
+        """Get unified inference batch size from MCTS config.
+        
+        This is the single source of truth for all inference batching operations:
+        - MCTS simulation batching
+        - Shared inference server batching
+        - Direct model inference batching
+        
+        Returns:
+            Batch size for inference operations (default: 96 for MPS optimization)
+        """
+        mcts_cfg = self.mcts()
+        # Check for unified inference_batch_size first
+        if "inference_batch_size" in mcts_cfg:
+            return int(mcts_cfg["inference_batch_size"])
+        # Fallback to legacy keys for backward compatibility
+        if "simulation_batch_size" in mcts_cfg:
+            return int(mcts_cfg["simulation_batch_size"])
+        if "shared_inference_batch_size" in self.selfplay():
+            return int(self.selfplay()["shared_inference_batch_size"])
+        # Default optimized for MPS
+        return 96
 
 
 def select_device(cfg_device: str = "auto") -> str:

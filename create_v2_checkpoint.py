@@ -35,19 +35,12 @@ def create_v2_checkpoint():
         logger.info("Creating FRESH V2 CHECKPOINT - ALIGNED WITH CURRENT CONFIG!")
         logger.info(f"Model config: {model_cfg}")
 
-        # Create model with V2 architecture
+        # Create model with V2 architecture using from_config (handles all config parsing)
         device = torch.device('cpu')  # Create on CPU first, then move if needed
-
-        # Build NetConfig by intersecting config keys with dataclass fields
-        net_kwargs = {name: model_cfg[name] for name in NetConfig.__dataclass_fields__ if name in model_cfg}
-        net_config = NetConfig(**net_kwargs)
-
-        # Preserve any extra model attributes (e.g., policy_logit_init_scale) for PolicyValueNet getters
-        for key, value in model_cfg.items():
-            if key not in NetConfig.__dataclass_fields__:
-                setattr(net_config, key, value)
-
-        model = PolicyValueNet(net_config)
+        
+        # Use PolicyValueNet.from_config which properly handles all config fields
+        model = PolicyValueNet.from_config(model_cfg)
+        net_config = model.cfg  # Get NetConfig from model for logging
         
         # The model now has proper weight initialization in _init_weights method
         # This includes conservative SSL head initialization and policy head stability fixes

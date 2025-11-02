@@ -258,18 +258,27 @@ def run_inference_server(
         # Enable AMP on CUDA and MPS for faster matmul/convs when beneficial
         use_amp = (device_type in ("cuda", "mps"))
 
-        # Target batch size tuned per device to avoid long waits/timeouts.
+        # Target batch size: derive from shared memory capacity (which uses unified inference_batch_size)
         # Allow environment overrides for quick tuning without code changes.
-        # Defaults: MPS=4 (safe), CUDA=16 (typical), CPU=4.
         try:
-            if device_type == "mps":
-                target_batch_for_device = int(os.environ.get("MATRIX0_MPS_TARGET_BATCH", "8"))
-            elif device_type == "cuda":
-                target_batch_for_device = int(os.environ.get("MATRIX0_CUDA_TARGET_BATCH", "16"))
+            if shared_memory_resources:
+                # Use the actual allocated batch size from shared memory (unified config)
+                max_allocated = max(res["request_tensor"].shape[0] for res in shared_memory_resources)
+                target_batch_for_device = max_allocated
+                # Allow env override
+                env_override = os.environ.get("MATRIX0_TARGET_BATCH", None)
+                if env_override:
+                    target_batch_for_device = int(env_override)
             else:
-                target_batch_for_device = int(os.environ.get("MATRIX0_CPU_TARGET_BATCH", "4"))
+                # Fallback: use device-specific defaults (should not happen with shared inference)
+                if device_type == "mps":
+                    target_batch_for_device = int(os.environ.get("MATRIX0_MPS_TARGET_BATCH", "96"))
+                elif device_type == "cuda":
+                    target_batch_for_device = int(os.environ.get("MATRIX0_CUDA_TARGET_BATCH", "96"))
+                else:
+                    target_batch_for_device = int(os.environ.get("MATRIX0_CPU_TARGET_BATCH", "32"))
         except Exception:
-            target_batch_for_device = 4 if device_type == "mps" else 16
+            target_batch_for_device = 96 if device_type == "mps" else 96
 
         worker_events = [res["request_event"] for res in shared_memory_resources]
         event_to_worker = {ev: i for i, ev in enumerate(worker_events)}
@@ -364,9 +373,15 @@ def run_inference_server(
                         batch_size = max_bs
                         res["batch_size_tensor"][0] = max_bs
 
-                    # Only add to batch if we have reasonable size (avoid tiny batches)
-                    # OPTIMIZATION: Accumulate larger batches for better GPU utilization
-                    if total_batch_size < target_batch_for_device:
+                    # OPTIMIZATION: Process immediately if worker has substantial batch ready
+                    # This reduces latency by not waiting for accumulation when one worker has enough
+                    min_batch_threshold = max(8, target_batch_for_device // 2)  # Process if >= half target
+                    should_process_now = (
+                        batch_size >= min_batch_threshold or  # Worker has substantial batch
+                        total_batch_size >= target_batch_for_device  # Accumulated enough
+                    )
+                    
+                    if should_process_now or total_batch_size == 0:
                         try:
                             tensor_slice = res["request_tensor"][:batch_size]
                             logger.debug(f"Worker {worker_id}: extracting tensor slice of shape {tensor_slice.shape}")
@@ -375,28 +390,20 @@ def run_inference_server(
                             total_batch_size += batch_size
                             res["request_event"].clear()  # Clear event after reading
                             logger.debug(
-                                f"Accumulating batch: worker {worker_id}, size {batch_size}, total {total_batch_size}"
+                                f"Adding to batch: worker {worker_id}, size {batch_size}, total {total_batch_size}"
                             )
+                            # If we've accumulated enough or this worker had a substantial batch, process immediately
+                            if total_batch_size >= target_batch_for_device or batch_size >= min_batch_threshold:
+                                break  # Process this batch now
                         except Exception as slice_error:
                             logger.error(f"Failed to extract tensor slice for worker {worker_id}: {slice_error}")
                             logger.error(f"Request tensor shape: {res['request_tensor'].shape}, batch_size: {batch_size}")
                             continue
                     else:
-                        # Process batches immediately to avoid timeouts
-                        try:
-                            tensor_slice = res["request_tensor"][:batch_size]
-                            logger.debug(f"Worker {worker_id}: extracting tensor slice of shape {tensor_slice.shape}")
-                            tensors_to_process.append(tensor_slice)
-                            batch_sizes[worker_id] = batch_size
-                            total_batch_size += batch_size
-                            res["request_event"].clear()
-                            logger.debug(
-                                f"Processing batch immediately: worker {worker_id}, size {batch_size}, total {total_batch_size}"
-                            )
-                        except Exception as slice_error:
-                            logger.error(f"Failed to extract tensor slice for worker {worker_id}: {slice_error}")
-                            logger.error(f"Request tensor shape: {res['request_tensor'].shape}, batch_size: {batch_size}")
-                            continue
+                        # Continue accumulating from other workers
+                        logger.debug(f"Deferring worker {worker_id} batch (size {batch_size}, accumulated {total_batch_size})")
+                        # Don't clear event - keep it set so we process it next iteration
+                        continue
 
                 if not tensors_to_process:
                     logger.debug("No tensors to process, continuing...")
@@ -404,7 +411,11 @@ def run_inference_server(
 
                 # Process larger batches for better GPU utilization
                 try:
-                    batch_tensor = torch.cat(tensors_to_process, dim=0).to(device)
+                    # Optimize tensor concatenation: ensure all tensors are contiguous before cat
+                    tensors_contiguous = [t.contiguous() for t in tensors_to_process]
+                    batch_tensor = torch.cat(tensors_contiguous, dim=0)
+                    # Move to device in one operation (more efficient than per-tensor moves)
+                    batch_tensor = batch_tensor.to(device, non_blocking=False)
                     logger.debug(f"Processing batch of size {batch_tensor.shape[0]} from {len(batch_sizes)} workers")
                     logger.debug(f"Batch tensor shape: {batch_tensor.shape}, device: {batch_tensor.device}")
                 except Exception as cat_error:
@@ -415,6 +426,9 @@ def run_inference_server(
                     continue
 
                 # Keep default contiguous memory format on MPS; channels_last can add overhead there
+                # Ensure tensor is contiguous for optimal MPS performance
+                if not batch_tensor.is_contiguous():
+                    batch_tensor = batch_tensor.contiguous()
                 if device_type == "cuda":
                     try:
                         batch_tensor = batch_tensor.contiguous(memory_format=torch.channels_last)
@@ -444,29 +458,33 @@ def run_inference_server(
                         inference_time = time.time() - inference_start
                         logger.debug(f"Full inference completed in {inference_time:.3f}s for batch size {batch_tensor.shape[0]}")
 
-                        # Convert to numpy for response with strict dtype/shape
-                        policy_logits_np = (
-                            policy_logits.detach().to(torch.float32).cpu().numpy()
-                        )
-                        value = value_tensor.detach().to(torch.float32).cpu().numpy()
+                        # Optimize conversion to numpy: use contiguous memory, single conversion
+                        # Ensure tensors are contiguous before CPU transfer for better performance
+                        policy_logits_cpu = policy_logits.detach().contiguous().to(torch.float32).cpu()
+                        value_cpu = value_tensor.detach().contiguous().to(torch.float32).cpu()
+                        
+                        # Convert to numpy in one operation (contiguous ensures no copy needed)
+                        policy_logits_np = policy_logits_cpu.numpy()
+                        value = value_cpu.numpy()
 
-                        # Ensure contiguous float32 and correct dims
+                        # Ensure correct shape and dtype
                         if policy_logits_np.ndim != 2:
-                            policy_logits_np = policy_logits_np.reshape(
-                                policy_logits_np.shape[0], -1
-                            )
-                        policy_logits_np = np.ascontiguousarray(
-                            policy_logits_np, dtype=np.float32
-                        )
+                            policy_logits_np = policy_logits_np.reshape(policy_logits_np.shape[0], -1)
+                        if not policy_logits_np.flags['C_CONTIGUOUS']:
+                            policy_logits_np = np.ascontiguousarray(policy_logits_np, dtype=np.float32)
+                        elif policy_logits_np.dtype != np.float32:
+                            policy_logits_np = policy_logits_np.astype(np.float32, copy=False)
 
                         if value.ndim == 1:
                             value = value[:, None]
                         elif value.ndim > 2:
                             value = value.reshape(value.shape[0], -1)
                         if value.shape[1] != 1:
-                            # Clamp to one column if model produced extra dims
                             value = value[:, :1]
-                        value = np.ascontiguousarray(value, dtype=np.float32)
+                        if not value.flags['C_CONTIGUOUS']:
+                            value = np.ascontiguousarray(value, dtype=np.float32)
+                        elif value.dtype != np.float32:
+                            value = value.astype(np.float32, copy=False)
 
                         logger.debug(
                             "Results converted to numpy: logits shape %s, value shape %s",
@@ -475,37 +493,15 @@ def run_inference_server(
                         )
 
                     except Exception as model_error:
-                        logger.error(f"Model inference failed: {model_error}")
-                        logger.error(f"Batch tensor shape: {batch_tensor.shape}")
-                        logger.error(f"Batch tensor device: {batch_tensor.device}")
-                        logger.error(f"Model device: {next(model.parameters()).device}")
-
-                        # Return fallback values sized to the shared policy tensor
-                        batch_size = batch_tensor.shape[0]
-                        policy_width = 0
-                        candidate_workers: List[int] = list(batch_sizes.keys())
-                        for worker_id in batch_indices:
-                            if worker_id not in batch_sizes:
-                                candidate_workers.append(worker_id)
-
-                        for worker_id in candidate_workers:
-                            if 0 <= worker_id < len(shared_memory_resources):
-                                policy_width = _get_policy_width_from_resource(
-                                    shared_memory_resources[worker_id]
-                                )
-                                if policy_width > 0:
-                                    break
-
-                        if policy_width <= 0:
-                            for res in shared_memory_resources:
-                                policy_width = _get_policy_width_from_resource(res)
-                                if policy_width > 0:
-                                    break
-
-                        policy_logits_np = np.zeros(
-                            (batch_size, policy_width), dtype=np.float32
+                        error_msg = (
+                            f"Model inference failed: {model_error}. "
+                            f"Batch shape: {batch_tensor.shape}, device: {batch_tensor.device}, "
+                            f"model device: {next(model.parameters()).device}"
                         )
-                        value = np.zeros((batch_size, 1), dtype=np.float32)
+                        logger.error(error_msg, exc_info=True)
+                        # Fail fast: raise exception instead of returning fallback zeros
+                        # This ensures we catch and fix model issues rather than silently propagating zeros
+                        raise RuntimeError(error_msg) from model_error
 
                 # Distribute results back to workers
                 start_idx = 0
@@ -517,37 +513,32 @@ def run_inference_server(
                     
                     try:
                         res = shared_memory_resources[worker_id]
-                        # Convert numpy arrays to torch tensors before assignment
+                        # Extract slices (already contiguous from previous step)
                         pol_np = policy_logits_np[start_idx:end_idx]
                         val_np = value[start_idx:end_idx]
                         if val_np.ndim == 1:
                             val_np = val_np.reshape(-1, 1)
-                        # Final guards
-                        pol_np = np.ascontiguousarray(pol_np, dtype=np.float32)
-                        val_np = np.ascontiguousarray(val_np, dtype=np.float32)
-
+                        
+                        # Convert to torch tensors directly (numpy arrays are already contiguous)
+                        # Use from_numpy which shares memory when possible (faster than copy)
                         policy_slice = torch.from_numpy(pol_np)
                         value_slice = torch.from_numpy(val_np)
 
-                        # Write into shared tensors
-                        res["response_policy_tensor"][:batch_size].copy_(policy_slice)
-                        res["response_value_tensor"][:batch_size].copy_(value_slice)
+                        # Write into shared tensors (copy_ handles device/type conversion)
+                        res["response_policy_tensor"][:batch_size].copy_(policy_slice, non_blocking=False)
+                        res["response_value_tensor"][:batch_size].copy_(value_slice, non_blocking=False)
                         res["response_event"].set()  # Signal completion
                         logger.debug(f"Response sent to worker {worker_id}")
                     except Exception as e:
-                        logger.error(f"Failed to send response to worker {worker_id}: {e}")
-                        # Guarantee a safe fallback is written and event signaled to avoid deadlock
+                        error_msg = f"Failed to send response to worker {worker_id}: {e}"
+                        logger.error(error_msg, exc_info=True)
+                        # Fail fast: raise exception instead of sending fallback zeros
+                        # Signal the event to prevent deadlock, but raise to propagate error
                         try:
-                            fb_pol = np.zeros(
-                                (batch_size, policy_logits_np.shape[1]), dtype=np.float32
-                            )
-                            fb_val = np.zeros((batch_size, 1), dtype=np.float32)
-                            res["response_policy_tensor"][:batch_size].copy_(torch.from_numpy(fb_pol))
-                            res["response_value_tensor"][:batch_size].copy_(torch.from_numpy(fb_val))
                             res["response_event"].set()
-                            logger.warning(f"Fallback response sent to worker {worker_id}")
-                        except Exception as fb_err:
-                            logger.error(f"Failed to send fallback response to worker {worker_id}: {fb_err}")
+                        except Exception:
+                            pass
+                        raise RuntimeError(error_msg) from e
                     
                     start_idx = end_idx
 
@@ -604,19 +595,21 @@ class InferenceClient:
         if arr_batch.dtype != np.float32:
             arr_batch = arr_batch.astype(np.float32, copy=False)
 
-        # Adaptive timeout based on batch size and complexity
-        # Chess AI needs reasonable timeouts for 53M parameter model
-        base_timeout = 12.0  # 12s base timeout for 53M model
+        # Optimized timeout for MPS: inference is fast, reduce timeouts to improve latency
+        # Base timeout reduced for faster failure detection on MPS
+        # Default to fast timeouts (optimized for MPS), can be overridden via env var
+        use_fast_timeouts = os.environ.get("MATRIX0_FAST_TIMEOUTS", "1").lower() in ("1", "true", "yes")
+        base_timeout = 5.0 if use_fast_timeouts else 12.0
         if batch_size == 1:
-            timeout = base_timeout * 1.5  # 18s for single samples (MCTS root)
-        elif batch_size <= 4:
-            timeout = base_timeout * 1.25  # 15s for small batches
-        elif batch_size <= 16:
-            timeout = base_timeout * 1.0   # 12s for medium batches (16 samples)
+            timeout = base_timeout * 2.0  # 10s for single samples (fast), 24s otherwise
+        elif batch_size <= 8:
+            timeout = base_timeout * 1.5  # 7.5s for small batches (fast), 18s otherwise
+        elif batch_size <= 32:
+            timeout = base_timeout * 1.0  # 5s for medium batches (fast), 12s otherwise
         else:
-            timeout = base_timeout * (1.0 + batch_size / 32.0)  # Scale with batch size
+            timeout = base_timeout * (1.0 + batch_size / 64.0)  # Scale with batch size
 
-        timeout = min(timeout, 30.0)  # Cap at 30s maximum for complex batches
+        timeout = min(timeout, 15.0 if use_fast_timeouts else 30.0)  # Cap at 15s (fast), 30s otherwise
 
         self.logger.debug(
             f"Inference request: batch_size={batch_size}, timeout={timeout:.1f}s"
@@ -664,12 +657,10 @@ class InferenceClient:
                         time.sleep(0.1)  # Brief pause before retry
                         continue
                     else:
-                        self.logger.error(
-                            f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt)"
-                        )
-                        # CRITICAL FIX: Return fallback values instead of raising TimeoutError
-                        self.logger.warning("Returning fallback values due to timeout")
-                        return self._get_fallback_values(batch_size)
+                        error_msg = f"Inference timeout after {timeout}s for batch size {batch_size} (final attempt after {max_retries + 1} retries)"
+                        self.logger.error(error_msg)
+                        # Fail fast: raise exception instead of returning fallback zeros
+                        raise TimeoutError(error_msg)
                 except Exception as e:
                     if attempt < max_retries:
                         self.logger.warning(
@@ -678,29 +669,16 @@ class InferenceClient:
                         time.sleep(0.1)
                         continue
                     else:
-                        self.logger.error(
-                            f"Inference failed after {max_retries + 1} attempts: {e}"
-                        )
-                        # CRITICAL FIX: Return fallback values instead of None
-                        self.logger.warning("Returning fallback values after inference failure")
-                        return self._get_fallback_values(batch_size)
+                        error_msg = f"Inference failed after {max_retries + 1} attempts: {e}"
+                        self.logger.error(error_msg)
+                        # Fail fast: raise exception instead of returning fallback zeros
+                        raise RuntimeError(error_msg) from e
 
         except Exception as e:
-            self.logger.error(f"Failed to copy data to shared memory: {e}")
-            # Return fallback values on critical failure
-            return self._get_fallback_values(batch_size)
-
-    def _get_fallback_values(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Return safe fallback values when inference fails completely."""
-        # Return neutral logits (uniform after softmax) and neutral value
-        policy_width = _get_policy_width_from_resource(self.res)
-        if policy_width <= 0:
-            self.logger.debug(
-                "Falling back to zero-width policy logits due to missing shape information"
-            )
-        policy = np.zeros((batch_size, policy_width), dtype=np.float32)
-        value = np.zeros(batch_size, dtype=np.float32)
-        return policy, value
+            error_msg = f"Failed to copy data to shared memory: {e}"
+            self.logger.error(error_msg)
+            # Fail fast: raise exception instead of returning fallback zeros
+            raise RuntimeError(error_msg) from e
 
     def _validate_events(self, events: List[Event]) -> bool:
         """Validate that all events are in a usable state."""

@@ -437,23 +437,12 @@ def orchestrate(
 
                 # Create shared memory resources for each worker with optimized batch sizes
                 model_params = sp_cfg["model"]
-                sp_params = sp_cfg["selfplay"]
-                # Allow explicit cap for shared inference micro-batches to avoid oversized buffers
-                shared_batch = sp_params.get('shared_inference_batch_size')
-                if shared_batch is None:
-                    shared_batch = min(64, sp_params.get('batch_size', 32))
-                shared_batch = int(max(1, shared_batch))
-                mcts_cfg = sp_cfg.get("mcts", {})
-                try:
-                    sim_batch = int(mcts_cfg.get("simulation_batch_size", shared_batch))
-                except Exception:
-                    sim_batch = shared_batch
-                sim_batch = max(1, sim_batch)
-                if dev == "mps":
-                    optimized_batch_size = sim_batch
-                else:
-                    optimized_batch_size = max(sim_batch, shared_batch, 16)
-                logger.info(f"Shared inference max batch size per worker: {optimized_batch_size}")
+                
+                # Unified batch size: single source of truth from config
+                from .config import Config as _Cfg
+                _cfg_obj = _Cfg(sp_cfg)
+                optimized_batch_size = _cfg_obj.inference_batch_size()
+                logger.info(f"Using unified inference batch size: {optimized_batch_size}")
                 for i in range(workers):
                     res = setup_shared_memory_for_worker(
                         worker_id=i,

@@ -4,7 +4,7 @@ import chess
 import torch
 import pytest
 
-from experiments.grpo.mcts.mcts_integration import MCTS, MCTSConfig
+from azchess.mcts import MCTS, MCTSConfig
 
 def test_fallback_sampling_matches_torch(monkeypatch):
     mcts = MCTS(model=None, config=MCTSConfig(), device="cpu")
