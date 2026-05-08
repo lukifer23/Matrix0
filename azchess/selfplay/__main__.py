@@ -50,34 +50,47 @@ def main():
     procs: List[Process] = []
     q: Queue = Queue()
     for i in range(workers):
-        p = Process(target=selfplay_worker, args=(i, cfg, args.ckpt, games_per_worker, q))
+        start = i * games_per_worker
+        end = min(args.games, start + games_per_worker)
+        assigned_games = max(0, end - start)
+        if assigned_games == 0:
+            continue
+        p = Process(target=selfplay_worker, args=(i, cfg, args.ckpt, assigned_games, q))
         p.start()
         procs.append(p)
     import queue as pyqueue
     import time
     done = 0
-    total = workers * games_per_worker
+    total = args.games
     last_msg_time = time.time()
     try:
         while done < total:
             try:
                 msg = q.get(timeout=2.0)
             except pyqueue.Empty:
-                # If a worker died early, decrement target to avoid stalling forever
-                alive = sum(1 for p in procs if p.is_alive())
-                if alive == 0:
-                    print("[SelfPlay] All workers exited; ending early.")
-                    break
+                failed = [p for p in procs if p.exitcode not in (None, 0)]
+                if failed:
+                    codes = [p.exitcode for p in failed]
+                    raise RuntimeError(f"[SelfPlay] Worker failed before completing requested games: exitcodes={codes}, done={done}/{total}")
+                if all(not p.is_alive() for p in procs):
+                    raise RuntimeError(f"[SelfPlay] All workers exited before completing requested games: done={done}/{total}")
                 if time.time() - last_msg_time > 300:
                     raise RuntimeError("[SelfPlay] Stalled: no progress for 300s")
                 continue
             if isinstance(msg, dict) and msg.get("type") == "game":
                 done += 1
                 last_msg_time = time.time()
-                print(f"[SelfPlay] {done}/{total} gms | p{msg['proc']} moves={msg['moves']} res={msg['result']} time={msg['secs']:.1f}s")
+                source = msg.get("result_source", "unknown")
+                capped = " capped" if msg.get("capped") else ""
+                print(f"[SelfPlay] {done}/{total} gms | p{msg['proc']} moves={msg['moves']} res={msg['result']} src={source}{capped} time={msg['secs']:.1f}s")
     finally:
         for p in procs:
             p.join()
+    failed = [p.exitcode for p in procs if p.exitcode != 0]
+    if failed:
+        raise RuntimeError(f"[SelfPlay] Worker failure after join: exitcodes={failed}")
+    if done != total:
+        raise RuntimeError(f"[SelfPlay] Completed {done}/{total} requested games")
 
 
 if __name__ == "__main__":

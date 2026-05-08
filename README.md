@@ -13,7 +13,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 
 - **SSL Architecture Integration**: **ARCHITECTURE READY** - five specialized SSL heads for piece, threat, pin, fork, and control detection
 - **Multi-Task Learning**: Simultaneous optimization of policy, value, and SSL objectives
-- **Advanced Architecture**: 53.2M parameter ResNet-24 with chess-specific attention and SSL foundation
+- **Advanced Architecture**: 44.2M parameter ResNet-22 with chess-specific attention and SSL foundation
 - **Apple Silicon Optimization**: MPS GPU acceleration with 14GB memory management
 - **Enhanced WebUI**: Comprehensive monitoring platform with real-time SSL and training analytics
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
@@ -30,7 +30,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Real-Time SSL Monitoring**: WebUI dashboard with SSL head performance tracking
 
 ### Advanced Architecture
-- **53.2M Parameters**: ResNet-24 with 320 channels, 24 blocks, 20 attention heads
+- **44.2M Parameters**: ResNet-22 with 288 channels, 22 blocks, 18 attention heads
 - **Chess-Specific Attention**: Optimized attention mechanisms for chess patterns
 - **SSL Foundation**: Complete SSL integration with multi-head architecture
 - **Memory Optimized**: 14GB MPS limit with efficient SSL processing
@@ -74,9 +74,9 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 
 ```
 Matrix0/
-├── azchess/                    # Core package (53.2M parameter model with SSL)
+├── azchess/                    # Core package (44.2M parameter model with SSL)
 │   ├── model/                  # Neural network architecture
-│   │   └── resnet.py          # ResNet-24 with attention and complete SSL integration
+│   │   └── resnet.py          # ResNet-22 with attention and complete SSL integration
 │   ├── ssl_algorithms.py      # Advanced SSL algorithms (threat, pin, fork, control)
 │   ├── selfplay/               # Self-play generation with SSL data augmentation
 │   ├── mcts/                   # Monte Carlo Tree Search engine
@@ -116,14 +116,19 @@ Matrix0/
 ```bash
 git clone https://github.com/lukifer23/Matrix0.git
 cd Matrix0
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+/opt/homebrew/bin/python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+make doctor
 ```
+
+Use `.venv/bin/python` for local runs so training, benchmarks, and tests use
+the same supported Python and dependency set. `make env-info` prints Python,
+PyTorch, MPS, selected device, and current model details for baseline records.
 
 ### 2. Initial Model Checkpoint
 ```bash
-python create_v2_checkpoint.py  # Creates optimized 53M parameter model
+.venv/bin/python create_v2_checkpoint.py  # Creates optimized 44.2M parameter model
 ```
 
 ### 3. Start Training (Current Session)
@@ -190,6 +195,9 @@ tail -f logs/matrix0.log
 # Model information and parameter count
 python -m azchess.tools.model_info
 
+# Tiny local learning loop: self-play -> train -> eval JSON
+python -m azchess.tools.bench_local_loop --config config.yaml
+
 # Inference performance benchmarking
 python -m azchess.tools.bench_inference
 
@@ -198,6 +206,12 @@ python coreml_export.py --checkpoint checkpoints/best.pt --output matrix0.mlmode
 
 # MCTS performance benchmarking
 python -m azchess.tools.bench_mcts
+
+# Compare two checkpoints on local replay/self-play data
+python -m azchess.tools.eval_checkpoints \
+  --model-a checkpoints/candidate.pt \
+  --model-b checkpoints/best.pt \
+  --data-dir data
 
 # Enhanced Benchmark System (full Matrix0 capabilities)
 python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml
@@ -244,7 +258,7 @@ Use this to iterate quickly on data/algorithms, then switch back to the main con
 
 ## Current Training Status
 
-The project runs a 53M parameter ResNet‑24 with five SSL heads and an optimized data pipeline. Training metrics and update history are tracked in [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md).
+The project runs a 44.2M parameter ResNet-22 with five SSL heads and an optimized data pipeline. Training metrics and update history are tracked in [docs/CURRENT_STATUS_SUMMARY.md](docs/CURRENT_STATUS_SUMMARY.md).
 
 ## Development
 

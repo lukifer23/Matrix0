@@ -15,7 +15,7 @@ This document outlines the plan for creating a **secondary optimized model** tra
 
 ### Hybrid Architecture Benefits
 
-- **Primary Model (53M)**: General chess knowledge, self-play + external data
+- **Primary Model (44.2M)**: General chess knowledge, self-play + external data
 - **Secondary Model (24M)**: Perfect tactical analysis, Stockfish games only
 - **Ensemble Evaluation**: Combine strengths for maximum performance
 - **Adaptive Selection**: Use specialist for complex tactical positions
@@ -287,7 +287,7 @@ class AdaptiveSelector:
 ### Inference Performance
 
 #### Speed Comparison
-- **Primary Model**: 100% baseline (53M parameters)
+- **Primary Model**: 100% baseline (44.2M parameters)
 - **Secondary Model**: 140-160% faster inference
 - **Ensemble**: 80-90% of primary speed (with better accuracy)
 

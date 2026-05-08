@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import time
-from pathlib import Path
 
-import numpy as np
 import torch
 
 from ..config import Config, select_device
@@ -48,6 +47,15 @@ def run_benchmark(cfg_path: str = "config.yaml", batches=(1, 8, 32), steps: int 
         print(f"batch={bsz:>3} | {items/dt:.1f} states/s | {iters/dt:.1f} it/s | time={dt:.3f}s")
 
 
-if __name__ == "__main__":
-    run_benchmark()
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Matrix0 inference throughput benchmark")
+    parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--batches", type=str, default="1,8,32", help="Comma-separated batch sizes")
+    parser.add_argument("--steps", type=int, default=200)
+    args = parser.parse_args()
+    batches = tuple(int(part) for part in args.batches.split(",") if part.strip())
+    run_benchmark(args.config, batches=batches, steps=args.steps)
 
+
+if __name__ == "__main__":
+    main()

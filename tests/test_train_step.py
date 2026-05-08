@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from azchess.training.train import POLICY_SHAPE, apply_policy_mask, train_step
+from azchess.training.train import POLICY_SHAPE, apply_policy_mask, legal_policy_mass_loss, train_step
 
 
 class DummyModel(nn.Module):
@@ -56,3 +56,25 @@ def test_apply_policy_mask():
     masked = apply_policy_mask(p, pi)
     assert masked[0, 2] < -1e8  # illegal move masked
     assert (masked[1] < -1e8).all()  # all-zero targets -> fully masked
+
+
+def test_legal_policy_mass_loss_penalizes_illegal_probability():
+    p = torch.tensor([[0.0, 0.0, 0.0], [4.0, -4.0, -4.0]], dtype=torch.float32)
+    legal = torch.tensor([[True, False, False], [True, False, False]])
+
+    loss = legal_policy_mass_loss(p, legal)
+
+    assert loss.item() > 0.0
+    assert loss.item() < 1.0
+
+
+def test_legal_policy_mass_loss_backprops_to_illegal_logits():
+    p = torch.zeros((1, 4), dtype=torch.float32, requires_grad=True)
+    legal = torch.tensor([[True, False, False, False]])
+
+    loss = legal_policy_mass_loss(p, legal)
+    loss.backward()
+
+    assert p.grad is not None
+    assert p.grad[0, 0].item() < 0.0
+    assert p.grad[0, 1:].sum().item() > 0.0

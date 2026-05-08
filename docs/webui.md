@@ -412,7 +412,7 @@ For complete API documentation, visit `http://127.0.0.1:8000/docs` when the serv
 - **Real-time Monitoring**: ✅ **ENHANCED** - WebUI provides comprehensive monitoring
 
 ### Model Architecture
-- **Parameters**: 53M+ (ResNet-24 with complete SSL integration)
+- **Parameters**: 44.2M (ResNet-22 with complete SSL integration)
 - **SSL Heads**: **5 production SSL heads** (piece, threat, pin, fork, control) active; pawn_structure and king_safety heads implemented but disabled by default
 - **SSL Parameters**: Dedicated SSL parameters with weighted loss functions for production heads and reserved capacity for experimental ones
 - **Memory Usage**: 14GB MPS limit with SSL processing optimization

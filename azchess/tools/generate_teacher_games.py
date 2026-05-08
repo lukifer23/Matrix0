@@ -230,14 +230,11 @@ def _collect_position(board: chess.Board,
         except Exception:
             return None
 
-    # Note: Value target (z) will be set later based on actual game outcome
-    # For now, we include a placeholder that's not used
-    z_placeholder = np.array([0.0], dtype=np.float32)
-
     return {
         's': enc.astype(np.float32, copy=False),
         'pi': pi,
-        'z': z_placeholder,  # Will be corrected based on game outcome
+        'z': np.array([_cp_to_value(cp_before)], dtype=np.float32),
+        'value_weight': np.array([1.0], dtype=np.float32),
         'legal_mask': legal_mask,
         'meta': np.array([model_entropy, cp_before, teacher_cp_best, cp_after, cp_swing, float(topk_hit)], dtype=np.float32),
         **ssl_targets  # Include all SSL targets
@@ -332,23 +329,12 @@ def run(cfg: TeacherConfig):
                 legals.sort(key=lambda x: x[2], reverse=True)
                 board.push(legals[0][0])
 
-            # Determine game outcome and correct value targets
-            game_result = board.result()  # Returns "1-0", "0-1", or "1/2-1/2"
-
-            # Convert game result to value targets for each position
             for pos in game_positions:
-                if game_result == "1-0":  # White wins
-                    z_value = 1.0 if pos.side_to_move else -1.0
-                elif game_result == "0-1":  # Black wins
-                    z_value = -1.0 if pos.side_to_move else 1.0
-                else:  # Draw
-                    z_value = 0.0
-
-                # Create final entry with corrected value target
                 entry = {
                     's': pos.position_data['s'],
                     'pi': pos.position_data['pi'],
-                    'z': np.array([z_value], dtype=np.float32),
+                    'z': pos.position_data['z'],
+                    'value_weight': pos.position_data['value_weight'],
                     'legal_mask': pos.position_data['legal_mask']
                 }
 
@@ -372,6 +358,7 @@ def run(cfg: TeacherConfig):
                 pi = np.stack([x['pi'] for x in collected], axis=0)
                 z = np.concatenate([x['z'] for x in collected], axis=0)
                 lm = np.stack([x['legal_mask'] for x in collected], axis=0)
+                value_weight = np.concatenate([x['value_weight'] for x in collected], axis=0)
                 meta = np.stack(sample_meta, axis=0)
 
                 # Extract SSL targets
@@ -388,6 +375,7 @@ def run(cfg: TeacherConfig):
                 # Save with SSL targets
                 save_dict = {
                     's': s, 'pi': pi, 'z': z, 'legal_mask': lm,
+                    'value_weight': value_weight,
                     'meta': meta,
                     'meta_keys': np.array(['entropy','cp_before','cp_best','cp_after','cp_swing','topk_hit'])
                 }
@@ -461,4 +449,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

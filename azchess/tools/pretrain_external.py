@@ -151,9 +151,15 @@ def _evaluate_quick_stockfish(model: PolicyValueNet, dm: DataManager, device: st
     with torch.no_grad():
         for _ in range(batches):
             try:
-                s_np, pi_np, z_np, _lm = next(batch_iter)
+                batch = next(batch_iter)
             except StopIteration:
                 break
+            if isinstance(batch, dict):
+                s_np = batch["s"]
+                pi_np = batch["pi"]
+                z_np = batch["z"]
+            else:
+                s_np, pi_np, z_np = batch[:3]
             s = torch.from_numpy(s_np).to(device)
             pi = torch.from_numpy(pi_np).to(device)
             z = torch.from_numpy(z_np).to(device)
@@ -220,6 +226,7 @@ def main():
     ap.add_argument("--accum-steps", type=int, default=1, help="Gradient accumulation steps")
     ap.add_argument("--ssl-every-n", type=int, default=1, help="Compute SSL every N steps (1 = every step)")
     ap.add_argument("--ssl-chunk-size", type=int, default=0, help="Chunked SSL batch size (0 = full batch)")
+    ap.add_argument("--legal-mass-weight", type=float, default=0.0, help="Weight for unmasked legal policy probability mass loss")
     args = ap.parse_args()
 
     cfg = Config.load(args.config)
@@ -419,7 +426,8 @@ def main():
                     policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=current_step,
                     ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
                     precision=("fp16" if scaler is not None else "fp32"),
-                    ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size)
+                    ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size),
+                    legal_mass_weight=float(args.legal_mass_weight)
                 )
                 if loss_values is None:
                     continue
@@ -509,7 +517,8 @@ def main():
                 policy_masking=True, ssl_warmup_steps=int(args.ssl_warmup_steps), current_step=step,
                 ssl_target_weight=1.0, use_wdl=False, wdl_weight=0.0, wdl_margin=0.25,
                 precision=("fp16" if scaler is not None else "fp32"),
-                ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size)
+                ssl_every_n=int(args.ssl_every_n), ssl_chunk_size=int(args.ssl_chunk_size),
+                legal_mass_weight=float(args.legal_mass_weight)
             )
             if loss_values is None:
                 continue

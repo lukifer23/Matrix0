@@ -7,6 +7,7 @@ import threading
 import time
 from collections import OrderedDict
 import copy
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -100,6 +101,7 @@ class MCTSConfig:
     parallel_simulations: bool = True # Enable parallel MCTS simulations
     inference_batch_size: int = 96    # Unified batch size for all inference operations (MPS optimized)
     simulation_batch_size: int = 96   # Legacy alias for inference_batch_size (deprecated, use inference_batch_size)
+    batch_size: Optional[int] = None   # Legacy test/config alias for inference_batch_size
     tree_parallelism: bool = True     # Enable tree-level parallelism
     # Optional: Playout cap randomization to diversify self-play
     playout_random_frac: float = 0.0  # 0.0 disables; e.g., 0.3 → ±30%
@@ -143,73 +145,58 @@ class Node:
         
         logits = p_logits.astype(np.float32, copy=False)
 
-        # Handle edge cases: NaN or infinite values
         if np.any(np.isnan(logits)) or np.any(np.isinf(logits)):
-            # Fallback to uniform distribution
-            lp = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
+            raise ValueError("Policy logits contain NaN/Inf during MCTS expansion")
+
+        # Convert logits to probabilities. Precompute legal move indices once.
+        if encoder is not None:
+            idxs = [encoder.encode_move(board, m) for m in legal_moves]
         else:
-            # Convert logits to probabilities
-            # Precompute legal move indices once
-            if encoder is not None:
-                idxs = [encoder.encode_move(board, m) for m in legal_moves]
-            else:
-                idxs = [move_to_index(board, m) for m in legal_moves]
+            idxs = [move_to_index(board, m) for m in legal_moves]
 
+        if legal_only:
+            # Softmax over legal indices only
+            from .utils.tensor import ensure_contiguous_tensor as _ensure_contiguous_tensor
+            sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
+            sel = torch.softmax(sel, dim=-1).numpy()
+            dist = sel  # probability distribution over legal moves
+        else:
+            from .utils.tensor import ensure_contiguous_tensor as _ensure_contiguous_tensor
+            probs = _ensure_contiguous_tensor(torch.from_numpy(logits), "policy_logits")
+            probs = torch.softmax(probs, dim=-1).numpy()
+            dist = probs  # full-policy distribution
+
+        # Check if policy is too uniform (degenerate case) using the active distribution
+        policy_entropy = -np.sum(dist * np.log(dist + 1e-8))
+        max_entropy = np.log(max(1, len(legal_moves)))
+        entropy_ratio = policy_entropy / max(1e-9, max_entropy)
+            
+        # If too uniform, add small noise and renormalize on the active distribution (when allowed)
+        if allow_noise and entropy_ratio > 0.9:
+            logger.debug(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
+            noise = np.random.normal(0, 0.1, dist.shape)
+            dist = dist + noise
+            dist = np.maximum(dist, 1e-8)
+            dist = dist / dist.sum()
+            from .utils.tensor import ensure_contiguous_array as _ensure_contiguous_array
+            dist = _ensure_contiguous_array(dist, "noisy_dist")
+
+        legal_priors: List[float] = []
+        for i, move in enumerate(legal_moves):
             if legal_only:
-                # Softmax over legal indices only
-                from .utils.tensor import ensure_contiguous_tensor as _ensure_contiguous_tensor
-                sel = _ensure_contiguous_tensor(torch.from_numpy(logits[idxs]), "legal_logits")
-                sel = torch.softmax(sel, dim=-1).numpy()
-                dist = sel  # probability distribution over legal moves
+                prior = float(dist[i])
             else:
-                from .utils.tensor import ensure_contiguous_tensor as _ensure_contiguous_tensor
-                probs = _ensure_contiguous_tensor(torch.from_numpy(logits), "policy_logits")
-                probs = torch.softmax(probs, dim=-1).numpy()
-                dist = probs  # full-policy distribution
+                prior = float(dist[idxs[i]])
+            if not np.isfinite(prior) or prior < 0:
+                raise ValueError(f"Invalid prior for move {move}: {prior}")
+            legal_priors.append(prior)
 
-            # Check if policy is too uniform (degenerate case) using the active distribution
-            try:
-                policy_entropy = -np.sum(dist * np.log(dist + 1e-8))
-                max_entropy = np.log(max(1, len(legal_moves)))
-                entropy_ratio = policy_entropy / max(1e-9, max_entropy)
-            except Exception:
-                entropy_ratio = 0.0
-            
-            # If too uniform, add small noise and renormalize on the active distribution (when allowed)
-            if allow_noise and entropy_ratio > 0.9:
-                logger.debug(f"Policy too uniform (entropy ratio: {entropy_ratio:.3f}), adding exploration noise")
-                noise = np.random.normal(0, 0.1, dist.shape)
-                dist = dist + noise
-                dist = np.maximum(dist, 1e-8)
-                dist = dist / dist.sum()
-                from .utils.tensor import ensure_contiguous_array as _ensure_contiguous_array
-                dist = _ensure_contiguous_array(dist, "noisy_dist")
-
-            legal_priors: List[float] = []
-            for i, move in enumerate(legal_moves):
-                try:
-                    if legal_only:
-                        prior = float(dist[i])
-                        move_idx = idxs[i]
-                    else:
-                        move_idx = idxs[i]
-                        prior = float(dist[move_idx])
-                    # Ensure prior is valid
-                    if np.isnan(prior) or np.isinf(prior) or prior < 0:
-                        prior = 0.0
-                    legal_priors.append(prior)
-                except Exception:
-                    move_idx = None
-                    legal_priors.append(0.0)
-
-            lp = np.asarray(legal_priors, dtype=np.float32)
-            total_lp = lp.sum()
-            
-            # Ensure we have valid probabilities
-            if total_lp > 0 and not np.isnan(total_lp) and not np.isinf(total_lp):
-                lp = lp / total_lp
-            else:
-                lp = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
+        lp = np.asarray(legal_priors, dtype=np.float32)
+        total_lp = lp.sum()
+        if total_lp > 0 and np.isfinite(total_lp):
+            lp = lp / total_lp
+        else:
+            raise ValueError(f"Invalid legal prior sum during MCTS expansion: {total_lp}")
 
         for (move, idx), prior in zip(zip(legal_moves, idxs), lp):
             child = Node(prior=float(prior), move=move, parent=self)
@@ -238,9 +225,16 @@ class Node:
         if not legal_moves:
             return
         pri = legal_priors.astype(np.float32, copy=False)
+        if not np.all(np.isfinite(pri)):
+            raise ValueError("Legal priors contain NaN/Inf during MCTS expansion")
         total = float(pri.sum())
-        if not np.isfinite(total) or total <= 0:
-            pri = np.full(len(legal_moves), 1.0 / len(legal_moves), dtype=np.float32)
+        if np.any(pri < 0) or not np.isfinite(total) or total <= 0:
+            shifted = pri - np.max(pri)
+            exps = np.exp(shifted).astype(np.float32)
+            denom = float(exps.sum())
+            if not np.isfinite(denom) or denom <= 0:
+                raise ValueError("Unable to convert legal logits into priors")
+            pri = exps / denom
         else:
             pri = pri / total
         for i, move in enumerate(legal_moves):
@@ -267,7 +261,15 @@ class Node:
 
 
 class MCTS:
-    def __init__(self, model_or_cfg, cfg_or_model, device: str = "cpu", inference_backend=None, num_threads: int = None):
+    def __init__(self, model_or_cfg=None, cfg_or_model=None, device: str = "cpu", inference_backend=None, num_threads: int = None, **kwargs):
+        if "model" in kwargs:
+            model_or_cfg = kwargs.pop("model")
+        if "config" in kwargs:
+            cfg_or_model = kwargs.pop("config")
+        if kwargs:
+            raise TypeError(f"Unexpected MCTS kwargs: {sorted(kwargs.keys())}")
+        if cfg_or_model is None:
+            cfg_or_model = MCTSConfig()
         # Support both argument orders: (model, cfg) and (cfg, model)
         if isinstance(model_or_cfg, MCTSConfig):
             cfg = model_or_cfg
@@ -275,12 +277,18 @@ class MCTS:
         else:
             model = model_or_cfg
             cfg = cfg_or_model
+        if getattr(cfg, "batch_size", None):
+            cfg.inference_batch_size = int(cfg.batch_size)
+            cfg.simulation_batch_size = int(cfg.batch_size)
 
         self.cfg = cfg
         # Convert device string to torch.device object for proper type checking
         self.device = torch.device(device) if isinstance(device, str) else device
-        self.model = model
         self.inference_backend = inference_backend
+        if model is not None and inference_backend is None:
+            model = model.to(self.device)
+            model.eval()
+        self.model = model
         self._enc = MoveEncoder()
         self._tt = {}
         self._tt_lock = threading.Lock()
@@ -418,15 +426,7 @@ class MCTS:
             # Enhanced batched-leaf inference path: always attempt batched collection
             # regardless of thread count. The collector already supports single-thread
             # fallback; this restores batching benefits on MPS where num_threads=1.
-            try:
-                self._run_simulations_parallel_batched(board, root, sims_to_run)
-            except Exception as e:
-                logger.error(f"Batched MCTS failed: {e}, falling back to per-simulation loop")
-                for _ in range(sims_to_run):
-                    t0 = time.time() if timers_enabled else 0.0
-                    self._run_simulation(board, root)
-                    if timers_enabled:
-                        t_expand += (time.time() - t0)
+            self._run_simulations_parallel_batched(board, root, sims_to_run)
 
             visit_counts: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
             
@@ -523,6 +523,7 @@ class MCTS:
         sims_done = 0
         inference_failures = 0
         total_inference_attempts = 0
+        root_eval_values: List[float] = []
         
         # Optimization: For small simulation counts or single-threaded, use sequential collection
         # Threading overhead may outweigh benefits on MPS with GIL
@@ -633,23 +634,19 @@ class MCTS:
                                     logger.error(error_msg)
                                     raise RuntimeError(error_msg) from infer_err
                                 
-                                # Inference failed for this batch - skip it and continue with remaining simulations
-                                logger.warning(f"Inference failed for batch of {len(chunk)} positions (failure {inference_failures}/{total_inference_attempts}): {infer_err}. Skipping batch and continuing.")
-                                sims_done += len(chunk)
-                                continue
+                                raise RuntimeError(
+                                    f"Inference failed for batch of {len(chunk)} positions "
+                                    f"(failure {inference_failures}/{total_inference_attempts}): {infer_err}"
+                                ) from infer_err
 
                             # Validate inference results - skip batch on errors
                             if policies is None or values is None:
-                                logger.warning(f"Inference backend returned None results for batch of {len(chunk)}. Skipping batch.")
-                                sims_done += len(chunk)
-                                continue
+                                raise RuntimeError(f"Inference backend returned None results for batch of {len(chunk)}")
                             if len(policies) != len(chunk) or len(values) != len(chunk):
-                                logger.warning(
+                                raise RuntimeError(
                                     f"Inference result shape mismatch: expected {len(chunk)}, "
-                                    f"got policies={len(policies)}, values={len(values)}. Skipping batch."
+                                    f"got policies={len(policies)}, values={len(values)}"
                                 )
-                                sims_done += len(chunk)
-                                continue
 
                             for (sample, _), policy, value in zip(chunk, policies, values):
                                 node = sample.get("node")
@@ -667,6 +664,7 @@ class MCTS:
 
                                 value_float = float(np.clip(value, -1.0, 1.0))
                                 value_floats.append(value_float)
+                                root_eval_values.append(value_float)
                                 self._backpropagate(sample.get("path", []), value_float)
                         else:
                             # Perform true batched inference directly on the model
@@ -714,16 +712,13 @@ class MCTS:
                                             self._prune_children(node)
                                             self._register_children_in_tt(node, board_pos, skip_lock=True)
                                         value_float = float(np.clip(v, -1.0, 1.0))
-                                    except Exception as infer_err:
-                                        # Skip this sample on error, continue with others in batch
-                                        logger.warning(f"Batched inference expand/backprop failed for sample: {infer_err}. Skipping sample.")
-                                        continue
+                                    except (RuntimeError, ValueError, TypeError) as infer_err:
+                                        raise RuntimeError(f"Batched inference expand/backprop failed: {infer_err}") from infer_err
                                     value_floats.append(value_float)
+                                    root_eval_values.append(value_float)
                                     self._backpropagate(sample.get("path", []), value_float)
-                            except Exception as batched_err:
-                                logger.warning(f"Batched model inference failed for chunk of {len(chunk)}: {batched_err}. Skipping chunk.")
-                                sims_done += len(chunk)
-                                continue
+                            except (RuntimeError, ValueError, TypeError) as batched_err:
+                                raise RuntimeError(f"Batched model inference failed for chunk of {len(chunk)}: {batched_err}") from batched_err
 
                     if value_floats and all(abs(v) < 1e-6 for v in value_floats):
                         logger.warning("Batched MCTS inference produced near-zero values for all samples; verify model behaviour")
@@ -738,6 +733,41 @@ class MCTS:
                     continue
 
             sims_done += batch_n
+
+        if root_eval_values and root.n > 0:
+            root.q = float(np.mean(root_eval_values))
+
+    def _move_to_index(self, move: chess.Move, board: Optional[chess.Board] = None) -> int:
+        return move_to_index(board or chess.Board(), move)
+
+    def _sample_move_from_policy(self, policy: torch.Tensor, legal_moves: List[chess.Move]) -> Tuple[chess.Move, float]:
+        if not legal_moves:
+            return chess.Move.null(), float("-inf")
+        indices = torch.tensor([self._move_to_index(move) for move in legal_moves], dtype=torch.long, device=policy.device)
+        probs = policy.index_select(0, indices).to(dtype=torch.float32)
+        total = probs.sum()
+        if not torch.isfinite(total) or float(total.item()) <= 0.0:
+            probs = torch.full((len(legal_moves),), 1.0 / len(legal_moves), dtype=torch.float32, device=policy.device)
+        else:
+            probs = probs / total
+        try:
+            selected = int(torch.multinomial(probs, 1).item())
+        except RuntimeError:
+            probs_np = probs.detach().cpu().numpy()
+            selected = int(np.random.choice(len(legal_moves), p=probs_np))
+        prob = max(float(probs[selected].detach().cpu().item()), 1e-12)
+        return legal_moves[selected], math.log(prob)
+
+    def _run_simulations_for_root(self, root):
+        visits, policy, value = self.run(root.board)
+        return torch.from_numpy(policy), value
+
+    def search_batch(self, boards: List[chess.Board]):
+        results = []
+        for board in boards:
+            root = SimpleNamespace(board=board)
+            results.append(self._run_simulations_for_root(root))
+        return results
 
     def _collect_leaf_position(self, board, root, leaf_samples, append_lock):
         """Collect the leaf position from a simulation."""
@@ -765,8 +795,7 @@ class MCTS:
                     leaf_samples.append(sample)
         except Exception as e:
             logger.error(f"Position collection error: {e}")
-            # Don't add invalid samples - they'll cause errors downstream
-            # Terminal positions should have been handled above
+            raise RuntimeError(f"Position collection failed: {e}") from e
 
     def _run_simulation(self, board: chess.Board, root: Node):
         """Run a single MCTS simulation with robust error handling."""
@@ -916,7 +945,10 @@ class MCTS:
                         break # Should not happen if children exist
                 
             board.push(best_child.move)
-            node = self._tt_get(board._transposition_key()) or best_child
+            # Preserve edge-local accounting. Replacing this with a
+            # transposition-table node can detach backpropagation from the
+            # root child that actually selected the move.
+            node = best_child
             path.append(node)
             # Mark this edge as in-flight for the batch to diversify subsequent selections
             if inflight_counts is not None:

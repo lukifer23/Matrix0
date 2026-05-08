@@ -1,7 +1,7 @@
 import chess
+import numpy as np
 import torch
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 from azchess.mcts import MCTS, MCTSConfig, Node
 
@@ -22,7 +22,7 @@ class DummyModel(torch.nn.Module):
 
 def test_virtual_loss_reduces_leaf_collisions():
     model = DummyModel()
-    cfg = MCTSConfig(num_simulations=1, batch_size=1)
+    cfg = MCTSConfig(num_simulations=1, batch_size=1, virtual_loss=1.0, selection_jitter=0.0)
     mcts = MCTS(model, cfg)
     board = chess.Board()
 
@@ -34,14 +34,15 @@ def test_virtual_loss_reduces_leaf_collisions():
     modified_logits = np.zeros_like(policy_logits)
     for i, move in enumerate(legal_moves):
         # Find the policy index for this move and set it to a high value
-        modified_logits[i] = 10.0  # Give high prior to first 2 moves
+        modified_logits[mcts._move_to_index(move, board)] = 10.0  # Give high prior to first 2 moves
     root._expand(board, modified_logits)
 
-    # Run two simulations in parallel; without virtual loss they would collide
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(mcts._run_simulation, board, root) for _ in range(2)]
-        for f in futures:
-            f.result()
+    inflight = {}
+    first_node, _, first_board = mcts._select(board.copy(), root, inflight_counts=inflight)
+    second_node, _, second_board = mcts._select(board.copy(), root, inflight_counts=inflight)
 
-    visits = [child.n for child in root.children.values()]
-    assert sorted(visits) == [1, 1], f"Unexpected visit counts: {visits}"
+    assert first_node.move in legal_moves
+    assert second_node.move in legal_moves
+    assert first_node.move != second_node.move
+    assert first_board.peek() == first_node.move
+    assert second_board.peek() == second_node.move

@@ -1,14 +1,18 @@
-PYTHON=python3
+PYTHON?=/opt/homebrew/bin/python3.12
 VENV_DIR=.venv
 PIP=$(VENV_DIR)/bin/pip
 PYTHON_EXEC=$(VENV_DIR)/bin/python
 
-.PHONY: help install setup train selfplay data-stats lint download-lichess cleanup-temp-npz
+.PHONY: help install setup venv doctor env-info local-loop train selfplay data-stats lint download-lichess cleanup-temp-npz
 
 help:
 	@echo "Matrix0 Makefile"
 	@echo "----------------"
 	@echo "setup          - Create virtual environment and install dependencies."
+	@echo "venv           - Create .venv with Python 3.12 and install dependencies."
+	@echo "doctor         - Verify imports, torch, pytest, and MPS availability."
+	@echo "env-info       - Print environment and model information."
+	@echo "local-loop     - Run tiny self-play -> train -> eval benchmark and write JSON."
 	@echo "install        - Install/update Python dependencies."
 	@echo "train          - Run the training module directly."
 	@echo "orchestrator   - Run the complete training pipeline with orchestrator."
@@ -21,6 +25,8 @@ help:
 # Environment and Installation
 setup: $(VENV_DIR)/bin/activate
 
+venv: $(VENV_DIR)/bin/activate
+
 $(VENV_DIR)/bin/activate: requirements.txt
 	test -d $(VENV_DIR) || $(PYTHON) -m venv $(VENV_DIR)
 	$(PIP) install --upgrade pip
@@ -31,6 +37,15 @@ $(VENV_DIR)/bin/activate: requirements.txt
 install:
 	$(PIP) install --upgrade pip
 	$(PIP) install -r requirements.txt
+
+doctor: $(VENV_DIR)/bin/activate
+	$(PYTHON_EXEC) -c "import chess, pytest, torch; from azchess.config import select_device; print('python ok'); print(f'torch={torch.__version__}'); print(f'mps_built={torch.backends.mps.is_built()} mps_available={torch.backends.mps.is_available()}'); print(f'selected_device={select_device(\"auto\")}')"
+
+env-info: $(VENV_DIR)/bin/activate
+	$(PYTHON_EXEC) -m azchess.tools.model_info --config config.yaml
+
+local-loop: $(VENV_DIR)/bin/activate
+	$(PYTHON_EXEC) -m azchess.tools.bench_local_loop --config config.yaml
 
 # Core Workflows
 train:
@@ -68,4 +83,3 @@ lint:
 	$(PIP) install ruff black
 	ruff check .
 	black .
-

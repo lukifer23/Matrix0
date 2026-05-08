@@ -88,19 +88,26 @@ class DataManager:
             'pi': ("pi", "policy", "policy_targets"),
             'z': ("z", "value", "values", "value_targets"),
         }
+        self._discover_untracked_shards()
         
     def _connect(self) -> sqlite3.Connection:
         """Create a SQLite connection with WAL and busy timeout enabled."""
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        c = conn.cursor()
-        try:
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA synchronous=NORMAL")
-            c.execute("PRAGMA busy_timeout=30000")
-        except sqlite3.Error:
-            logger.exception("Failed to set SQLite PRAGMA options")
-            raise
-        return conn
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(6):
+            conn = sqlite3.connect(self.db_path, timeout=60)
+            c = conn.cursor()
+            try:
+                c.execute("PRAGMA busy_timeout=60000")
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("PRAGMA synchronous=NORMAL")
+                return conn
+            except sqlite3.OperationalError as exc:
+                conn.close()
+                if "locked" not in str(exc).lower():
+                    raise
+                last_error = exc
+                time.sleep(0.25 * (attempt + 1))
+        raise sqlite3.OperationalError(f"SQLite database stayed locked while opening {self.db_path}") from last_error
 
     def _init_database(self):
         """Initialize SQLite database for metadata tracking."""
@@ -226,6 +233,36 @@ class DataManager:
 
         checksum = self._calculate_checksum(filepath)
         return filepath, checksum
+
+    def _discover_untracked_shards(self) -> None:
+        """Import existing NPZ shards that are present on disk but missing DB metadata."""
+        existing_paths = set()
+        try:
+            conn = self._connect()
+            cursor = conn.cursor()
+            cursor.execute("SELECT path FROM shards")
+            existing_paths = {row[0] for row in cursor.fetchall()}
+            conn.close()
+        except sqlite3.Error:
+            logger.exception("Failed to inspect existing shard metadata")
+            raise
+
+        for source, directory in (("selfplay", self.selfplay_dir), ("replay", self.replays_dir)):
+            for npz_path in sorted(directory.glob("*.npz")):
+                path_str = str(npz_path)
+                if path_str in existing_paths:
+                    continue
+                try:
+                    with np.load(npz_path, mmap_mode="r") as data:
+                        sample_count = self._infer_sample_count(data)
+                    if sample_count <= 0:
+                        continue
+                    checksum = self._calculate_checksum(npz_path)
+                    created_at = datetime.fromtimestamp(npz_path.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
+                    self._record_shard(path_str, npz_path.stat().st_size, sample_count, created_at, checksum, source=source)
+                    logger.info("Discovered existing shard: %s (%d samples)", npz_path.name, sample_count)
+                except (OSError, ValueError, KeyError) as exc:
+                    logger.warning("Skipping unreadable shard %s: %s", npz_path, exc)
     
     def add_selfplay_data(self, data: Dict[str, np.ndarray], worker_id: int, game_id: int) -> str:
         """Add self-play data to the buffer."""
@@ -274,7 +311,7 @@ class DataManager:
 
         # Separate external and self-play shards for balanced sampling
         external_shards = [s for s in valid_shards if s.source and 'stockfish' in s.source]
-        selfplay_shards = [s for s in valid_shards if s.source == 'selfplay' or not s.source]
+        selfplay_shards = [s for s in valid_shards if s.source in ('selfplay', 'replay') or not s.source]
 
         # Calculate balanced proportions (ensure external data gets fair representation)
         total_external_samples = sum(s.sample_count for s in external_shards)
@@ -319,8 +356,8 @@ class DataManager:
         if external_iter is None and selfplay_iter is None:
             raise RuntimeError("No valid training data available")
 
-        def _collect_samples(sample_iter: Optional[Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]], count: int):
-            collected: List[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]] = []
+        def _collect_samples(sample_iter: Optional[Iterator[Tuple]], count: int):
+            collected: List[Tuple] = []
             if sample_iter is None or count <= 0:
                 return collected, sample_iter
             while len(collected) < count:
@@ -382,22 +419,36 @@ class DataManager:
                 if not legal_mask.flags['C_CONTIGUOUS']:
                     legal_mask = np.ascontiguousarray(legal_mask)
             else:
+                if os.environ.get("MATRIX0_STRICT_DATA") == "1":
+                    raise ValueError("Strict data mode requires legal_mask for every sample in a training batch")
                 legal_mask = None
+
+            value_weight = None
+            if all(len(sample) >= 5 and sample[4] is not None for sample in combined):
+                value_weight = np.ascontiguousarray(
+                    np.array([sample[4] for sample in combined], dtype=np.float32).reshape(-1),
+                    dtype=np.float32,
+                )
 
             states = np.ascontiguousarray(states, dtype=np.float32)
             policies = np.ascontiguousarray(policies, dtype=np.float32)
             values = np.ascontiguousarray(values, dtype=np.float32)
 
-            if legal_mask is not None:
+            if legal_mask is not None and value_weight is not None:
+                yield (states, policies, values, legal_mask, value_weight)
+            elif legal_mask is not None:
                 yield (states, policies, values, legal_mask)
+            elif value_weight is not None:
+                yield (states, policies, values, None, value_weight)
             else:
                 yield (states, policies, values)
 
-    def _iter_shard_samples(self, shards: List[DataShard]) -> Optional[Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]]:
+    def _iter_shard_samples(self, shards: List[DataShard]) -> Optional[Iterator[Tuple]]:
         if not shards:
             return None
 
         shard_paths = [s.path for s in shards]
+        strict_data = os.environ.get("MATRIX0_STRICT_DATA") == "1"
 
         def generator() -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
             local_paths = list(shard_paths)
@@ -408,20 +459,26 @@ class DataManager:
                     try:
                         with np.load(shard_path, mmap_mode='r') as data:
                             states, policies, values, legal_mask_all, ssl_targets = self._extract_training_arrays(data)
+                            value_weight_all = data.get("value_weight", None)
 
                             if values.ndim == 2 and values.shape[1] == 1:
                                 values = values.reshape(values.shape[0])
 
                             if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
+                                if strict_data:
+                                    raise ValueError(f"Invalid shapes in shard {shard_path}")
                                 self._mark_shard_corrupted(shard_path)
                                 continue
                             if not self._validate_dtypes_and_ranges(states, policies, values, str(shard_path)):
+                                if strict_data:
+                                    raise ValueError(f"Invalid dtypes/ranges in shard {shard_path}")
                                 self._mark_shard_corrupted(shard_path)
                                 continue
                             # Validate policy targets for correctness
                             if not self._validate_policy_targets(policies, shard_path):
+                                if strict_data:
+                                    raise ValueError(f"Policy target validation failed for {shard_path}")
                                 logger.warning(f"Policy target validation failed for {shard_path}, marking as potentially corrupted")
-                                # Don't mark as corrupted immediately - may be fixable during training
 
                             legal_mask_processed: Optional[np.ndarray] = None
                             if legal_mask_all is not None:
@@ -431,8 +488,12 @@ class DataManager:
                                     if legal_mask_all.dtype != np.uint8:
                                         legal_mask_all = legal_mask_all.astype(np.uint8, copy=False)
                                     legal_mask_processed = legal_mask_all
-                                except Exception:
+                                except Exception as e:
+                                    if strict_data:
+                                        raise ValueError(f"Failed to process legal_mask in shard {shard_path}: {e}") from e
                                     legal_mask_processed = None
+                            elif strict_data:
+                                raise ValueError(f"Shard missing legal_mask in strict mode: {shard_path}")
 
                             indices = np.random.permutation(len(states))
                             states = np.ascontiguousarray(states[indices])
@@ -453,6 +514,13 @@ class DataManager:
                                     legal_mask_processed = np.ascontiguousarray(legal_mask_processed)
                                 legal_batches = legal_mask_processed
 
+                            value_weight_batches: Optional[np.ndarray] = None
+                            if value_weight_all is not None:
+                                value_weight_batches = np.asarray(value_weight_all, dtype=np.float32)
+                                if value_weight_batches.ndim > 1:
+                                    value_weight_batches = value_weight_batches.reshape(value_weight_batches.shape[0], -1)[:, 0]
+                                value_weight_batches = np.ascontiguousarray(value_weight_batches[indices])
+
                             for key in ssl_targets:
                                 ssl_targets[key] = ssl_targets[key][indices]
 
@@ -461,9 +529,14 @@ class DataManager:
                                 legal_entry: Optional[np.ndarray] = None
                                 if legal_batches is not None:
                                     legal_entry = legal_batches[idx]
-                                yield (states[idx], policies[idx], values[idx], legal_entry)
+                                weight_entry = None
+                                if value_weight_batches is not None:
+                                    weight_entry = value_weight_batches[idx]
+                                yield (states[idx], policies[idx], values[idx], legal_entry, weight_entry)
                     except Exception as e:
                         logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
+                        if strict_data:
+                            raise
                         self._mark_shard_corrupted(shard_path)
                         continue
 
@@ -892,23 +965,7 @@ class DataManager:
 
                         ssl_data = data[ssl_key][:take_samples]
 
-                        # Convert control task from single-channel to 3-channel format
-                        if ssl_key == 'ssl_control':
-                            # Convert from (batch, 8, 8) with values [-1, 0, 1]
-                            # to (batch, 3, 8, 8) with one-hot encoding
-                            batch_size = ssl_data.shape[0]
-                            control_3d = np.zeros((batch_size, 3, 8, 8), dtype=np.float32)
-
-                            # Channel 0: black control (where data == -1)
-                            control_3d[:, 0, :, :] = (ssl_data == -1).astype(np.float32)
-                            # Channel 1: neutral (where data == 0)
-                            control_3d[:, 1, :, :] = (ssl_data == 0).astype(np.float32)
-                            # Channel 2: white control (where data == 1)
-                            control_3d[:, 2, :, :] = (ssl_data == 1).astype(np.float32)
-
-                            collected_ssl[ssl_key].append(control_3d)
-                        else:
-                            collected_ssl[ssl_key].append(ssl_data)
+                        collected_ssl[ssl_key].append(ssl_data)
 
                     samples_needed -= take_samples
                     logger.debug(f"Loaded {take_samples} samples from {os.path.basename(file_path)}")
@@ -1677,7 +1734,7 @@ class DataManager:
                 continue
         return valid
 
-    def get_training_batch_by_source_prefixes(self, batch_size: int, prefixes: List[str]) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    def get_training_batch_by_source_prefixes(self, batch_size: int, prefixes: List[str]) -> Iterator[Dict[str, np.ndarray]]:
         """Yield training batches constrained to shards whose source matches any prefix.
 
         Prefix example: ["stockfish:openings/", "stockfish:king_safety/"]
@@ -1692,6 +1749,7 @@ class DataManager:
             try:
                 with np.load(shard_path, mmap_mode='r') as data:
                     states, policies, values, legal_mask_all, ssl_targets_all = self._extract_training_arrays(data)
+                    value_weight_all = data.get("value_weight", None)
 
                     # Check if this is SSL-enabled data
                     ssl_keys = list(ssl_targets_all.keys())
@@ -1720,23 +1778,7 @@ class DataManager:
                         try:
                             ssl_data = ssl_targets_all[ssl_key]
 
-                            # Convert control task from single-channel to 3-channel format
-                            if ssl_key == 'ssl_control':
-                                # Convert from (batch, 8, 8) with values [-1, 0, 1]
-                                # to (batch, 3, 8, 8) with one-hot encoding
-                                batch_size = ssl_data.shape[0]
-                                control_3d = np.zeros((batch_size, 3, 8, 8), dtype=np.float32)
-
-                                # Channel 0: black control (where data == -1)
-                                control_3d[:, 0, :, :] = (ssl_data == -1).astype(np.float32)
-                                # Channel 1: neutral (where data == 0)
-                                control_3d[:, 1, :, :] = (ssl_data == 0).astype(np.float32)
-                                # Channel 2: white control (where data == 1)
-                                control_3d[:, 2, :, :] = (ssl_data == 1).astype(np.float32)
-
-                                ssl_targets[ssl_key] = control_3d
-                            else:
-                                ssl_targets[ssl_key] = ssl_data
+                            ssl_targets[ssl_key] = ssl_data
 
                         except Exception as e:
                             logger.warning(f"Failed to load SSL target {ssl_key}: {e}")
@@ -1747,6 +1789,11 @@ class DataManager:
                     values = values[indices]
                     if legal_mask_all is not None:
                         legal_mask_all = legal_mask_all[indices]
+                    if value_weight_all is not None:
+                        value_weight_all = np.asarray(value_weight_all, dtype=np.float32)
+                        if value_weight_all.ndim > 1:
+                            value_weight_all = value_weight_all.reshape(value_weight_all.shape[0], -1)[:, 0]
+                        value_weight_all = value_weight_all[indices]
 
                     # Shuffle SSL targets
                     for ssl_key in ssl_targets:
@@ -1787,7 +1834,17 @@ class DataManager:
                         if batch_values.dtype != np.float32:
                             batch_values = batch_values.astype(np.float32, copy=False)
                         if len(batch_states) == batch_size:
-                            yield batch_states, batch_policies, batch_values, batch_legal
+                            out: Dict[str, np.ndarray] = {
+                                "s": batch_states,
+                                "pi": batch_policies,
+                                "z": batch_values,
+                            }
+                            if batch_legal is not None:
+                                out["legal_mask"] = batch_legal
+                            if value_weight_all is not None:
+                                out["value_weight"] = np.ascontiguousarray(value_weight_all[i:i+batch_size], dtype=np.float32)
+                            out.update(batch_ssl_targets)
+                            yield out
             except Exception as e:
                 logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
                 self._mark_shard_corrupted(shard_path)

@@ -38,6 +38,7 @@ from azchess.utils import (add_memory_alert_callback, clear_memory_cache,
                            log_tensor_stats, remove_memory_alert_callback,
                            safe_config_get, start_memory_monitoring,
                            stop_memory_monitoring)
+from azchess.utils.env_info import log_environment_info
 
 # Setup logging
 logger = setup_logging(level=logging.INFO)
@@ -72,21 +73,34 @@ def apply_policy_mask(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tenso
     Any logits corresponding to illegal moves are set to a large negative value.
     If no legal_mask is provided, falls back to pi > 0 for compatibility.
     """
-    try:
-        with torch.no_grad():
-            if legal_mask is not None:
-                # Use actual board legal moves
-                mask_to_use = legal_mask.bool()
-            else:
-                # Fallback to target policy (legacy behavior)
-                mask_to_use = pi > 0
+    with torch.no_grad():
+        if legal_mask is not None:
+            mask_to_use = legal_mask.bool()
+        else:
+            mask_to_use = pi > 0
 
-            valid_rows = mask_to_use.any(dim=1, keepdim=True)
-            keep_mask = valid_rows & mask_to_use
-        return torch.where(keep_mask, p, torch.full_like(p, -1e9))
-    except Exception as e:
-        logger.error(f"Policy masking failed: {e}")
-        return p
+        valid_rows = mask_to_use.any(dim=1, keepdim=True)
+        keep_mask = valid_rows & mask_to_use
+    return torch.where(keep_mask, p, torch.full_like(p, -1e9))
+
+
+def legal_policy_mass_loss(p: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
+    """Penalize raw policy probability assigned outside legal moves."""
+    if legal_mask is None:
+        return torch.zeros((), device=p.device, dtype=p.dtype)
+    if legal_mask.dim() == 1:
+        legal_mask = legal_mask.view(-1, p.shape[1])
+    if legal_mask.shape != p.shape:
+        raise ValueError(f"Legal mask shape mismatch for mass loss: mask={legal_mask.shape}, policy={p.shape}")
+    legal = legal_mask.to(device=p.device, dtype=torch.bool)
+    has_legal = legal.any(dim=1)
+    if not bool(has_legal.any().item()):
+        return torch.zeros((), device=p.device, dtype=p.dtype)
+    probs = torch.softmax(p, dim=1)
+    legal_mass = (probs * legal.to(dtype=probs.dtype)).sum(dim=1)
+    legal_mass = legal_mass[has_legal].clamp_min(1e-8)
+    return -torch.log(legal_mass).mean()
+
 
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
@@ -96,7 +110,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                ssl_targets_provider: str = "auto",
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16",
-               ssl_every_n: int = 1, ssl_chunk_size: int = 0):
+               ssl_every_n: int = 1, ssl_chunk_size: int = 0, legal_mass_weight: float = 0.0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -106,13 +120,17 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     model.train()
     # Support batches as tuple/list (s, pi, z[, legal_mask]) or dict with optional 'legal_mask'
     legal_mask_np = None
+    value_weight_np = None
     if isinstance(batch, dict):
         s = batch['s']
         pi = batch['pi']
         z = batch['z']
         legal_mask_np = batch.get('legal_mask', None)
+        value_weight_np = batch.get('value_weight', None)
     else:
-        if len(batch) == 4:
+        if len(batch) >= 5:
+            s, pi, z, legal_mask_np, value_weight_np = batch[:5]
+        elif len(batch) == 4:
             s, pi, z, legal_mask_np = batch
         else:
             s, pi, z = batch
@@ -120,54 +138,63 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # PERFORMANCE PROFILING: Data preparation
     data_prep_start = time.time()
 
-    # Convert numpy arrays to PyTorch tensors on CPU
-    s = torch.from_numpy(s)
-    pi = torch.from_numpy(pi)
-    z = torch.from_numpy(z)
+    # DataLoader workers may deliver tensors after default collation, while
+    # direct DataManager paths deliver NumPy arrays.
+    s = s if torch.is_tensor(s) else torch.from_numpy(s)
+    pi = pi if torch.is_tensor(pi) else torch.from_numpy(pi)
+    z = z if torch.is_tensor(z) else torch.from_numpy(z)
+    if value_weight_np is not None:
+        value_weight = value_weight_np if torch.is_tensor(value_weight_np) else torch.from_numpy(np.asarray(value_weight_np, dtype=np.float32))
+    else:
+        value_weight = torch.ones_like(z, dtype=torch.float32)
+
+    try:
+        policy_size = int(getattr(getattr(model, 'cfg', None), 'policy_size', 4672))
+    except Exception:
+        policy_size = 4672
+
+    try:
+        if s.shape[0] != pi.shape[0] or s.shape[0] != z.shape[0]:
+            raise RuntimeError(f"Batch size mismatch: states={s.shape[0]}, policy={pi.shape[0]}, values={z.shape[0]}")
+        if pi.ndim != 2 or pi.shape[1] != policy_size:
+            got = pi.shape[1] if pi.ndim >= 2 else tuple(pi.shape)
+            raise RuntimeError(f"Policy tensor shape mismatch: expected {policy_size}, got {got}")
+    except Exception as e:
+        logger.error(f"Tensor validation failed: {e}")
+        logger.error(f"States shape: {s.shape}, Policy shape: {pi.shape}, Values shape: {z.shape}")
+        raise
 
     # Validate and normalize policy targets to form valid probability distributions.
     # External curriculum shards sometimes contain multi-hot or count-based targets.
-    try:
-        if pi.dtype != torch.float32:
-            pi = pi.to(dtype=torch.float32)
+    if pi.dtype != torch.float32:
+        pi = pi.to(dtype=torch.float32)
         
-        # Validate policy targets before normalization
-        row_sum = pi.sum(dim=1, keepdim=True)
-        invalid_rows = (row_sum <= 0).any()
-        has_nan = torch.isnan(pi).any()
-        has_inf = torch.isinf(pi).any()
-        
-        if invalid_rows or has_nan or has_inf:
-            if current_step % 100 == 0:  # Log periodically to avoid spam
-                logger.warning(
-                    f"Invalid policy targets detected: invalid_rows={invalid_rows}, "
-                    f"has_nan={has_nan}, has_inf={has_inf}. Normalizing."
-                )
-        
-        # Normalize: preserve zeros for illegal moves, only normalize valid rows
-        if (row_sum <= 0).any():
-            # For rows with zero sum, keep as-is (likely all zeros for illegal positions)
-            # Only normalize rows with positive sum
-            valid_mask = (row_sum > 0).squeeze(1)
-            if valid_mask.any():
-                pi[valid_mask] = pi[valid_mask] / row_sum[valid_mask]
-        else:
-            pi = pi / row_sum
-        
-        # Final validation: ensure no NaN/Inf after normalization
-        if torch.isnan(pi).any() or torch.isinf(pi).any():
-            logger.error("Policy targets contain NaN/Inf after normalization, zeroing invalid rows")
-            invalid_mask = torch.isnan(pi) | torch.isinf(pi)
-            pi[invalid_mask] = 0.0
-            # Renormalize valid rows
-            row_sum = pi.sum(dim=1, keepdim=True)
-            valid_mask = (row_sum > 0).squeeze(1)
-            if valid_mask.any():
-                pi[valid_mask] = pi[valid_mask] / row_sum[valid_mask]
-    except Exception as e:
-        logger.error(f"Policy normalization failed: {e}")
-        # Fallback: will use legal mask if available after it's loaded below
-        pass
+    # Validate policy targets before normalization
+    row_sum = pi.sum(dim=1, keepdim=True)
+    invalid_rows = (row_sum <= 0).any()
+    has_nan = torch.isnan(pi).any()
+    has_inf = torch.isinf(pi).any()
+    
+    if invalid_rows or has_nan or has_inf:
+        raise ValueError(
+            f"Invalid policy targets detected before normalization: "
+            f"invalid_rows={bool(invalid_rows.item())}, "
+            f"has_nan={bool(has_nan.item())}, has_inf={bool(has_inf.item())}"
+        )
+    
+    # Normalize: preserve zeros for illegal moves, only normalize valid rows
+    if (row_sum <= 0).any():
+        # For rows with zero sum, keep as-is (likely all zeros for illegal positions)
+        # Only normalize rows with positive sum
+        valid_mask = (row_sum > 0).squeeze(1)
+        if valid_mask.any():
+            pi[valid_mask] = pi[valid_mask] / row_sum[valid_mask]
+    else:
+        pi = pi / row_sum
+    
+    # Final validation: ensure no NaN/Inf after normalization
+    if torch.isnan(pi).any() or torch.isinf(pi).any():
+        raise ValueError("Policy targets contain NaN/Inf after normalization")
     
     # Load and validate legal mask
     legal_mask_t = None
@@ -186,45 +213,32 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             
             # Validate legal mask: ensure it matches policy shape
             if legal_mask_t.shape != pi.shape:
-                if current_step % 100 == 0:
-                    logger.warning(
-                        f"Legal mask shape mismatch: mask={legal_mask_t.shape}, policy={pi.shape}. "
-                        f"Reshaping or ignoring mask."
-                    )
                 if legal_mask_t.numel() == pi.numel():
                     legal_mask_t = legal_mask_t.view(pi.shape)
                 else:
-                    legal_mask_t = None
+                    raise ValueError(f"Legal mask shape mismatch: mask={legal_mask_t.shape}, policy={pi.shape}")
             
             # Validate: ensure at least one legal move per position
             if legal_mask_t is not None:
                 legal_counts = legal_mask_t.sum(dim=1)
                 zero_legal = (legal_counts == 0).any()
-                if zero_legal and current_step % 100 == 0:
-                    logger.warning(f"Some positions have zero legal moves in mask (step {current_step})")
-        except Exception as e:
-            logger.warning(f"Failed to load legal mask: {e}")
-            legal_mask_t = None
+                if zero_legal:
+                    raise ValueError(f"Some positions have zero legal moves in mask (step {current_step})")
+        except (TypeError, ValueError, RuntimeError) as e:
+            raise ValueError(f"Failed to load legal mask: {e}") from e
+
+    if policy_masking and legal_mass_weight > 0.0 and legal_mask_t is None:
+        raise ValueError("legal_mass_weight > 0 requires legal_mask in every training batch")
     
-    # If policy normalization failed and we have legal mask, use fallback
+    # If policy normalization failed, fail hard instead of synthesizing labels.
     if legal_mask_t is not None and (pi.sum(dim=1) <= 0).any():
-        logger.warning("Policy normalization failed, using legal mask fallback")
-        pi = torch.zeros_like(pi)
-        for i in range(pi.shape[0]):
-            legal_indices = legal_mask_t[i].nonzero(as_tuple=False).squeeze(1)
-            if len(legal_indices) > 0:
-                # Uniform over legal moves
-                pi[i, legal_indices] = 1.0 / len(legal_indices)
+        raise ValueError("Policy targets contain zero-sum rows after normalization")
     # Normalize common shape variant for values: (N,) or (N,1) → (N,)
     if z.dim() == 2 and z.size(1) == 1:
         z = z.reshape(z.size(0))
+    if value_weight.dim() > 1:
+        value_weight = value_weight.reshape(value_weight.shape[0], -1)[:, 0]
     
-    # Determine dynamic policy size from model config (fallback to legacy 4672)
-    try:
-        policy_size = int(getattr(getattr(model, 'cfg', None), 'policy_size', 4672))
-    except Exception:
-        policy_size = 4672
-
     # Validate tensor shapes with detailed error messages
     try:
         if s.shape[0] != pi.shape[0] or s.shape[0] != z.shape[0]:
@@ -266,11 +280,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     logger.debug(f"Using precision: {precision}, autocast: {use_autocast}, dtype: {_amp_dtype}, device: {device_type}")
 
     # Move tensors to target device once
-    s = s.to(device, non_blocking=True)
-    pi = pi.to(device, non_blocking=True)
-    z = z.to(device, non_blocking=True)
+    s = s.to(device, non_blocking=True).contiguous()
+    pi = pi.to(device).contiguous().clone()
+    z = z.to(device).contiguous()
+    value_weight = value_weight.to(device).contiguous().to(dtype=torch.float32)
     if legal_mask_t is not None:
-        legal_mask_t = legal_mask_t.to(device, non_blocking=True)
+        legal_mask_t = legal_mask_t.to(device).contiguous().clone()
 
     # SSRL temporarily disabled for stability and performance
     enable_ssrl = False
@@ -288,7 +303,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             from azchess.encoding import build_horizontal_flip_permutation
             perm = build_horizontal_flip_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
-            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
+            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).contiguous()
             if legal_mask_t is not None:
                 lm_sh = torch.flip(legal_mask_t.view(-1, *POLICY_SHAPE), dims=[2]).contiguous()
                 legal_mask_t = lm_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).to(dtype=torch.bool)
@@ -299,10 +314,21 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             from azchess.encoding import build_rotate180_permutation
             perm = build_rotate180_permutation()
             perm_t = torch.as_tensor(perm, device=pi_sh.device, dtype=torch.long)
-            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE))
+            pi = pi_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).contiguous()
             if legal_mask_t is not None:
                 lm_sh = torch.flip(legal_mask_t.view(-1, *POLICY_SHAPE), dims=[1, 2]).contiguous()
                 legal_mask_t = lm_sh.index_select(-1, perm_t).view(-1, np.prod(POLICY_SHAPE)).to(dtype=torch.bool)
+
+    with torch.no_grad():
+        post_aug_row_sum = pi.sum(dim=1)
+        if torch.isnan(pi).any() or torch.isinf(pi).any() or (post_aug_row_sum <= 0).any():
+            raise ValueError(
+                "Policy targets invalid after device transfer/augmentation: "
+                f"row_sum_min={float(post_aug_row_sum.min().item())} "
+                f"row_sum_max={float(post_aug_row_sum.max().item())} "
+                f"nan={bool(torch.isnan(pi).any().item())} "
+                f"inf={bool(torch.isinf(pi).any().item())}"
+            )
 
     # PERFORMANCE PROFILING: Start SSL target creation
     ssl_target_start = time.time()
@@ -317,7 +343,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             for key, value in batch.items():
                 if key.startswith('ssl_'):
                     task_name = key[4:]  # Remove 'ssl_' prefix
-                    ssl_targets[task_name] = torch.from_numpy(value).to(device=device, dtype=torch.float32)
+                    target = value if torch.is_tensor(value) else torch.from_numpy(value)
+                    ssl_targets[task_name] = target.to(device=device, dtype=torch.float32)
             logger.debug(f"Loaded pre-computed SSL targets: {list(ssl_targets.keys())}")
         else:
             # Fallback: generate SSL targets during training
@@ -326,9 +353,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 try:
                     ssl_targets = model.create_ssl_targets(s)
                     logger.debug("Generated SSL targets via model API")
-                except Exception as e:
-                    logger.warning(f"SSL target creation failed via model API: {e}; will try simple provider if available")
-                    ssl_targets = None
+                except (RuntimeError, ValueError, TypeError) as e:
+                    raise RuntimeError(f"SSL target creation failed via model API: {e}") from e
             # Optional simple provider (reconstruct board from planes)
             if ssl_targets is None and use_simple:
                 try:
@@ -339,13 +365,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     # Convert to torch tensors on current device
                     ssl_targets = {k: torch.from_numpy(v).to(device=s.device, dtype=torch.float32) for k, v in simple.items()}
                     logger.debug("Generated SSL targets via simple provider")
-                except Exception as e:
-                    logger.warning(f"Simple SSL target provider failed: {e}; disabling SSL for this batch")
-                    ssl_targets = None
-                    enable_ssl = False
+                except (RuntimeError, ValueError, TypeError) as e:
+                    raise RuntimeError(f"Simple SSL target provider failed: {e}") from e
             elif ssl_targets is None and not hasattr(model, 'create_ssl_targets'):
-                logger.warning("Model does not provide create_ssl_targets; no SSL targets available for this batch")
-                enable_ssl = False
+                    raise RuntimeError("Model does not provide create_ssl_targets; no SSL targets available for this batch")
 
         # Apply target weight scaling if requested
         if ssl_targets is not None and ssl_target_weight != 1.0:
@@ -524,8 +547,13 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         except Exception:
             pass
         
-        # Remove uniformity penalty while logits stabilize to avoid fighting label smoothing
         policy_reg_loss = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
+        legal_mass_penalty = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
+        if legal_mass_weight > 0.0 and legal_mask_t is not None:
+            legal_mass_penalty = legal_policy_mass_loss(p, legal_mask_t).to(dtype=policy_loss.dtype)
+            policy_reg_loss = policy_reg_loss + (float(legal_mass_weight) * legal_mass_penalty)
+            if current_step % 200 == 0:
+                logger.info("LEGAL_MASS_LOSS: weight=%.4f penalty=%.4f", float(legal_mass_weight), float(legal_mass_penalty.detach().item()))
         
         # PERFORMANCE PROFILING: Start loss computation
         loss_comp_start = time.time()
@@ -533,6 +561,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # Value loss: ensure dtype alignment on MPS/AMP to avoid graph type errors
         if z.dtype != v.dtype:
             z = z.to(dtype=v.dtype)
+        if value_weight.dtype != v.dtype:
+            value_weight = value_weight.to(dtype=v.dtype)
+        value_weight = value_weight.reshape_as(z).clamp(0.0, 1.0)
         if torch.isnan(v).any() or torch.isinf(v).any():
             logger.warning("Value output contains NaN/Inf; sanitizing")
             v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
@@ -543,10 +574,15 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             # Handle edge case where shapes don't match
             if v.numel() == z.numel():
                 v = v.view_as(z)
+        weight_sum = value_weight.sum()
         if value_loss_type == 'huber':
-            value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta)
+            per_sample_value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta, reduction='none')
         else:
-            value_loss = nn.functional.mse_loss(v, z)
+            per_sample_value_loss = nn.functional.mse_loss(v, z, reduction='none')
+        if weight_sum > 0:
+            value_loss = (per_sample_value_loss * value_weight).sum() / weight_sum
+        else:
+            value_loss = torch.zeros((), device=device, dtype=v.dtype)
 
         ssl_active = bool(enable_ssl and ssl_targets is not None and ssl_out is not None)
         ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
@@ -600,13 +636,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                                 ssl_loss = model.get_enhanced_ssl_loss(s, ssl_targets, feats=feats)
                             logger.debug(f"Enhanced SSL loss computed (chunked={bool(chunk and chunk < batch_size_total)}): {ssl_loss.item():.6f}")
                         except RuntimeError as oom_err:
-                            logger.warning(f"Enhanced SSL OOM: {oom_err}; setting ssl_loss=0 and continuing")
-                            try:
-                                import torch.mps
-                                torch.mps.empty_cache()
-                            except Exception:
-                                pass
-                            ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
+                            raise RuntimeError(f"Enhanced SSL loss failed: {oom_err}") from oom_err
                 # Fallback to basic piece SSL (tensor) path for backward compatibility
                 elif isinstance(ssl_targets, torch.Tensor) and ssl_out is not None:
                     # Accept dict or tensor for ssl_out; pick 'piece' logits when dict
@@ -635,14 +665,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                             logger.debug(f"Basic SSL loss computed: {ssl_loss.item():.6f}")
                 else:
                     logger.debug("No valid SSL targets available for loss computation")
-            except Exception as e:
-                logger.warning(f"SSL loss computation failed: {e}; setting ssl_loss=0 for this batch")
-                try:
-                    import torch.mps
-                    torch.mps.empty_cache()
-                except Exception:
-                    pass
-                ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
+            except (RuntimeError, ValueError, TypeError) as e:
+                raise RuntimeError(f"SSL loss computation failed: {e}") from e
 
         # PERFORMANCE PROFILING: Loss computation complete
         loss_comp_time = time.time() - loss_comp_start
@@ -690,7 +714,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         cls = torch.full_like(z, 1, dtype=torch.long)
                         cls = torch.where(z > float(wdl_margin), torch.tensor(2, device=z.device, dtype=torch.long), cls)
                         cls = torch.where(z < -float(wdl_margin), torch.tensor(0, device=z.device, dtype=torch.long), cls)
-                    wdl_loss = nn.functional.cross_entropy(wdl_logits, cls)
+                    wdl_per_sample = nn.functional.cross_entropy(wdl_logits, cls, reduction='none')
+                    wdl_weight_sum = value_weight.sum()
+                    if wdl_weight_sum > 0:
+                        wdl_loss = (wdl_per_sample * value_weight).sum() / wdl_weight_sum
+                    else:
+                        wdl_loss = torch.zeros((), device=device, dtype=wdl_logits.dtype)
                     # Ensure loss has consistent dtype before arithmetic operations
                     if wdl_loss.dtype != loss.dtype:
                         wdl_loss = wdl_loss.to(dtype=loss.dtype)
@@ -827,6 +856,7 @@ def train_comprehensive(
     # Load configuration
     cfg = Config.load(config_path)
     device = select_device(device)
+    log_environment_info(logger, device)
     
     # Memory cleanup at start of training
     logger.info("Performing memory cleanup at start of training")
@@ -1073,31 +1103,26 @@ def train_comprehensive(
     # Use appropriate batch method based on configuration
     dataloader = None
     loader_iter = None
+    dl_workers = int(dataloader_workers if dataloader_workers is not None else safe_config_get(cfg, 'dataloader_workers', 2, section='training'))
+    dl_prefetch = int(prefetch_factor if prefetch_factor is not None else safe_config_get(cfg, 'prefetch_factor', 2, section='training'))
     if use_curriculum and curriculum_phases:
-        # Curriculum learning - will be handled in training loop (phase-aware)
-        batch_generator = None
-        logger.info("DataLoader disabled for curriculum mode (phase-dependent).")
+        mode = f"phase:{current_phase}"
+    elif data_mode:
+        mode = data_mode
     else:
-        # Standard training - prefer DataLoader-backed batches for throughput
-        dl_workers = int(dataloader_workers if dataloader_workers is not None else safe_config_get(cfg, 'dataloader_workers', 2, section='training'))
-        dl_prefetch = int(prefetch_factor if prefetch_factor is not None else safe_config_get(cfg, 'prefetch_factor', 2, section='training'))
-        # Choose mode: CLI overrides default heuristic
-        if data_mode:
-            mode = data_mode
-        else:
-            mode = 'mixed' if external_stats['external_total'] > 0 else 'replay'
-        logger.info(f"Using DataLoader mode='{mode}' (workers={dl_workers}, prefetch={dl_prefetch})")
-        dataloader = build_training_dataloader(
-            data_manager,
-            batch_size=batch_size,
-            device=device,
-            mode=mode,
-            num_workers=dl_workers,
-            prefetch_factor=dl_prefetch,
-            persistent_workers=True,
-        )
-        loader_iter = iter(dataloader) if dataloader is not None else None
-        batch_generator = None
+        mode = 'mixed' if external_stats['external_total'] > 0 else 'replay'
+    logger.info(f"Using DataLoader mode='{mode}' (workers={dl_workers}, prefetch={dl_prefetch})")
+    dataloader = build_training_dataloader(
+        data_manager,
+        batch_size=batch_size,
+        device=device,
+        mode=mode,
+        num_workers=dl_workers,
+        prefetch_factor=dl_prefetch,
+        persistent_workers=True,
+    )
+    loader_iter = iter(dataloader) if dataloader is not None else None
+    batch_generator = None
     
     # Log final plan
     logger.info(f"Training planned: epochs={epochs}, steps_per_epoch={steps_per_epoch if steps_per_epoch is not None else cfg.training().get('steps_per_epoch', 'cfg')}, total_steps={total_steps}")
@@ -1237,32 +1262,24 @@ def train_comprehensive(
                 if current_phase_info and current_phase_info['name'] != current_phase:
                     current_phase = current_phase_info['name']
                     logger.info(f"Transitioning to curriculum phase: {current_phase}")
+                    mode = f"phase:{current_phase}"
+                    dataloader = build_training_dataloader(
+                        data_manager,
+                        batch_size=batch_size,
+                        device=device,
+                        mode=mode,
+                        num_workers=dl_workers,
+                        prefetch_factor=dl_prefetch,
+                        persistent_workers=True,
+                    )
+                    loader_iter = iter(dataloader)
             
             # PERFORMANCE PROFILING: Start batch preparation
             batch_prep_start = time.time()
 
             # Get training batch based on current configuration
             try:
-                if use_curriculum and curriculum_phases:
-                    # Curriculum learning - use phase-specific data
-                    batch_dict = data_manager.get_curriculum_batch(batch_size, current_phase)
-                    if batch_dict is None:
-                        if not warned_curriculum_fallback:
-                            logger.warning(f"No data available for phase {current_phase}, falling back to mixed")
-                            warned_curriculum_fallback = True
-                        batch_dict = data_manager.get_curriculum_batch(batch_size, "mixed")
-                    
-                    if batch_dict is None:
-                        logger.error("No training data available, stopping training")
-                        break
-                    
-                    # Convert dict format to tuple format for existing train_step, include legal_mask if present
-                    if 'legal_mask' in batch_dict:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'], batch_dict['legal_mask'])
-                    else:
-                        batch = (batch_dict['s'], batch_dict['pi'], batch_dict['z'])
-                    
-                elif dataloader is not None:
+                if dataloader is not None:
                     # DataLoader-backed training path
                     try:
                         batch = next(loader_iter)
@@ -1286,8 +1303,7 @@ def train_comprehensive(
                 logger.error("Data stream exhausted, stopping training")
                 break
             except Exception as e:
-                logger.warning(f"Error getting batch: {e}, skipping...")
-                continue
+                raise RuntimeError(f"Error getting batch: {e}") from e
 
             # Error recovery wrapper for train_step
             try:
@@ -1318,7 +1334,8 @@ def train_comprehensive(
                 wdl_margin=float(tr_cfg.get('wdl_margin', 0.25)),
                 precision=tr_cfg.get("precision", "fp16"),
                 ssl_every_n=int(tr_cfg.get('ssl_every_n', 1)),
-                ssl_chunk_size=int(tr_cfg.get('ssl_chunk_size', 0))
+                ssl_chunk_size=int(tr_cfg.get('ssl_chunk_size', 0)),
+                legal_mass_weight=float(tr_cfg.get('legal_mass_weight', 0.0))
                 )
                 
                 # Check if train_step returned None (indicating invalid batch)
@@ -1360,51 +1377,12 @@ def train_comprehensive(
                     
             except Exception as e:
                 logger.error(f"Error in train_step: {e}", exc_info=True)
-                logger.error(f"Batch info: device={device}, batch_size={batch[0].shape[0] if batch else 'unknown'}")
-                
-                # Try to recover from the error
-                try:
-                    # Clear gradients and reset optimizer state
-                    optimizer.zero_grad()
-
-                    # Handle scaler recovery - it may be corrupted after memory errors
-                    if scaler:
-                        try:
-                            scaler.update()
-                        except Exception as scaler_error:
-                            logger.warning(f"Scaler corrupted after memory error, creating new one: {scaler_error}")
-                            # Recreate the scaler with proper initialization
-                            if device.startswith('mps'):
-                                scaler = torch.amp.GradScaler(device="mps", init_scale=65536.0, growth_factor=2.0)
-                            else:
-                                scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_factor=2.0)
-
-                            # Force initialization by calling step() and update() with a dummy operation
-                            try:
-                                # Create a dummy parameter to force scaler initialization
-                                dummy_param = torch.nn.Parameter(torch.tensor([1.0], device=device))
-                                dummy_optimizer = torch.optim.SGD([dummy_param], lr=0.01)
-
-                                # This will properly initialize the scaler
-                                with torch.no_grad():
-                                    dummy_loss = torch.tensor(1.0, device=device)
-                                    dummy_loss.backward()
-                                    scaler.step(dummy_optimizer)
-                                    scaler.update()
-
-                                # Clean up
-                                dummy_param.grad = None
-                                logger.info("Scaler successfully reinitialized")
-                            except Exception as init_error:
-                                logger.warning(f"Scaler initialization failed: {init_error}, will use regular backward pass")
-                                scaler = None  # Disable scaler if we can't initialize it
-
-                    logger.info("Recovered from training error, continuing...")
-                except Exception as recovery_error:
-                    logger.error(f"Failed to recover from training error: {recovery_error}")
-                
-                # Skip this batch and continue training
-                continue
+                if isinstance(batch, dict):
+                    batch_size_info = batch.get('s').shape[0] if batch.get('s') is not None else 'unknown'
+                else:
+                    batch_size_info = batch[0].shape[0] if batch else 'unknown'
+                logger.error(f"Batch info: device={device}, batch_size={batch_size_info}")
+                raise
             
             # Update EMAs with non-negative clamps to avoid confusing sign artifacts in logs
             running_loss = 0.98 * running_loss + 0.02 * max(0.0, float(loss))

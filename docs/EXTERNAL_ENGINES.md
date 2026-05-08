@@ -34,7 +34,7 @@ Matrix0 now supports advanced integration with external chess engines through th
 
 ### Matrix0 (Internal)
 - **Type**: Internal neural network model with SSL integration
-- **Checkpoint**: `checkpoints/v2_base.pt` (53M parameters)
+- **Checkpoint**: `checkpoints/v2_base.pt` (44.2M parameters)
 - **Evaluation**: MCTS with SSL-enhanced neural network guidance
 - **SSL Heads**: Threat, pin, fork, control, piece detection
 - **Status**: ✅ Enhanced with comprehensive benchmark system

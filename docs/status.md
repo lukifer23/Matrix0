@@ -93,7 +93,7 @@
 - **Checkpoint Management**: Advanced SSL-preserving checkpoint creation and merging
 
 #### 2. Complete SSL Architecture
-- **Model Size**: 58,146,466 parameters (58.1M) with SSL heads (SSRL temporarily disabled)
+- **Model Size**: 44,214,306 parameters (44.2M) with SSL heads (SSRL temporarily disabled)
 - **SSL Heads**: 5 production SSL heads (piece, threat, pin, fork, control) active; pawn structure and king safety heads implemented but disabled pending validation
 - **SSL Parameters**: Dedicated parameters for active heads with weighted loss functions; additional capacity reserved for experimental heads
 - **Multi-Task Learning**: Perfect integration of SSL with policy/value learning; SSRL paused pending future reintroduction
@@ -163,7 +163,7 @@
 
 #### 2.1 Memory Optimization
 - [ ] **Tensor Memory Management**: Optimize allocation and cleanup patterns
-- [ ] **Batch Size Optimization**: Find optimal batch sizes for 53M model
+- [ ] **Batch Size Optimization**: Find optimal batch sizes for 44.2M model
 - [ ] **Gradient Checkpointing**: Implement selective checkpointing
 - [ ] **Memory Profiling**: Detailed memory usage analysis and optimization
 
@@ -191,7 +191,7 @@
 
 ### ✅ Core System Achievements
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle ✅ OPERATIONAL
-- **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation ✅ PRODUCTION READY
+- **Model Architecture**: 44.2M parameter ResNet-22 with attention and SSL foundation ✅ PRODUCTION READY
 - **Training Stability**: No NaN/Inf crashes, stable ~3-4 seconds per step performance ✅ ACHIEVED
 - **Memory Management**: Optimized MPS usage (~10.7-11.0GB) with automatic cleanup ✅ OPTIMIZED
 - **Data Integrity**: SQLite metadata, backup system, corruption detection ✅ ROBUST
@@ -254,11 +254,11 @@
 
 ## Conclusion
 
-Matrix0 has achieved **major training milestones** with a 53M parameter model and operational training pipeline. The system demonstrates robust performance with five production SSL heads active and experimental extensions staged:
+Matrix0 has achieved **major training milestones** with a 44.2M parameter model and operational training pipeline. The system demonstrates robust performance with five production SSL heads active and experimental extensions staged:
 
 ### ✅ Production-Ready Features
 - **Complete Training Pipeline**: Self-play → Training → Evaluation → Model Promotion
-- **Advanced Architecture**: ResNet-24 with attention and five production SSL heads
+- **Advanced Architecture**: ResNet-22 with attention and five production SSL heads
 - **Training Stability**: No NaN/Inf crashes with emergency recovery
 - **Apple Silicon Optimization**: Optimized MPS memory management
 - **Data Integrity**: SQLite metadata with automatic backup
@@ -284,7 +284,7 @@ Matrix0 has achieved **major training milestones** with a 53M parameter model an
 
 - ✅ **SSL Coverage**: Five production tasks (piece, threat, pin, fork, control) fully integrated and training; optional pawn structure and king safety heads staged
 - ✅ **Training Pipeline**: Complete self-play → training → evaluation cycle operational
-- ✅ **Model Architecture**: 53M parameter ResNet-24 with all features intact
+- ✅ **Model Architecture**: 44.2M parameter ResNet-22 with all features intact
 - ✅ **Memory Management**: 14GB MPS limit with automatic cleanup and optimization
 - ✅ **Checkpoint System**: Fixed create_v2_checkpoint.py creates complete 474-key checkpoints
 - ✅ **Missing Keys**: Completely eliminated - all model parameters properly handled

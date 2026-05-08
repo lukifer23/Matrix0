@@ -11,12 +11,12 @@ For current problem areas, see the [Open Issues](index.md#open-issues) section.
 
 ## Current Achievement Summary
 
-Matrix0 has achieved **production training capability** with a sophisticated 53M parameter model and operational training pipeline. The system demonstrates enterprise-grade stability with comprehensive error handling and monitoring.
+Matrix0 has achieved **production training capability** with a sophisticated 44.2M parameter model and operational training pipeline. The system demonstrates enterprise-grade stability with comprehensive error handling and monitoring.
 
 ### ✅ Production-Ready Features
 
-#### Core Architecture (53M Parameters)
-- [x] **ResNet-24 backbone** with 320 channels (increased from 160)
+#### Core Architecture (44.2M Parameters)
+- [x] **ResNet-22 backbone** with 288 channels (increased from 160)
 - [x] **Chess-specific attention mechanism** with 20 heads every 4th block
 - [x] **SSL foundation** with optimized 5-task configuration and data pipeline fixes
 - [x] **Branch normalization** preventing NaN/Inf policy head instability
@@ -99,7 +99,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 53M
 
 ### Current Performance Metrics
 - **Training Progress**: Training pipeline operational with SSL foundation
-- **Training Speed**: ~3-4s per step with 53M parameter model
+- **Training Speed**: ~3-4s per step with 44.2M parameter model
 - **Memory Usage**: 14GB MPS limit with automatic management
 - **Stability**: No NaN/Inf crashes with current safeguards
 - **SSL Status**: Optimized 5-task configuration with data pipeline fixes

@@ -6,11 +6,11 @@ Last updated: 2025-08-25
 
 ## 1) Current Production Architecture
 
-Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation. *Note: SSRL experimentation is currently paused to prioritize core SSL throughput; the design remains in-place for future reactivation.*
+Matrix0 V2 is currently a **44.2M parameter ResNet-22** model with operational training pipeline and production SSL coverage. The architecture is optimized for Apple Silicon MPS with advanced stability features and five active SSL heads, while two additional experimental heads remain staged for future validation. *Note: SSRL experimentation is currently paused to prioritize core SSL throughput; the design remains in-place for future reactivation.*
 
 ### Key Specifications
-- **Total Parameters**: 75,576,290 (75.6M) - ResNet architecture with SSL heads
-- **Architecture**: ResNet-22 with chess-specific attention and 5 SSL heads
+- **Total Parameters**: 44,214,306 (44.2M) - ResNet architecture with SSL heads
+- **Architecture**: ResNet-22 with 288 channels, 18 attention heads, and 5 SSL heads
 - **Input**: 19×8×8 chess board representation
 - **Policy Output**: 4,672 move logits (from-square × to-square)
 - **Value Output**: Scalar win probability
@@ -26,10 +26,10 @@ Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pi
 
 ## 2) Implemented Architecture Features
 
-### Core Architecture (53M Parameters)
-- **Channels**: 320 (increased from 160 for better capacity)
-- **Blocks**: 24 (increased from 14 for deeper learning)
-- **Attention Heads**: 20 (optimized for chess patterns)
+### Core Architecture (44.2M Parameters)
+- **Channels**: 288
+- **Blocks**: 22
+- **Attention Heads**: 18
 - **Normalization**: GroupNorm (more stable than BatchNorm for MPS)
 - **Activation**: SiLU (better gradient flow than ReLU)
 - **Residual Blocks**: Pre-activation style for improved training
@@ -63,9 +63,9 @@ Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pi
 - **Memory Format**: Standard contiguous for MPS compatibility
 - **Data Type**: FP16 for mixed precision training
 
-### Backbone (ResNet-24 Trunk)
-- **Input Channels**: 19 → 320 (stem convolution)
-- **Residual Blocks**: 24 blocks with pre-activation design
+### Backbone (ResNet-22 Trunk)
+- **Input Channels**: 19 → 288 (stem convolution)
+- **Residual Blocks**: 22 blocks with pre-activation design
 - **Block Structure**: [GN→SiLU→Conv3×3]×2 + identity skip connection
 - **Normalization**: GroupNorm with 16 groups (more stable than BatchNorm)
 - **Activation**: SiLU throughout (better gradient flow than ReLU)
@@ -73,7 +73,7 @@ Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pi
 - **Total Parameters**: ~48M in trunk
 
 ### Chess-Specific Attention
-- **Attention Heads**: 20 heads (320/16 = 20) every 4th block
+- **Attention Heads**: 20 heads (288/16 = 18) every 4th block
 - **ChessAttention**: Line-of-sight masking for spatial relationships
 - **Relative Bias**: Enhanced positional relationships
 - **Unmasked Mix**: 0.1-0.2 blend for knight/tactical patterns
@@ -88,16 +88,16 @@ Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pi
 - **Parameters**: ~2M+ in SSL heads (distributed across active and optional tasks)
 
 ### Policy Head (Dual Branch Design)
-- **Input Features**: 320 channels from trunk
+- **Input Features**: 288 channels from trunk
 - **Branch A (Spatial)**: 1×1 conv → 73 channels per-square → permute/reshape → 4,672 logits
-- **Branch B (Dense)**: Global average pool → 320 → FC → 128 → FC → 4,672 logits
+- **Branch B (Dense)**: 64×8×8 policy features → FC rank 160 → FC → 4,672 logits
 - **Branch Normalization**: Independent LayerNorm before combination
 - **Combination**: logits = A + B with NaN/Inf protection
 - **Stability**: Gradient clipping and numerical safeguards
 - **Parameters**: ~2.5M total
 
 ### Value Head
-- **Architecture**: 1×1 conv (320→64) → flatten → FC → tanh
+- **Architecture**: 1×1 conv (288→128) → 1×1 conv (128→128) → flatten → FC stack → tanh
 - **Output**: Scalar win probability (-1 to 1)
 - **Parameters**: ~200K
 
@@ -124,12 +124,12 @@ Matrix0 V2 is a **75.6M parameter ResNet-22** model with operational training pi
 
 ## 4) Parameter Budget and Efficiency
 
-### Current Model Analysis (53M Parameters)
-- **Total Parameters**: 53,217,919 (53.2M) - production model
-- **Trunk (ResNet-24)**: ~48M (90.3%) - deep learning capacity
-- **Policy Head**: ~2.5M (4.7%) - dual branch efficiency
-- **Value Head**: ~200K (0.4%) - lightweight evaluation
-- **SSL Head**: ~500K (0.9%) - foundation established
+### Current Model Analysis (44.2M Parameters)
+- **Total Parameters**: 44,214,306 (44.2M) - production model
+- **Trunk (ResNet-22 + chess features/attention)**: majority of parameters and compute
+- **Policy Head**: factorized dense branch plus compact 1×1 policy features
+- **Value Head**: flatten-based FC stack, targeted for GAP+MLP benchmarking
+- **SSL Heads**: 211,536 parameters across the five active SSL tasks
 - **Chess Attention**: ~2M (3.7%) - spatial relationships
 
 ### Production Efficiency

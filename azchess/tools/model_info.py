@@ -6,6 +6,7 @@ import logging
 from azchess.config import Config
 from azchess.logging_utils import setup_logging
 from azchess.model import PolicyValueNet
+from azchess.utils.env_info import log_environment_info
 
 logger = setup_logging(level=logging.INFO)
 
@@ -16,6 +17,7 @@ def main():
     args = ap.parse_args()
 
     cfg = Config.load(args.config)
+    log_environment_info(logger, cfg.get("device", "auto"))
     model = PolicyValueNet.from_config(cfg.model())
     params = model.count_parameters()
     logger.info("Model config:")
@@ -30,4 +32,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

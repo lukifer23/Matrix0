@@ -35,6 +35,7 @@ selfplay:
   temperature_start: 1.2           # Increased from 1.0 for more early exploration
   temperature_end: 0.3             # Increased from 0.1 to maintain diversity longer
   temperature_moves: 40            # Increased from 20 to maintain diversity for 20 full moves
+  capped_value_weight: 0.25        # Weakly train capped games on search values instead of discarding value signal
   draw:
     min_plies: 30                  # Reduced from 40 for earlier draw adjudication
     window: 8                      # Narrower window for faster detection
@@ -77,6 +78,7 @@ training:
     - { name: tactics,  steps: 2400, description: "Emphasize tactical calculation" }
     - { name: mixed,    steps: 4800, description: "Blend external + self-play" }
   policy_masking: true             # Smart masking
+  legal_mass_weight: 0.05           # Train raw policy logits to put probability on legal moves
   policy_label_smoothing: 0.05     # Reduced for faster policy learning
   value_loss: "huber"              # Robust value regression
   huber_delta: 1.0                 # Increased for more stable training

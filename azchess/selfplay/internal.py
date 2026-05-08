@@ -33,6 +33,23 @@ def math_div_ceil(a: int, b: int) -> int:
 logger = setup_logging(level=logging.INFO)
 OPENING_BOOK: List[chess.Board] = []
 
+
+def build_value_targets(
+    result_source: str,
+    z: float,
+    turns: List[int],
+    search_values: List[float],
+    capped_value_weight: float,
+) -> tuple[List[float], float, bool]:
+    """Build side-to-move value targets and sample weight for a completed shard."""
+    if result_source in ("capped", "unfinished") and capped_value_weight > 0.0 and len(search_values) == len(turns):
+        targets = [float(np.clip(v, -1.0, 1.0)) for v in search_values]
+        return targets, float(capped_value_weight), True
+
+    targets = [float(z * turn) for turn in turns]
+    value_weight = 0.0 if result_source in ("capped", "unfinished") else 1.0
+    return targets, float(value_weight), False
+
 def load_opening_book(pgn_path: str):
     """Loads positions from a PGN file into the global opening book."""
     global OPENING_BOOK
@@ -167,9 +184,11 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     else:
         infer_backend = None
         model = PolicyValueNet.from_config(cfg_dict["model"]).to(device)
-        if ckpt_path and os.path.exists(ckpt_path):
+        if ckpt_path:
+            if not os.path.exists(ckpt_path):
+                raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt_path}")
             try:
-                state = torch.load(ckpt_path, map_location=device)
+                state = torch.load(ckpt_path, map_location=device, weights_only=False)
                 sd = state.get("model_ema", state.get("model", state))
                 missing, unexpected = model.load_state_dict(sd, strict=False)
                 if missing:
@@ -182,10 +201,15 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 if unexpected:
                     logger.warning(f"Worker {proc_id}: Unexpected keys during load (ignored): {len(unexpected)} keys")
                     logger.warning(f"Worker {proc_id}: Unexpected keys: {sorted(list(unexpected))}")
+                allow_partial = bool(cfg_dict.get("selfplay", {}).get("allow_partial_checkpoint_load", False))
+                if (missing or unexpected) and not allow_partial:
+                    raise RuntimeError(
+                        "Checkpoint did not match model exactly. "
+                        "Set selfplay.allow_partial_checkpoint_load=true only for an intentional migration."
+                    )
                 logger.info(f"Loaded checkpoint from {ckpt_path}")
             except Exception as e:
-                logger.warning(f"Failed to load checkpoint {ckpt_path}: {e}")
-                logger.info("Using untrained model")
+                raise RuntimeError(f"Failed to load checkpoint {ckpt_path}: {e}") from e
         else:
             logger.info("No checkpoint provided, using untrained model")
 
@@ -361,6 +385,11 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             resigner_color: str | None = None
             move_history = []  # Track moves for pattern detection
             resigned = False
+            z: float | None = None
+            result_source = "unknown"
+            capped = False
+            adjudicated_draw = False
+            tablebase_hit = False
     
             # Opening diversity: optional random opening plies (quick uniform legal moves)
             try:
@@ -381,6 +410,9 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             min_resign_plies = int(sp_cfg.get("min_resign_plies", 24))
             while not board.is_game_over() and len(states) < sp_cfg.get("max_game_len", 200):
                 if should_adjudicate_draw(board, move_history, draw_cfg):
+                    z = 0.0
+                    result_source = "draw_adjudication"
+                    adjudicated_draw = True
                     break
     
                 move_no = board.fullmove_number
@@ -452,8 +484,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 # Always compute and save legal mask (precomputed for training efficiency)
                 try:
                     lm = move_encoder.get_legal_actions(board).astype(np.uint8, copy=False)
-                except Exception:
-                    lm = np.zeros(4672, dtype=np.uint8)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to encode legal mask for board {board.fen()}: {e}") from e
                 legal_masks.append(lm)
 
                 # Always generate SSL targets if model has SSL enabled (precomputed for training efficiency)
@@ -481,22 +513,9 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                                     target_np = target.squeeze(0).detach().cpu().numpy()
                                 ssl_targets[task].append(target_np)
                             else:
-                                # Fallback: zero target if task not supported
-                                logger.warning(f"SSL task '{task}' not found in generated targets")
-                                if task == "piece":
-                                    ssl_targets[task].append(np.zeros((13, 8, 8), dtype=np.float32))
-                                else:
-                                    ssl_targets[task].append(np.zeros((8, 8), dtype=np.float32))
+                                raise RuntimeError(f"SSL task '{task}' not found in generated targets")
                     except Exception as e:
-                        logger.warning(f"Failed to generate SSL targets: {e}")
-                        # Initialize with zeros for all tasks if generation fails
-                        for task in ssl_tasks:
-                            if task not in ssl_targets:
-                                ssl_targets[task] = []
-                            if task == "piece":
-                                ssl_targets[task].append(np.zeros((13, 8, 8), dtype=np.float32))
-                            else:
-                                ssl_targets[task].append(np.zeros((8, 8), dtype=np.float32))
+                        raise RuntimeError(f"Failed to generate SSL targets for board {board.fen()}: {e}") from e
                 # Track sims used
                 try:
                     sims_used.append(int(getattr(mcts, '_last_sims_run', 0)))
@@ -528,6 +547,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     if consec_bad >= resign_seq_bad and (stable_bad or low_uncertainty):
                         resigned = True
                         z = -1.0 if board.turn == chess.WHITE else 1.0
+                        result_source = "resignation"
                         resigner_color = 'W' if board.turn == chess.WHITE else 'B'
                         logger.info(
                             f"Game {g + 1}: Resigned after {consec_bad} low values (stable={stable_bad} lowH={low_uncertainty}). "
@@ -576,44 +596,41 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                                         z = -1.0 if side_to_move == chess.WHITE else 1.0
                                 
                                 logger.info(f"Tablebase hit ({piece_count} pieces). WDL: {wdl}. Final result: {z}")
+                                result_source = "tablebase"
+                                tablebase_hit = True
                                 break # End the game
                         except Exception as e:
                             logger.warning(f"Tablebase probe failed: {e}")
     
-            # If the game didn't end by tablebase, get the result normally.
-            # When the loop exited due to max_game_len or early adjudication where
-            # no claimable draw exists, avoid blindly labeling as draw; instead,
-            # fall back to final search value sign to provide a decisive target.
-            if 'z' not in locals():
-                # Detect whether a terminal/claimable result exists
+            # If no real result/adjudication fired, assign explicit neutral
+            # targets for capped games. Do not let an untrained search value
+            # label unfinished games as decisive outcomes.
+            if z is None:
                 terminal = board.is_game_over(claim_draw=True)
                 if terminal:
                     z = game_result(board)
+                    result_source = "terminal"
                 else:
-                    # No formal result (e.g., length cap). Use last search value if available.
-                    if search_values:
-                        v_last = float(search_values[-1])
-                        # Use raw v_last; it is already in [-1,1] and blends later
-                        z = v_last
-                    else:
-                        z = 0.0
+                    capped = len(states) >= int(sp_cfg.get("max_game_len", 200))
+                    z = 0.0
+                    result_source = "capped" if capped else "unfinished"
             
             # Debug: log the final game result
             if resigned:
                 logger.info(f"Game {g + 1}: Final result from resignation: {z}")
+            elif capped:
+                logger.info(f"Game {g + 1}: Final result from capped game: {z}")
             else:
-                logger.info(f"Game {g + 1}: Final result from game end: {z}")
+                logger.info(f"Game {g + 1}: Final result from {result_source}: {z}")
             
-            # Create value targets: use pure game result (no blending) in side-to-move format
-            # Model outputs side-to-move values (value_from_white=false), so targets must match
-            # z is from white's perspective (1.0 = white wins, -1.0 = black wins, 0.0 = draw)
-            # turns[i] = 1 if white to move, -1 if black to move
-            # final_z = z * turns[i] converts to side-to-move perspective
-            value_target = []
-            for i in range(len(states)):
-                # Convert game result to side-to-move perspective for this position
-                final_z = z * turns[i]
-                value_target.append(final_z)
+            capped_value_weight = float(sp_cfg.get("capped_value_weight", 0.25))
+            value_target, value_weight, value_bootstrap = build_value_targets(
+                result_source=result_source,
+                z=float(z),
+                turns=turns,
+                search_values=search_values,
+                capped_value_weight=capped_value_weight,
+            )
             
             # Validation: log sample values to verify orientation
             if len(value_target) > 0 and (g == 0 or len(value_target) % 50 == 0):
@@ -629,10 +646,18 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "s": np.array(states, dtype=np.float32),
                     "pi": np.array(pis, dtype=np.float32),
                     "z": np.array(value_target, dtype=np.float32),
+                    "value_weight": np.full((len(states),), value_weight, dtype=np.float32),
                     # Per-game metadata arrays
                     "meta_moves": np.array([len(states)], dtype=np.int32),
                     "meta_result": np.array([z], dtype=np.float32),
                     "meta_resigned": np.array([1 if resigned else 0], dtype=np.int8),
+                    "meta_capped": np.array([1 if capped else 0], dtype=np.int8),
+                    "meta_terminal": np.array([1 if result_source == "terminal" else 0], dtype=np.int8),
+                    "meta_tablebase": np.array([1 if tablebase_hit else 0], dtype=np.int8),
+                    "meta_adjudicated_draw": np.array([1 if adjudicated_draw else 0], dtype=np.int8),
+                    "meta_result_source": np.array([result_source]),
+                    "meta_value_bootstrap": np.array([1 if value_bootstrap else 0], dtype=np.int8),
+                    "meta_value_weight": np.array([value_weight], dtype=np.float32),
                     "meta_draw": np.array([1 if z == 0.0 else 0], dtype=np.int8),
                     "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
                     "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
@@ -673,6 +698,8 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "resigned": resigned,
                     "resigner": resigner_color,
                     "draw": bool(z == 0.0),
+                    "capped": bool(capped),
+                    "result_source": result_source,
                     "avg_policy_entropy": (entropy_sum / max(1, entropy_count)),
                     "avg_ms_per_move": avg_ms_per_move,
                     "avg_sims": avg_sims,

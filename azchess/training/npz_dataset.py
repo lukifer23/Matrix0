@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -36,13 +36,51 @@ class NPZBatchIterableDataset(IterableDataset):
         self.batch_size = int(batch_size)
         self.device = device
         self.mode = str(mode)
+        self._batches_seen = 0
 
-    def __iter__(self) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    def _log_batch_sanity(self, batch: Dict[str, np.ndarray]) -> None:
+        self._batches_seen += 1
+        if self._batches_seen != 1 and self._batches_seen % 200 != 0:
+            return
+        try:
+            pi = batch["pi"]
+            z = batch["z"]
+            row_sum = pi.sum(axis=1)
+            positive = pi > 0
+            entropy = -np.sum(np.where(positive, pi * np.log(np.clip(pi, 1e-12, 1.0)), 0.0), axis=1)
+            msg = (
+                "Batch sanity mode=%s n=%d policy_sum=%.4f/%.4f/%.4f "
+                "entropy=%.3f value=%.3f/%.3f"
+            )
+            args = (
+                self.mode,
+                int(pi.shape[0]),
+                float(row_sum.min()),
+                float(row_sum.mean()),
+                float(row_sum.max()),
+                float(entropy.mean()),
+                float(np.min(z)),
+                float(np.max(z)),
+            )
+            if "legal_mask" in batch:
+                legal = batch["legal_mask"]
+                legal_counts = legal.reshape(legal.shape[0], -1).sum(axis=1)
+                msg += " legal=%.1f/%.1f/%.1f"
+                args += (float(legal_counts.min()), float(legal_counts.mean()), float(legal_counts.max()))
+            ssl_keys = sorted(k for k in batch if k.startswith("ssl_"))
+            if ssl_keys:
+                msg += " ssl=%s"
+                args += (",".join(ssl_keys),)
+            logger.info(msg, *args)
+        except (KeyError, ValueError, TypeError) as exc:
+            raise RuntimeError(f"Batch sanity metrics failed for mode={self.mode}: {exc}") from exc
+
+    def __iter__(self) -> Iterator[Union[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]], Dict[str, np.ndarray]]]:
         # Replay mode: stream shards via DataManager iterator
         if self.mode == "replay":
             for batch in self.dm.get_training_batch(self.batch_size, self.device):
-                # Ensure we return a 3- or 4-tuple matching train_step expectations
-                if isinstance(batch, tuple) and (len(batch) == 3 or len(batch) == 4):
+                # Ensure we return a tuple matching train_step expectations
+                if isinstance(batch, tuple) and len(batch) in (3, 4, 5):
                     yield batch
                 else:
                     try:
@@ -50,7 +88,11 @@ class NPZBatchIterableDataset(IterableDataset):
                         pi = batch.get("pi")
                         z = batch.get("z")
                         lm = batch.get("legal_mask", None)
-                        yield (s, pi, z, lm) if lm is not None else (s, pi, z)
+                        vw = batch.get("value_weight", None)
+                        if lm is not None or vw is not None:
+                            yield (s, pi, z, lm, vw) if vw is not None else (s, pi, z, lm)
+                        else:
+                            yield (s, pi, z)
                     except Exception:
                         continue
             return
@@ -73,13 +115,10 @@ class NPZBatchIterableDataset(IterableDataset):
                     logger.warning("NPZ dataset: no data available (phase=%s)", phase)
                     return
 
-            s = batch_dict.get("s")
-            pi = batch_dict.get("pi")
-            z = batch_dict.get("z")
-            lm = batch_dict.get("legal_mask", None)
-
-            # Yield tuple to match train_step inputs
-            yield (s, pi, z, lm) if lm is not None else (s, pi, z)
+            # Preserve every key, including precomputed ssl_* targets. train_step
+            # accepts dict batches and will consume those targets directly.
+            self._log_batch_sanity(batch_dict)
+            yield batch_dict
 
 
 def build_training_dataloader(
@@ -106,4 +145,3 @@ def build_training_dataloader(
         pin_memory=False,
     )
     return dl
-

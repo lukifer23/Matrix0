@@ -55,6 +55,32 @@ MATRIX0_MPS_TARGET_BATCH=6 bash -lc 'while true; do \
   sleep 10; done'
 ```
 
+## Local Learning Loop Benchmark
+
+Use the local-loop benchmark before architecture, LR, SSL, or search changes. It runs an isolated tiny self-play -> train -> eval cycle and writes a JSON report with environment facts, data sanity metrics, throughput, and before/after checkpoint metrics.
+
+```bash
+python -m azchess.tools.bench_local_loop --config config.yaml
+```
+
+Useful knobs:
+
+- `--sims`: MCTS simulations per move for the benchmark game.
+- `--max-game-len`: hard cap for the tiny self-play game.
+- `--train-steps`: number of training steps.
+- `--batch-size`: training batch size.
+- `--mps-target-batch`: sets `MATRIX0_MPS_TARGET_BATCH` for the subprocess stages.
+
+Compare existing checkpoints on the same local data with:
+
+```bash
+python -m azchess.tools.eval_checkpoints \
+  --model-a checkpoints/candidate.pt \
+  --model-b checkpoints/best.pt \
+  --data-dir data \
+  --output logs/checkpoint_eval.json
+```
+
 ## WebUI Linkage
 
 The WebUI tracks CLI runs via lightweight JSONL events written by the orchestrator to `logs/webui.jsonl`:
@@ -66,4 +92,3 @@ These events are intentionally tiny and have negligible overhead; keep them enab
 - ms/move too high at 200 sims in tiny runs: lower `MATRIX0_MPS_TARGET_BATCH` to 2–4 or run with `--no-shared-infer`.
 - TUI table not updating during games: ensure you’re in a real TTY and table mode; the orchestrator now refreshes on heartbeats.
 - Log spam “falling back to mixed” or missing datasets: loader now warns once per run. Add optional `.npz` datasets under `data/training/` at any time — they will be picked up automatically.
-

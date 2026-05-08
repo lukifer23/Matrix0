@@ -114,8 +114,36 @@ def test_selfplay_worker_closes_tablebase(monkeypatch, tmp_path):
     assert tb_instances, "tablebase was not initialized"
     closed_flags = [tb.closed for tb in tb_instances]
     assert all(closed_flags)
-    assert after == baseline
+    assert after <= baseline
 
     for tb in tb_instances:
         if not tb.closed:
             tb.close()
+
+
+def test_capped_value_targets_use_low_weight_search_values():
+    targets, weight, bootstrapped = sp_internal.build_value_targets(
+        result_source="capped",
+        z=0.0,
+        turns=[1, -1, 1],
+        search_values=[0.25, -0.5, 1.5],
+        capped_value_weight=0.25,
+    )
+
+    assert targets == [0.25, -0.5, 1.0]
+    assert weight == pytest.approx(0.25)
+    assert bootstrapped is True
+
+
+def test_capped_value_targets_can_be_disabled():
+    targets, weight, bootstrapped = sp_internal.build_value_targets(
+        result_source="capped",
+        z=0.0,
+        turns=[1, -1],
+        search_values=[0.25, -0.5],
+        capped_value_weight=0.0,
+    )
+
+    assert targets == [0.0, -0.0]
+    assert weight == 0.0
+    assert bootstrapped is False

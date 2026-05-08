@@ -6,19 +6,19 @@
 
 ## Executive Summary
 
-Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis. Two additional SSL heads (**pawn structure** and **king safety**) exist in the codebase but are currently disabled while we gather reliable targets and validation metrics.
+Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M parameter model featuring advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis. Two additional SSL heads (**pawn structure** and **king safety**) exist in the codebase but are currently disabled while we gather reliable targets and validation metrics.
 
 ## ✅ What's Actually Working (Current Reality)
 
 ### Core Training Pipeline
 - **Self-Play Generation**: ✅ 3 workers generating training data with enhanced memory management
-- **Training Loop**: ✅ 53M parameter model with **full advanced SSL integration** and chunked processing
+- **Training Loop**: ✅ 44.2M parameter model with **full advanced SSL integration** and chunked processing
 - **Model Evaluation**: ✅ Tournament system with external engine comparison
 - **Checkpoint Management**: ✅ Advanced checkpoint creation with complete SSL architecture preservation
 
 ### Model Architecture
-- **Model Size**: ✅ 58,146,466 parameters (58.1M) - ResNet-24 with enhanced value pathway
-- **Architecture**: ✅ 320 channels, 24 blocks, 20 attention heads, full attention features
+- **Model Size**: ✅ 44,214,306 parameters (44.2M) - ResNet-22 with enhanced value pathway
+- **Architecture**: ✅ 288 channels, 22 blocks, 18 attention heads, full attention features
 - **Value Stability**: ✅ Configurable value-head activation (default SiLU) prevents collapse and keeps gradients flowing
 - **Representation Learning**: ⚪ SSRL temporarily disabled to prioritize core SSL and throughput (rotation head offline)
 - **SSL Integration**: ✅ **ARCHITECTURE READY** - All 5 SSL tasks: piece, threat, pin, fork, control detection integrated
@@ -164,8 +164,8 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 - **Multi-Task Learning**: ✅ Simultaneous policy, value, and SSL optimization
 
 ### Model Quality
-- **Parameter Count**: 53M+ - production model with SSL
-- **Architecture**: ResNet-24 with attention and **complete SSL integration**
+- **Parameter Count**: 44.2M - production model with SSL
+- **Architecture**: ResNet-22 with attention and **complete SSL integration**
 - **SSL Heads**: 5 dedicated SSL heads (piece, threat, pin, fork, control)
 - **Checkpoint Integrity**: Complete model checkpoints with SSL preservation
 - **Memory Efficiency**: 14GB MPS limit enables full SSL training
@@ -296,7 +296,7 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 53M p
 
 ## Conclusion
 
-Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 53M parameter model featuring advanced multi-task SSL learning. The system now includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all fully integrated with the training pipeline. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability has been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
+Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 44.2M parameter model featuring advanced multi-task SSL learning. The system now includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all fully integrated with the training pipeline. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability has been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
 
 ### Major Achievements (September 2025)
 - ✅ **Complete SSL Integration**: All 5 SSL algorithms fully operational with training pipeline

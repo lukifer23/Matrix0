@@ -27,7 +27,7 @@ The `config.yaml` file is the single source of truth for all system parameters. 
 # Matrix0 V2 Production Configuration
 # Optimized for performance and strong play
 
-model:          # Neural network architecture (53M parameters)
+model:          # Neural network architecture (44.2M parameters)
 selfplay:       # Self-play data generation
 training:       # Training pipeline settings
 orchestrator:   # Main training coordinator
@@ -37,7 +37,7 @@ mcts:          # Monte Carlo Tree Search parameters
 
 ### Example Current Configuration (Partial)
 ```yaml
-# Model Architecture - 53M parameters
+# Model Architecture - 44.2M parameters
 model:
   planes: 19                       # Input planes for chess board
   channels: 320                    # Number of channels in residual blocks
@@ -210,11 +210,11 @@ The training pipeline now includes smart policy masking that automatically detec
 
 ## 3. Key Configuration Sections
 
-### `model` - Neural Network Architecture (53M Parameters)
+### `model` - Neural Network Architecture (44.2M Parameters)
 - `planes`: Input planes for chess board representation (fixed: 19)
-- `channels`: Number of channels in residual blocks (default: 320)
-- `blocks`: Number of residual blocks (default: 24)
-- `attention_heads`: Number of attention heads (default: 20)
+- `channels`: Number of channels in residual blocks (default: 288)
+- `blocks`: Number of residual blocks (default: 22)
+- `attention_heads`: Number of attention heads (default: 18)
 - `policy_size`: Policy output size (fixed: 4672)
 - `norm`: Normalization type (`"group"` or `"batch"`, default: `"group"`)
 - `activation`: Activation function (`"silu"`, `"relu"`, `"gelu"`, default: `"silu"`)

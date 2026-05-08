@@ -18,7 +18,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 
 ### ✅ What's Working
 - **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with data pipeline fixes
-- **Model Architecture**: 53M parameter ResNet-24 with attention and SSL foundation
+- **Model Architecture**: 44.2M parameter ResNet-22 with attention and SSL foundation
 - **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection) with optimized pipeline
 - **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) without neural network inference
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, Apple Silicon optimization
