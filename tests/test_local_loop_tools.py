@@ -229,6 +229,9 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
         draw_min_plies=40,
         draw_window=10,
         draw_min_unique=5,
+        draw_claim_min_plies=120,
+        draw_disable_repetition_claims=True,
+        draw_disable_fifty_move_claims=True,
     )
 
     path = write_loop_config(cfg, tmp_path, args)
@@ -249,3 +252,6 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
     assert draw["min_plies"] == 40
     assert draw["window"] == 10
     assert draw["min_unique"] == 5
+    assert draw["claim_min_plies"] == 120
+    assert draw["claim_repetition"] is False
+    assert draw["claim_fifty_moves"] is False

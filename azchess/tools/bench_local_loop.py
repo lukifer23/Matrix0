@@ -519,6 +519,9 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
         or args.draw_min_plies is not None
         or args.draw_window is not None
         or args.draw_min_unique is not None
+        or args.draw_claim_min_plies is not None
+        or args.draw_disable_repetition_claims
+        or args.draw_disable_fifty_move_claims
     ):
         draw_cfg = dict(raw["selfplay"].get("draw", {}) or {})
         draw_cfg["enabled"] = True
@@ -532,6 +535,12 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             draw_cfg["window"] = int(args.draw_window)
         if args.draw_min_unique is not None:
             draw_cfg["min_unique"] = int(args.draw_min_unique)
+        if args.draw_claim_min_plies is not None:
+            draw_cfg["claim_min_plies"] = int(args.draw_claim_min_plies)
+        if args.draw_disable_repetition_claims:
+            draw_cfg["claim_repetition"] = False
+        if args.draw_disable_fifty_move_claims:
+            draw_cfg["claim_fifty_moves"] = False
         raw["selfplay"]["draw"] = draw_cfg
     raw.setdefault("mcts", {})
     raw["mcts"].update(
@@ -784,6 +793,9 @@ def main() -> None:
     parser.add_argument("--draw-min-plies", type=int, default=None)
     parser.add_argument("--draw-window", type=int, default=None)
     parser.add_argument("--draw-min-unique", type=int, default=None)
+    parser.add_argument("--draw-claim-min-plies", type=int, default=None)
+    parser.add_argument("--draw-disable-repetition-claims", action="store_true")
+    parser.add_argument("--draw-disable-fifty-move-claims", action="store_true")
     parser.add_argument("--cpuct", type=float, default=None)
     parser.add_argument("--cpuct-start", type=float, default=None)
     parser.add_argument("--cpuct-end", type=float, default=None)

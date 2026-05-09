@@ -23,22 +23,31 @@ def should_adjudicate_draw(board: chess.Board, moves: Sequence[chess.Move], cfg:
         - ``halfmove_cap`` (int): optional cap for the halfmove clock.
         - ``material_draw_threshold`` (int): material count threshold for draw.
         - ``stalemate_draw`` (bool): treat stalemate as draw.
+        - ``claim_min_plies`` (int): minimum plies before claimable repetition
+          or fifty-move draws are adjudicated.
+        - ``claim_repetition`` (bool): adjudicate claimable repetition draws.
+        - ``claim_fifty_moves`` (bool): adjudicate claimable fifty-move draws.
 
-    The function always checks standard draw rules (threefold repetition,
-    fifty-move rule, insufficient material). When ``enabled`` it additionally
-    applies heuristic early draw adjudication to avoid marathon games.
+    The function always checks forced terminal draw conditions such as
+    insufficient material and stalemate. Claimable repetition/fifty-move draws
+    are configurable because early self-play claims can flood training with
+    neutral labels before the game reaches tablebase or terminal evidence.
+    When ``enabled`` it additionally applies heuristic early draw adjudication
+    to avoid marathon games.
     """
-    # Standard draw conditions - optimized order for performance
+    # Forced draw conditions.
     if board.is_insufficient_material():
         return True
-    if board.can_claim_fifty_moves():
-        return True
-    if board.is_repetition(3) or board.can_claim_threefold_repetition():
-        return True
-
-    # Check for stalemate if configured
     if bool(cfg.get("stalemate_draw", True)) and board.is_stalemate():
         return True
+
+    claim_min_plies = int(cfg.get("claim_min_plies", 0))
+    claims_enabled = len(moves) >= max(0, claim_min_plies)
+    if claims_enabled and bool(cfg.get("claim_fifty_moves", True)) and board.can_claim_fifty_moves():
+        return True
+    if claims_enabled and bool(cfg.get("claim_repetition", True)):
+        if board.is_repetition(3) or board.can_claim_threefold_repetition():
+            return True
 
     if not bool(cfg.get("enabled", False)):
         return False
