@@ -63,6 +63,8 @@ Use the local-loop benchmark before architecture, LR, SSL, or search changes. It
 python -m azchess.tools.bench_local_loop --config config.yaml
 ```
 
+For current self-play, draw, search, value-target, anchor-data, and eval controls, see the [Local Loop Knob Guide](local_loop_knobs.md). For the current active experiment sequence and promotion rules, see the [Current Working Plan](current_working_plan.md).
+
 Useful knobs:
 
 - `--sims`: MCTS simulations per move for the benchmark game.

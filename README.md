@@ -19,7 +19,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## Project Status
-**ACTIVE DEVELOPMENT** – SSL architecture integration, training pipeline, and EX0Bench benchmarking are in place. For detailed status and progress, see the [comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the [development roadmap](docs/roadmap.md).
+**ACTIVE DEVELOPMENT** – SSL architecture integration, strict local-loop diagnostics, and EX0Bench benchmarking are in place. For the active training/debugging plan, see the [current working plan](docs/current_working_plan.md). For historical status and broader roadmap context, see the [comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the [development roadmap](docs/roadmap.md).
 
 ## ✨ Key Features
 
@@ -249,6 +249,8 @@ python -m azchess.training.train --config config_small.yaml
 Use this to iterate quickly on data/algorithms, then switch back to the main config for strength.
 
 ## 📚 Documentation
+- [Current working plan](docs/current_working_plan.md)
+- [Local loop knob guide](docs/local_loop_knobs.md)
 - [Configuration guide](docs/configuration.md)
 - [Web UI guide](docs/webui.md)
 - [Performance tuning](docs/performance.md)

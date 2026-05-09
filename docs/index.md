@@ -3,8 +3,10 @@
 Welcome to the Matrix0 documentation. This directory contains detailed guides for using and developing the engine.
 
 - [Project Status](status.md)
+- [Current Working Plan](current_working_plan.md)
 - [Development Roadmap](roadmap.md)
 - [Configuration Guide](configuration.md)
+- [Local Loop Knob Guide](local_loop_knobs.md)
 - [Web UI Guide](webui.md)
 - [Model V2 Design](model_v2.md)
 - [External Engine Integration](EXTERNAL_ENGINES.md)
@@ -14,10 +16,10 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 
 ## Current Project Status
 
-**Matrix0 v2.2** - SSL Architecture Integration + Data Pipeline Fixes + EX0Bench System deployed.
+**Matrix0 v2.2** - SSL Architecture Integration + hardened local-loop training diagnostics + EX0Bench System deployed.
 
 ### ✅ What's Working
-- **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with data pipeline fixes
+- **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with strict local-loop diagnostics
 - **Model Architecture**: 44.2M parameter ResNet-22 with attention and SSL foundation
 - **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection) with optimized pipeline
 - **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) without neural network inference
@@ -28,12 +30,14 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - **Web Interface**: FastAPI-based evaluation and analysis interface with comprehensive monitoring
 
 ### 🔄 Active Development
+- **Reliable Model Improvement**: Validate self-play labels before training and promote only on stable heldout metrics
+- **Search/Data Tuning**: Tune MCTS, draw adjudication, capped value weights, and anchor data mix
 - **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
-- **Tournament System Enhancement**: Multi-engine tournament analysis and ranking improvements
 - **Performance Optimization**: Memory usage and training throughput improvements
-- **Model Strength Improvement**: Continue training to close gap with top engines
 
 ### 📚 Documentation Status
+- **Current Working Plan**: ✅ Living document for active experiments
+- **Local Loop Knob Guide**: ✅ Active guide for self-play/training/eval knobs
 - **Configuration Guide**: ✅ Current and accurate (updated for SSL fixes)
 - **Model V2 Design**: ✅ Current and accurate
 - **Web UI Guide**: ✅ Current and accurate
@@ -48,10 +52,10 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 For a quick look at current problem areas, check the [status report](status.md).
 
 ### Current Priorities
-1. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
-2. **Training Enhancement**: Achieve stable training with full SSL capabilities
-3. **Performance Optimization**: Memory usage and training throughput improvements
-4. **Documentation**: Keep all technical docs current and comprehensive
+1. **Reliable Training Signal**: Improve model only from verified self-play and heldout evaluation
+2. **Search/Outcome Mix**: Reduce capped-game dominance while preserving sharp policy labels
+3. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
+4. **Performance Optimization**: Memory usage and training throughput improvements
 
 ## Quick Start
 
@@ -88,5 +92,5 @@ python -m azchess.eval --external-engines --games 50
 
 ---
 
-**Last Updated**: September 2025
-**Status**: Production training pipeline operational, complete SSL architecture integration with data pipeline fixes, EX0Bench external benchmarking system deployed
+**Last Updated**: 2026-05-09
+**Status**: Production training pipeline operational with strict local-loop diagnostics, complete SSL architecture integration, and EX0Bench external benchmarking system deployed
