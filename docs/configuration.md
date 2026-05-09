@@ -170,7 +170,7 @@ training:
 
 With `extra_replay_dirs` set as above, NPZ shards produced by `tools/generate_stockfish_data.py` under `data/stockfish_games/**` are automatically registered and sampled during training alongside self-play data.
 
-## 2. Recent Configuration Enhancements (August 2025)
+## 2. Recent Configuration Enhancements (updated May 9, 2026)
 
 ### Scheduler Robustness
 - Fixed learning rate scheduler stepping issues with gradient accumulation

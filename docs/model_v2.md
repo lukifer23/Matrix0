@@ -2,7 +2,7 @@
 
 Status: ACTIVE TRAINING (training pipeline operational)
 Owner: Matrix0 maintainers
-Last updated: 2025-08-25
+Last updated: 2026-05-09
 
 ## 1) Current Production Architecture
 

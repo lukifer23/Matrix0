@@ -6,7 +6,7 @@ For current problem areas, see the [Open Issues](index.md#open-issues) section.
 ## Project Status: PRODUCTION TRAINING + EX0BENCH
 
 **Current Version**: v2.2
-**Last Updated**: September 2025
+**Last Updated**: May 9, 2026
 **Status**: Production training pipeline active, SSL foundation optimized with 5-task configuration, data pipeline fixes complete, EX0Bench external benchmarking system deployed
 
 ## Current Achievement Summary
@@ -57,14 +57,14 @@ Matrix0 has achieved **production training capability** with a sophisticated 44.
 - [x] **Model analysis tools** with parameter counting
 - [x] **Web interface** for evaluation and analysis
 
-### Training Achievements (August 2025)
+### Training Achievements (updated May 9, 2026)
 - [x] **Training pipeline operational** with stable performance
 - [x] **No NaN/Inf crashes** after branch normalization fixes
 - [x] **Memory optimization** to 14GB MPS limit
 - [x] **SSL foundation established** with five production SSL heads active and experimental pawn structure/king safety heads staged for future validation
 - [x] **Emergency checkpoints** working correctly
 
-### Benchmark System Achievements (August 2025)
+### Benchmark System Achievements (updated May 9, 2026)
 - [x] **Advanced benchmark system** with multi-engine tournament support
 - [x] **LC0 integration** with Apple Silicon Metal backend optimization
 - [x] **SSL performance tracking** for all 5 production SSL heads (experimental pawn structure and king safety instrumentation hidden until activation)
