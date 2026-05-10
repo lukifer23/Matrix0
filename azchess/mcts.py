@@ -558,6 +558,7 @@ class MCTS:
             batch_n = min(max_batch_size, total - sims_done)
             # Collect leaf positions for this batch
             leaf_samples = []  # Each entry: {'board': chess.Board, 'node': Node, 'path': List[Node]}
+            inflight_counts = {}
             
             if use_parallel:
                 append_lock = threading.Lock()
@@ -565,7 +566,7 @@ class MCTS:
                 for _ in range(batch_n):
                     futures.append(
                         self.executor.submit(
-                            self._collect_leaf_position, board.copy(), root, leaf_samples, append_lock
+                            self._collect_leaf_position, board.copy(), root, leaf_samples, append_lock, inflight_counts
                         )
                     )
                 
@@ -577,7 +578,7 @@ class MCTS:
             else:
                 # Sequential collection (faster for small batches, avoids GIL overhead)
                 for _ in range(batch_n):
-                    self._collect_leaf_position(board.copy(), root, leaf_samples, None)
+                    self._collect_leaf_position(board.copy(), root, leaf_samples, None, inflight_counts)
 
             if not leaf_samples:
                 sims_done += batch_n
@@ -793,10 +794,10 @@ class MCTS:
             results.append(self._run_simulations_for_root(root))
         return results
 
-    def _collect_leaf_position(self, board, root, leaf_samples, append_lock):
+    def _collect_leaf_position(self, board, root, leaf_samples, append_lock, inflight_counts=None):
         """Collect the leaf position from a simulation."""
         try:
-            node, path, leaf_board = self._select(board, root)
+            node, path, leaf_board = self._select(board, root, inflight_counts=inflight_counts)
             
             if leaf_board.is_game_over():
                 v_leaf = self._terminal_value(leaf_board)
@@ -957,6 +958,11 @@ class MCTS:
                         logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
                     
                     raise RuntimeError("MCTS selection failed: no child selected from expanded node")
+
+                # Mark this edge as in-flight while still under the selection
+                # lock, so batched collectors diversify before backpropagation.
+                if inflight_counts is not None:
+                    inflight_counts[best_child] = inflight_counts.get(best_child, 0) + 1
                 
             board.push(best_child.move)
             # Preserve edge-local accounting. Replacing this with a
@@ -964,10 +970,6 @@ class MCTS:
             # root child that actually selected the move.
             node = best_child
             path.append(node)
-            # Mark this edge as in-flight for the batch to diversify subsequent selections
-            if inflight_counts is not None:
-                inflight_counts[best_child] = inflight_counts.get(best_child, 0) + 1
-
         return node, path, board
 
     def _cpuct_at(self, ply: int) -> float:

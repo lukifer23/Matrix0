@@ -48,6 +48,33 @@ def test_virtual_loss_reduces_leaf_collisions():
     assert second_board.peek() == second_node.move
 
 
+def test_leaf_collection_uses_virtual_loss_to_diversify_batch():
+    model = DummyModel()
+    cfg = MCTSConfig(num_simulations=1, batch_size=1, virtual_loss=1.0, selection_jitter=0.0)
+    mcts = MCTS(model, cfg)
+    board = chess.Board()
+
+    root = Node()
+    legal_moves = list(board.legal_moves)[:2]
+    root.children = {
+        legal_moves[0]: Node(prior=0.5, move=legal_moves[0], parent=root),
+        legal_moves[1]: Node(prior=0.5, move=legal_moves[1], parent=root),
+    }
+    root.expanded = True
+    root.n = 1
+
+    leaf_samples = []
+    inflight_counts = {}
+
+    mcts._collect_leaf_position(board.copy(), root, leaf_samples, None, inflight_counts)
+    mcts._collect_leaf_position(board.copy(), root, leaf_samples, None, inflight_counts)
+
+    selected_moves = [sample["path"][1].move for sample in leaf_samples]
+
+    assert set(selected_moves) == set(legal_moves)
+    assert len(leaf_samples) == 2
+
+
 def test_zero_selection_jitter_does_not_call_random(monkeypatch):
     model = DummyModel()
     cfg = MCTSConfig(num_simulations=1, batch_size=1, virtual_loss=0.0, selection_jitter=0.0)

@@ -89,6 +89,8 @@ Adds random jitter to child selection scores.
 
 As of the May 10, 2026 local-loop hardening pass, `0.0` is exact: MCTS selection no longer adds hidden random tie-breaking jitter when this is disabled. Rerun old no-jitter generator probes before drawing conclusions from them.
 
+The batched collector also applies virtual loss through the actual leaf-collection path. Restart generator processes after updating this code; an already-running generator will keep the old search behavior.
+
 ### `--disable-entropy-noise`
 
 Disables extra prior noise when policy logits look uniform.
@@ -280,10 +282,10 @@ Use `--skip-train` to validate labels and outcome mix before training.
 Current active probe:
 
 ```text
-logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter
+logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter_vloss
 ```
 
-Use it to decide whether the anchor-only no-SSL candidate can generate data at least as good as the parent. If it remains all capped with weak target sharpness, do not train or promote it; inspect final-position metadata and fix generation/search behavior first.
+Use it to decide whether the anchor-only no-SSL candidate can generate data at least as good as the parent. If it remains all capped with weak target sharpness, do not train or promote it; inspect final-position metadata and fix generation/search behavior first. The current tablebase check passed, so material-heavy caps point at search/conversion behavior rather than broken Syzygy wiring.
 
 ### Heldout Training Probe
 

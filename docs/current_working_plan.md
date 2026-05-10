@@ -41,6 +41,7 @@ The local-loop path now fails hard instead of silently producing bad data:
 - MCTS root searches are fresh by default; mutable transposition-table visit stats no longer contaminate self-play labels
 - MCTS policy targets are built from the current search visit counts, not stale accumulated node counts
 - batched legal-only MCTS expansion softmaxes raw legal logits instead of normalizing positive logits as probabilities
+- batched MCTS leaf collection now passes shared per-mini-batch virtual-loss state into selection, so batch collection diversifies before network inference/backpropagation
 - root value labels now use alternating MCTS backpropagation instead of overwriting `root.q` with raw mean leaf values
 - explicit `mcts.value_from_white` config is respected; auto-detection only runs for old configs without the key
 - training raises on NaN/Inf policy, value, SSL logits, and scaler backward errors instead of sanitizing/skipping
@@ -126,6 +127,22 @@ Investigation found that MCTS selection still added a small random tie-breaker w
 
 That is fixed now. The next generator probe must rerun with the same visible command because `--selection-jitter 0.0` now means exact zero jitter. New reports will also include final-position diagnostics to explain capped games.
 
+### Tablebase Wiring Is Not The Current Blocker
+
+The Syzygy path is configured and probeable:
+
+- `config.yaml` has `tablebases.enabled: true`, `path: data/syzygy`, and `max_pieces: 5`
+- `data/syzygy` contains WDL files and direct `python-chess` WDL probes work
+- current capped generator diagnostics show games reaching the cap with too much material, not near the configured tablebase piece limit
+
+Interpretation: tablebase adjudication is not being missed because the path is broken. The candidate generator is failing to simplify/convert games before the move cap.
+
+### Batched Virtual Loss Was Not Active In The Real Collector
+
+The virtual-loss selector existed, but the production batched leaf collector was not passing the shared in-flight map into `_select`.
+
+That is fixed now. New generator probes should use a fresh process/run directory; already-running generator processes loaded the old code and will not pick up this fix.
+
 ## Active Hypotheses
 
 ### H1: Generator Quality Is The Blocker
@@ -156,7 +173,7 @@ Acceptance:
 
 ### H3: Outcome Mix Needs Search/Termination Work
 
-If the fixed-jitter generator remains `64/64` capped, the next fix is not more retraining. Investigate:
+If the fixed-jitter plus virtual-loss generator remains mostly capped, the next fix is not more retraining. Investigate:
 
 - final material counts at cap
 - final halfmove clocks and claimable draw state
@@ -167,13 +184,13 @@ If the fixed-jitter generator remains `64/64` capped, the next fix is not more r
 
 ## Current Probe Command
 
-Run this next. It repeats the candidate generator check after the zero-jitter fix and records final-position diagnostics:
+Run this next. It repeats the candidate generator check after the zero-jitter and batched virtual-loss fixes and records final-position diagnostics:
 
 ```bash
 MATRIX0_MPS_TARGET_BATCH=4 \
 .venv/bin/python -m azchess.tools.bench_local_loop \
   --config config.yaml \
-  --run-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter \
+  --run-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter_vloss \
   --games 64 \
   --workers 2 \
   --sims 50 \
@@ -237,4 +254,3 @@ The high-signal sections are:
 - `fresh_data.quality.source_metrics.<source>.final_legal_count`
 - `fresh_data.quality.source_metrics.<source>.final_can_claim_draw`
 - `eval_delta`
-

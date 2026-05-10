@@ -15,7 +15,8 @@
    - **Status**: Active
      - Current parent remains `checkpoints/bootstrap_006_capped_value.pt`
      - `bootstrap_006_anchor_only_nossl_s600` is not promoted; its 64-game generator check produced `64/64` capped games and weak policy labels
-     - Next probe is `bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter`
+     - Tablebase probing is configured and working; capped candidate games are not reaching low enough material for Syzygy to decide them
+     - Next probe is `bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter_vloss`
 
 ### 2. Search/Data Diagnostics 🔎
    - **Priority**: High
@@ -24,6 +25,7 @@
    - **Status**: Active
      - New final-position metadata reports final FEN, piece count, halfmove clock, legal count, and draw-claim availability
      - New policy-target diagnostics bucket CE/top-1/rank by entropy, target top probability, and legal count
+     - Batched MCTS virtual loss now applies in the actual leaf-collection path, reducing repeated same-edge collection before batched inference
 
 ### 3. SSL Performance Validation 📊
    - **Priority**: Medium
@@ -147,8 +149,9 @@
 ### Priority 1: Local-Loop Reliability (ACTIVE)
 
 #### 1.1 Generator Quality
-- [ ] **Fixed-Jitter Candidate Probe**: Rerun the 64-game anchor-only candidate generator now that `--selection-jitter 0.0` is exact
+- [ ] **Fixed-Jitter + Virtual-Loss Candidate Probe**: Rerun the 64-game anchor-only candidate generator now that `--selection-jitter 0.0` is exact and batched leaf collection uses virtual loss
 - [ ] **Capped-Game Diagnosis**: Use final-position metadata to determine whether caps are material-heavy, fifty-move/draw-claim related, or search-quality related
+- [x] **Tablebase Wiring Check**: Confirm Syzygy WDL probing is configured and direct probes work; current caps are material-heavy rather than tablebase-missed
 - [ ] **Parent-vs-Candidate Generator Gate**: Do not promote a checkpoint unless it generates data at least as good as the parent
 
 #### 1.2 Training Signal Quality
@@ -163,6 +166,7 @@
 - [x] **Current-Search Targets**: Build policy targets from current search visit deltas
 - [x] **Legal-Logit Softmax**: Softmax raw legal logits correctly in batched legal-only expansion
 - [x] **Exact Zero Jitter**: Remove hidden random jitter when `selection_jitter=0.0`
+- [x] **Batched Virtual Loss Wiring**: Pass shared in-flight edge counts through batched leaf collection into selection
 
 ### Priority 2: SSL And Performance Validation (Next)
 
