@@ -3,6 +3,7 @@
 ## Unreleased - Local-Loop Reliability Hardening (May 2026)
 
 ### Fixed
+- Prevented completed self-play subprocesses from hanging forever during worker shutdown by adding bounded joins and terminating workers that do not exit after all requested games are reported.
 - Wired batched MCTS virtual loss into the real leaf-collection path. Batched searches now share per-mini-batch in-flight edge counts, so multiple collected leaves are discouraged from selecting the same root/edge before backpropagation.
 - Made `--selection-jitter 0.0` exact in MCTS selection. The search no longer adds hidden random tie-breaking jitter during clean no-jitter ablations.
 - Prevented excluded fresh self-play shards from remaining train-visible through stale metadata after `--train-fresh-max-files`.
@@ -13,7 +14,7 @@
 - Added final-position self-play metadata: final FEN, piece count, halfmove clock, legal count, and draw-claim availability.
 - Added final-position summaries to local-loop reports under `final_position` and per-source `source_metrics`.
 - Added `azchess.tools.diagnose_policy_targets` for target-entropy, top-probability, and legal-count bucket diagnostics.
-- Added tests covering legal-policy loss, fresh-shard metadata pruning, exact zero-jitter selection, batched virtual-loss leaf collection, and current-search MCTS policy targets.
+- Added tests covering legal-policy loss, fresh-shard metadata pruning, exact zero-jitter selection, batched virtual-loss leaf collection, self-play worker shutdown, and current-search MCTS policy targets.
 
 ### Documentation
 - Updated the current working plan, local-loop knob guide, status docs, and README status pointer to reflect the active generator-quality blocker and promotion gate.

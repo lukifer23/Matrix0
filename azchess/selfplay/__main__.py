@@ -8,6 +8,41 @@ from ..config import Config
 from .internal import math_div_ceil, selfplay_worker
 
 
+def _join_or_terminate_workers(
+    procs: List[Process],
+    done: int,
+    total: int,
+    join_timeout: float = 30.0,
+    terminate_timeout: float = 10.0,
+) -> None:
+    """Join workers, but do not let completed self-play hang forever on shutdown."""
+    for p in procs:
+        p.join(timeout=join_timeout)
+
+    hung = [p for p in procs if p.is_alive()]
+    if not hung:
+        return
+
+    if done >= total:
+        print(
+            f"[SelfPlay] Completed {done}/{total} games, but {len(hung)} worker(s) did not exit; terminating shutdown hang"
+        )
+    else:
+        print(f"[SelfPlay] Terminating {len(hung)} stalled worker(s): done={done}/{total}")
+
+    for p in hung:
+        p.terminate()
+    for p in hung:
+        p.join(timeout=terminate_timeout)
+
+    still_alive = [p for p in hung if p.is_alive()]
+    for p in still_alive:
+        if hasattr(p, "kill"):
+            p.kill()
+    for p in still_alive:
+        p.join(timeout=terminate_timeout)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
@@ -84,11 +119,17 @@ def main():
                 capped = " capped" if msg.get("capped") else ""
                 print(f"[SelfPlay] {done}/{total} gms | p{msg['proc']} moves={msg['moves']} res={msg['result']} src={source}{capped} time={msg['secs']:.1f}s")
     finally:
-        for p in procs:
-            p.join()
-    failed = [p.exitcode for p in procs if p.exitcode != 0]
-    if failed:
+        _join_or_terminate_workers(procs, done, total)
+        try:
+            q.close()
+            q.join_thread()
+        except Exception:
+            pass
+    failed = [p.exitcode for p in procs if p.exitcode not in (0, None)]
+    if failed and done != total:
         raise RuntimeError(f"[SelfPlay] Worker failure after join: exitcodes={failed}")
+    if failed:
+        print(f"[SelfPlay] Completed requested games despite worker shutdown exitcodes={failed}")
     if done != total:
         raise RuntimeError(f"[SelfPlay] Completed {done}/{total} requested games")
 
