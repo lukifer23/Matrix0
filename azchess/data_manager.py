@@ -646,10 +646,10 @@ class DataManager:
 
                         legal_masks.append(legal_mask)
                     except Exception as e:
-                        logger.warning(f"Failed to compute legal mask for tactical sample {i}: {e}")
-                        # Fallback: mark all moves as potentially legal (will be filtered by policy masking)
-                        legal_mask = np.ones(4672, dtype=np.uint8)
-                        legal_masks.append(legal_mask)
+                        if os.environ.get("MATRIX0_STRICT_DATA") == "1":
+                            raise ValueError(f"Failed to compute legal mask for tactical sample {i}: {e}") from e
+                        logger.warning(f"Failed to compute legal mask for tactical sample {i}: {e}; skipping tactical batch")
+                        return None
 
                 out['legal_mask'] = np.array(legal_masks)
                 return out
@@ -704,10 +704,10 @@ class DataManager:
 
                         legal_masks.append(legal_mask)
                     except Exception as e:
-                        logger.warning(f"Failed to compute legal mask for openings sample {i}: {e}")
-                        # Fallback: mark all moves as potentially legal (will be filtered by policy masking)
-                        legal_mask = np.ones(4672, dtype=np.uint8)
-                        legal_masks.append(legal_mask)
+                        if os.environ.get("MATRIX0_STRICT_DATA") == "1":
+                            raise ValueError(f"Failed to compute legal mask for openings sample {i}: {e}") from e
+                        logger.warning(f"Failed to compute legal mask for openings sample {i}: {e}; skipping openings batch")
+                        return None
 
                 out['legal_mask'] = np.array(legal_masks)
                 return out
@@ -1745,6 +1745,7 @@ class DataManager:
         if not shard_paths:
             raise RuntimeError("No valid training data available for requested sources")
         np.random.shuffle(shard_paths)
+        strict_data = os.environ.get("MATRIX0_STRICT_DATA") == "1"
         for shard_path in shard_paths:
             try:
                 with np.load(shard_path, mmap_mode='r') as data:
@@ -1758,9 +1759,13 @@ class DataManager:
                     if values.ndim == 2 and values.shape[1] == 1:
                         values = values.reshape(values.shape[0])
                     if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
+                        if strict_data:
+                            raise ValueError(f"Invalid shapes in shard {shard_path}")
                         self._mark_shard_corrupted(shard_path)
                         continue
                     if not self._validate_dtypes_and_ranges(states, policies, values, str(shard_path)):
+                        if strict_data:
+                            raise ValueError(f"Invalid dtypes/ranges in shard {shard_path}")
                         self._mark_shard_corrupted(shard_path)
                         continue
                     if legal_mask_all is not None:
@@ -1769,8 +1774,12 @@ class DataManager:
                                 legal_mask_all = legal_mask_all.reshape(legal_mask_all.shape[0], -1)
                             if legal_mask_all.dtype != np.uint8:
                                 legal_mask_all = legal_mask_all.astype(np.uint8, copy=False)
-                        except Exception:
+                        except Exception as e:
+                            if strict_data:
+                                raise ValueError(f"Failed to process legal_mask in shard {shard_path}: {e}") from e
                             legal_mask_all = None
+                    elif strict_data:
+                        raise ValueError(f"Shard missing legal_mask in strict mode: {shard_path}")
 
                     # Load SSL targets if present
                     ssl_targets = {}
@@ -1781,6 +1790,8 @@ class DataManager:
                             ssl_targets[ssl_key] = ssl_data
 
                         except Exception as e:
+                            if strict_data:
+                                raise ValueError(f"Failed to load SSL target {ssl_key}: {e}") from e
                             logger.warning(f"Failed to load SSL target {ssl_key}: {e}")
 
                     indices = np.random.permutation(len(states))
@@ -1847,6 +1858,8 @@ class DataManager:
                             yield out
             except Exception as e:
                 logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
+                if strict_data:
+                    raise
                 self._mark_shard_corrupted(shard_path)
                 continue
     

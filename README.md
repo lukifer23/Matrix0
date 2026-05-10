@@ -19,7 +19,7 @@ Matrix0 implements **cutting-edge multi-task learning** combining reinforcement 
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, and comprehensive evaluation
 
 ## Project Status
-**ACTIVE DEVELOPMENT** – SSL architecture integration, strict local-loop diagnostics, and EX0Bench benchmarking are in place. For the active training/debugging plan, see the [current working plan](docs/current_working_plan.md). For historical status and broader roadmap context, see the [comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the [development roadmap](docs/roadmap.md).
+**ACTIVE DEVELOPMENT** – SSL architecture integration, strict local-loop diagnostics, and EX0Bench benchmarking are in place. Current work is focused on reliable self-play improvement: verifying generated labels, diagnosing capped games, and promoting checkpoints only after stable heldout metrics plus candidate generator checks. For the active training/debugging plan, see the [current working plan](docs/current_working_plan.md). For historical status and broader roadmap context, see the [comprehensive status report](docs/CURRENT_STATUS_SUMMARY.md), the [enhanced WebUI guide](docs/webui.md), the [EX0Bench documentation](benchmarks/EX0BENCH_README.md), and the [development roadmap](docs/roadmap.md).
 
 ## ✨ Key Features
 
@@ -294,10 +294,10 @@ python -m azchess.tools.bench_mcts
 Contributions are welcome! Current focus areas include:
 
 ### High Priority
-- **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
-- **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
-- **Enhanced Evaluation**: Multi-engine tournaments with SSL-aware strength estimation
-- **WebUI Refinement**: Enhance SSL visualization and monitoring features
+- **Reliable Local-Loop Improvement**: Validate generated labels, outcome mix, heldout metrics, and candidate generator quality before promotion
+- **Search/Outcome Diagnosis**: Reduce capped-game dominance while preserving sharp policy labels
+- **Training Signal Quality**: Keep legal-policy ranking and value MSE stable before accepting a candidate
+- **SSL Performance Validation**: Measure SSL learning effectiveness after the local-loop promotion gate is reliable
 
 ### Medium Priority
 - **SSL Learning Analytics**: Deep analysis of SSL contribution to policy/value learning

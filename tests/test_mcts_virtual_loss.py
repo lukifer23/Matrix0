@@ -46,3 +46,30 @@ def test_virtual_loss_reduces_leaf_collisions():
     assert first_node.move != second_node.move
     assert first_board.peek() == first_node.move
     assert second_board.peek() == second_node.move
+
+
+def test_zero_selection_jitter_does_not_call_random(monkeypatch):
+    model = DummyModel()
+    cfg = MCTSConfig(num_simulations=1, batch_size=1, virtual_loss=0.0, selection_jitter=0.0)
+    mcts = MCTS(model, cfg)
+    board = chess.Board()
+    root = Node()
+
+    legal_moves = list(board.legal_moves)[:2]
+    root.children = {
+        legal_moves[0]: Node(prior=0.7, move=legal_moves[0], parent=root),
+        legal_moves[1]: Node(prior=0.3, move=legal_moves[1], parent=root),
+    }
+    root.expanded = True
+    root.n = 1
+
+    def fail_random():
+        raise AssertionError("selection_jitter=0.0 should not call random.random")
+
+    monkeypatch.setattr("azchess.mcts.random.random", fail_random)
+
+    selected, path, selected_board = mcts._select(board.copy(), root)
+
+    assert selected.move == legal_moves[0]
+    assert path[-1] is selected
+    assert selected_board.peek() == legal_moves[0]

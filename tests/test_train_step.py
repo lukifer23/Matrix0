@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from azchess.training.train import POLICY_SHAPE, apply_policy_mask, legal_policy_mass_loss, train_step
+from azchess.training.train import POLICY_SHAPE, apply_policy_mask, legal_policy_ce_loss, legal_policy_mass_loss, train_step
 
 
 class DummyModel(nn.Module):
@@ -78,3 +78,28 @@ def test_legal_policy_mass_loss_backprops_to_illegal_logits():
     assert p.grad is not None
     assert p.grad[0, 0].item() < 0.0
     assert p.grad[0, 1:].sum().item() > 0.0
+
+
+def test_legal_policy_ce_loss_renormalizes_to_legal_moves():
+    p = torch.tensor([[0.0, 2.0, 8.0, -3.0]], dtype=torch.float32)
+    pi = torch.tensor([[0.25, 0.75, 0.0, 0.0]], dtype=torch.float32)
+    legal = torch.tensor([[True, True, False, False]])
+
+    loss = legal_policy_ce_loss(p, pi, legal)
+    expected = -(pi[:, :2] * torch.log_softmax(p[:, :2], dim=1)).sum(dim=1).mean()
+
+    assert torch.allclose(loss, expected)
+
+
+def test_legal_policy_ce_loss_backprops_only_through_legal_logits():
+    p = torch.zeros((1, 4), dtype=torch.float32, requires_grad=True)
+    pi = torch.tensor([[0.0, 1.0, 0.0, 0.0]], dtype=torch.float32)
+    legal = torch.tensor([[True, True, False, False]])
+
+    loss = legal_policy_ce_loss(p, pi, legal)
+    loss.backward()
+
+    assert p.grad is not None
+    assert p.grad[0, 0].item() > 0.0
+    assert p.grad[0, 1].item() < 0.0
+    assert torch.equal(p.grad[0, 2:], torch.zeros(2))

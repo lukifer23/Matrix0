@@ -107,6 +107,9 @@ class MCTSConfig:
     playout_random_frac: float = 0.0  # 0.0 disables; e.g., 0.3 → ±30%
     # Exploration noise injection when policy is too uniform (training/self-play only)
     enable_entropy_noise: bool = True
+    # Keep root searches independent by default. Reusing mutable visit statistics
+    # across separate calls contaminates self-play policy targets.
+    reuse_search_tree: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCTSConfig":
@@ -211,13 +214,22 @@ class Node:
         
         self.expanded = True
 
-    def _expand_with_legal_priors(self, board: chess.Board, legal_moves: List[chess.Move], legal_priors: np.ndarray, encoder: Optional[MoveEncoder] = None) -> None:
+    def _expand_with_legal_priors(
+        self,
+        board: chess.Board,
+        legal_moves: List[chess.Move],
+        legal_priors: np.ndarray,
+        encoder: Optional[MoveEncoder] = None,
+        *,
+        from_logits: bool = False,
+    ) -> None:
         """Expand node using precomputed legal priors without requiring full-policy logits.
 
         Args:
             board: current position
             legal_moves: list of legal moves for the position
-            legal_priors: probability distribution over legal_moves (numpy float32)
+            legal_priors: probability distribution over legal_moves, or raw logits
+                when from_logits=True
             encoder: optional move encoder for caching indices
         """
         if self.is_expanded():
@@ -227,8 +239,7 @@ class Node:
         pri = legal_priors.astype(np.float32, copy=False)
         if not np.all(np.isfinite(pri)):
             raise ValueError("Legal priors contain NaN/Inf during MCTS expansion")
-        total = float(pri.sum())
-        if np.any(pri < 0) or not np.isfinite(total) or total <= 0:
+        if from_logits:
             shifted = pri - np.max(pri)
             exps = np.exp(shifted).astype(np.float32)
             denom = float(exps.sum())
@@ -236,6 +247,9 @@ class Node:
                 raise ValueError("Unable to convert legal logits into priors")
             pri = exps / denom
         else:
+            total = float(pri.sum())
+            if np.any(pri < 0) or not np.isfinite(total) or total <= 0:
+                raise ValueError(f"Invalid legal prior distribution: sum={total}")
             pri = pri / total
         for i, move in enumerate(legal_moves):
             child = Node(prior=float(pri[i]), move=move, parent=self)
@@ -348,7 +362,8 @@ class MCTS:
                 return {}, np.zeros(policy_size, dtype=np.float32), terminal_value
 
             key = board._transposition_key()
-            root = self._tt_get(key)
+            reuse_tree = bool(getattr(self.cfg, "reuse_search_tree", False))
+            root = self._tt_get(key) if reuse_tree else None
             if root is None:
                 root = Node()
                 t0 = time.time() if timers_enabled else 0.0
@@ -363,7 +378,8 @@ class MCTS:
                     allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
                 )
                 self._prune_children(root)
-                self._tt_put(key, root, skip_lock=True)
+                if reuse_tree:
+                    self._tt_put(key, root, skip_lock=True)
             else:
                 cached = self.nn_cache.get(key)
                 if cached is None:
@@ -415,7 +431,8 @@ class MCTS:
                         allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
                     )
                     self._prune_children(root)
-                    self._register_children_in_tt(root, board, skip_lock=True)
+                    if reuse_tree:
+                        self._register_children_in_tt(root, board, skip_lock=True)
                     # Initialize root value
                     v = float(np.clip(v, -1.0, 1.0))
                     root.q = v
@@ -423,12 +440,17 @@ class MCTS:
                     logger.error(f"Failed to expand root node: {root_expand_err}")
                     raise RuntimeError(f"MCTS root expansion failed: {root_expand_err}") from root_expand_err
 
+            baseline_visits: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
+
             # Enhanced batched-leaf inference path: always attempt batched collection
             # regardless of thread count. The collector already supports single-thread
             # fallback; this restores batching benefits on MPS where num_threads=1.
             self._run_simulations_parallel_batched(board, root, sims_to_run)
 
-            visit_counts: Dict[chess.Move, int] = {m: c.n for m, c in root.children.items()}
+            visit_counts: Dict[chess.Move, int] = {
+                m: max(0, c.n - baseline_visits.get(m, 0))
+                for m, c in root.children.items()
+            }
             
             # Validate that we got at least some visits - if not, root expansion may have failed
             total_visits = sum(visit_counts.values())
@@ -462,7 +484,7 @@ class MCTS:
                     logger.error(error_msg)
                     raise RuntimeError(error_msg)
             
-            policy = self._policy_from_root(root, board)
+            policy = self._policy_from_root(root, board, visit_counts=visit_counts)
             self._last_sims_run = sims_to_run
             # Expose last root for external inspection (e.g., debug prints)
             self._last_root = root
@@ -523,7 +545,6 @@ class MCTS:
         sims_done = 0
         inference_failures = 0
         total_inference_attempts = 0
-        root_eval_values: List[float] = []
         
         # Optimization: For small simulation counts or single-threaded, use sequential collection
         # Threading overhead may outweigh benefits on MPS with GIL
@@ -660,11 +681,11 @@ class MCTS:
                                         allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
                                     )
                                     self._prune_children(node)
-                                    self._register_children_in_tt(node, board_pos, skip_lock=True)
+                                    if bool(getattr(self.cfg, "reuse_search_tree", False)):
+                                        self._register_children_in_tt(node, board_pos, skip_lock=True)
 
                                 value_float = float(np.clip(value, -1.0, 1.0))
                                 value_floats.append(value_float)
-                                root_eval_values.append(value_float)
                                 self._backpropagate(sample.get("path", []), value_float)
                         else:
                             # Perform true batched inference directly on the model
@@ -698,7 +719,13 @@ class MCTS:
                                                 if legals:
                                                     idxs = [self._enc.encode_move(board_pos, m) if self._enc is not None else move_to_index(board_pos, m) for m in legals]
                                                     pri = p_logits[idxs]
-                                                    node._expand_with_legal_priors(board_pos, legals, pri, encoder=self._enc)
+                                                    node._expand_with_legal_priors(
+                                                        board_pos,
+                                                        legals,
+                                                        pri,
+                                                        encoder=self._enc,
+                                                        from_logits=True,
+                                                    )
                                                 else:
                                                     node._expand(board_pos, p_logits, encoder=self._enc, legal_only=False, allow_noise=False)
                                             else:
@@ -710,12 +737,12 @@ class MCTS:
                                                     allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
                                                 )
                                             self._prune_children(node)
-                                            self._register_children_in_tt(node, board_pos, skip_lock=True)
+                                            if bool(getattr(self.cfg, "reuse_search_tree", False)):
+                                                self._register_children_in_tt(node, board_pos, skip_lock=True)
                                         value_float = float(np.clip(v, -1.0, 1.0))
                                     except (RuntimeError, ValueError, TypeError) as infer_err:
                                         raise RuntimeError(f"Batched inference expand/backprop failed: {infer_err}") from infer_err
                                     value_floats.append(value_float)
-                                    root_eval_values.append(value_float)
                                     self._backpropagate(sample.get("path", []), value_float)
                             except (RuntimeError, ValueError, TypeError) as batched_err:
                                 raise RuntimeError(f"Batched model inference failed for chunk of {len(chunk)}: {batched_err}") from batched_err
@@ -733,9 +760,6 @@ class MCTS:
                     continue
 
             sims_done += batch_n
-
-        if root_eval_values and root.n > 0:
-            root.q = float(np.mean(root_eval_values))
 
     def _move_to_index(self, move: chess.Move, board: Optional[chess.Board] = None) -> int:
         return move_to_index(board or chess.Board(), move)
@@ -819,18 +843,16 @@ class MCTS:
                             allow_noise=bool(getattr(self.cfg, 'enable_entropy_noise', True))
                         )
                         self._prune_children(node)
-                        self._register_children_in_tt(node, leaf_board, skip_lock=True)
+                        if bool(getattr(self.cfg, "reuse_search_tree", False)):
+                            self._register_children_in_tt(node, leaf_board, skip_lock=True)
                 except Exception as e:
-                    logger.error(f"Inference error in simulation: {e}")
-                    # Use neutral value on inference failure
-                    v_leaf = 0.0
+                    raise RuntimeError(f"Inference error in simulation: {e}") from e
 
             self._backpropagate(path, v_leaf)
             
         except Exception as e:
             logger.error(f"Simulation error: {e}")
-            # Don't let simulation errors crash the entire MCTS
-            # The task will still be marked as done by the worker thread
+            raise RuntimeError(f"Simulation failed: {e}") from e
 
     def _prune_children(self, node: "Node") -> None:
         """Prune low-prior children to limit branching, if configured.
@@ -854,27 +876,26 @@ class MCTS:
         except Exception:
             pass
 
-    def _policy_from_root(self, root: Node, board: chess.Board) -> np.ndarray:
+    def _policy_from_root(
+        self,
+        root: Node,
+        board: chess.Board,
+        visit_counts: Optional[Dict[chess.Move, int]] = None,
+    ) -> np.ndarray:
         policy_size = int(getattr(getattr(self.model, 'cfg', None), 'policy_size', 4672))
         pi = np.zeros(policy_size, dtype=np.float32)
-        total = sum(c.n for c in root.children.values())
+        counts = visit_counts if visit_counts is not None else {m: c.n for m, c in root.children.items()}
+        total = sum(int(v) for v in counts.values())
         if total > 0:
-            for m, child in root.children.items():
+            for m, count in counts.items():
+                child = root.children.get(m)
+                if child is None:
+                    continue
                 idx = child.move_idx if getattr(child, 'move_idx', None) is not None else move_to_index(board, m)
                 if 0 <= idx < pi.shape[0]:
-                    pi[idx] = child.n / total
+                    pi[idx] = float(count) / float(total)
         else:
-            # If no visits, use uniform distribution over legal moves
-            legal_moves = list(board.legal_moves)
-            if legal_moves:
-                uniform_prob = 1.0 / len(legal_moves)
-                for move in legal_moves:
-                    try:
-                        idx = move_to_index(board, move)
-                        if 0 <= idx < pi.shape[0]:
-                            pi[idx] = uniform_prob
-                    except Exception:
-                        continue
+            raise RuntimeError("Cannot build MCTS policy from root with zero visit counts")
         return pi
 
     def _select(self, board: chess.Board, root: Node, inflight_counts: Optional[Dict[Node, int]] = None, base_ply: int = 0) -> Tuple[Node, List[Node], chess.Board]:
@@ -918,12 +939,10 @@ class MCTS:
                     if inflight_counts is not None and self.cfg.virtual_loss > 0.0:
                         score -= float(inflight_counts.get(child, 0)) * float(self.cfg.virtual_loss)
                     
-                    # Always add small jitter to break ties when UCB scores are identical
+                    # Optional tie-breaking noise for self-play diversity. A configured
+                    # value of 0.0 must be exact so deterministic ablations stay clean.
                     if self.cfg.selection_jitter > 0:
                         score += (random.random() - 0.5) * self.cfg.selection_jitter
-                    else:
-                        # Add minimal jitter even when selection_jitter is 0 to break ties
-                        score += (random.random() - 0.5) * 0.001
 
                     # Debug: Log UCB scores only when selection fails (reduced spam)
 
@@ -937,12 +956,7 @@ class MCTS:
                     for move, child in node.children.items():
                         logger.warning(f"  {move}: prior={child.prior:.4f}, n={child.n}, q={child.q:.4f}")
                     
-                    # Fallback: select first child if all UCB scores are identical
-                    if node.children:
-                        best_child = next(iter(node.children.values()))
-                        logger.warning(f"Fallback: selected first child {best_child.move}")
-                    else:
-                        break # Should not happen if children exist
+                    raise RuntimeError("MCTS selection failed: no child selected from expanded node")
                 
             board.push(best_child.move)
             # Preserve edge-local accounting. Replacing this with a
@@ -999,12 +1013,10 @@ class MCTS:
 
             # Validate noise distribution
             if np.any(np.isnan(noise)) or np.any(np.isinf(noise)):
-                logger.warning("Dirichlet noise contains NaN/Inf values, using uniform noise")
-                noise = np.ones(num_children) / num_children
+                raise ValueError("Dirichlet noise contains NaN/Inf values")
 
             if not np.isclose(np.sum(noise), 1.0, atol=1e-6):
-                logger.warning(f"Dirichlet noise doesn't sum to 1: {np.sum(noise)}")
-                noise = noise / np.sum(noise)  # Normalize
+                raise ValueError(f"Dirichlet noise does not sum to 1: {np.sum(noise)}")
 
             # Apply noise to child priors with validation
             for i, child in enumerate(root.children.values()):
@@ -1020,8 +1032,7 @@ class MCTS:
                         logger.debug(f"Child {child.move}: prior {old_prior:.4f} -> {new_prior:.4f} (noise: {noise[i]:.4f})")
 
         except Exception as e:
-            logger.error(f"Error applying Dirichlet noise: {e}")
-            # Fallback: no noise application
+            raise RuntimeError(f"Error applying Dirichlet noise: {e}") from e
 
     @torch.no_grad()
     def _infer(self, board: chess.Board) -> Tuple[np.ndarray, float]:

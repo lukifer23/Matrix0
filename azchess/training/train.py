@@ -102,6 +102,30 @@ def legal_policy_mass_loss(p: torch.Tensor, legal_mask: torch.Tensor) -> torch.T
     return -torch.log(legal_mass).mean()
 
 
+def legal_policy_ce_loss(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
+    """Cross-entropy after renormalizing logits and targets over legal moves."""
+    if legal_mask is None:
+        return torch.zeros((), device=p.device, dtype=p.dtype)
+    if legal_mask.dim() == 1:
+        legal_mask = legal_mask.view(-1, p.shape[1])
+    if legal_mask.shape != p.shape:
+        raise ValueError(f"Legal mask shape mismatch for legal policy CE: mask={legal_mask.shape}, policy={p.shape}")
+    if pi.shape != p.shape:
+        raise ValueError(f"Policy target shape mismatch for legal policy CE: pi={pi.shape}, policy={p.shape}")
+
+    legal = legal_mask.to(device=p.device, dtype=torch.bool)
+    target = pi.to(device=p.device, dtype=p.dtype) * legal.to(dtype=p.dtype)
+    target_mass = target.sum(dim=1, keepdim=True)
+    valid = legal.any(dim=1) & (target_mass.squeeze(1) > 0)
+    if not bool(valid.any().item()):
+        return torch.zeros((), device=p.device, dtype=p.dtype)
+
+    masked_logits = torch.where(legal, p, torch.full_like(p, -1e9))
+    legal_log_probs = nn.functional.log_softmax(masked_logits[valid], dim=1)
+    target_norm = target[valid] / target_mass[valid].clamp_min(1e-8)
+    return -(target_norm * legal_log_probs).sum(dim=1).mean()
+
+
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
@@ -110,7 +134,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_masking: bool = True, ssl_warmup_steps: int = 0, current_step: int = 0, ssl_target_weight: float = 1.0,
                ssl_targets_provider: str = "auto",
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16",
-               ssl_every_n: int = 1, ssl_chunk_size: int = 0, legal_mass_weight: float = 0.0):
+               ssl_every_n: int = 1, ssl_chunk_size: int = 0, legal_mass_weight: float = 0.0,
+               legal_policy_weight: float = 0.0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -419,10 +444,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     _outer_autocast = (use_autocast and device_type == "cuda")
     with torch.autocast(device_type=device_type, dtype=_amp_dtype, enabled=_outer_autocast):
         if hasattr(model, 'forward_with_features'):
-            p, v, ssl_out, feats = model.forward_with_features(s_forward, return_ssl=True)
+            p, v, ssl_out, feats = model.forward_with_features(s_forward, return_ssl=bool(enable_ssl))
         else:
             feats = None
-            p, v, ssl_out = model(s_forward, return_ssl=True)
+            p, v, ssl_out = model(s_forward, return_ssl=bool(enable_ssl))
 
     # Do not restore dtypes on MPS; keeping consistent param dtype avoids mixed-type ops
 
@@ -436,9 +461,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         # CRITICAL: Validate policy outputs before computing loss
         if torch.isnan(p).any() or torch.isinf(p).any():
             total_bad = int(torch.isnan(p).sum().item() + torch.isinf(p).sum().item())
-            logger.warning(f"Policy output contains NaN/Inf: total={total_bad}")
-            # Sanitize and continue instead of dropping many consecutive batches
-            p = torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
+            raise RuntimeError(f"Policy output contains NaN/Inf: total={total_bad}")
         
         # Do not clamp logits here; rely on model scaling and loss to stabilize
         
@@ -554,6 +577,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             policy_reg_loss = policy_reg_loss + (float(legal_mass_weight) * legal_mass_penalty)
             if current_step % 200 == 0:
                 logger.info("LEGAL_MASS_LOSS: weight=%.4f penalty=%.4f", float(legal_mass_weight), float(legal_mass_penalty.detach().item()))
+        legal_policy_penalty = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
+        if legal_policy_weight > 0.0 and legal_mask_t is not None:
+            legal_policy_penalty = legal_policy_ce_loss(p, pi, legal_mask_t).to(dtype=policy_loss.dtype)
+            policy_reg_loss = policy_reg_loss + (float(legal_policy_weight) * legal_policy_penalty)
+            if current_step % 200 == 0:
+                logger.info("LEGAL_POLICY_LOSS: weight=%.4f ce=%.4f", float(legal_policy_weight), float(legal_policy_penalty.detach().item()))
         
         # PERFORMANCE PROFILING: Start loss computation
         loss_comp_start = time.time()
@@ -565,8 +594,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             value_weight = value_weight.to(dtype=v.dtype)
         value_weight = value_weight.reshape_as(z).clamp(0.0, 1.0)
         if torch.isnan(v).any() or torch.isinf(v).any():
-            logger.warning("Value output contains NaN/Inf; sanitizing")
-            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+            total_bad = int(torch.isnan(v).sum().item() + torch.isinf(v).sum().item())
+            raise RuntimeError(f"Value output contains NaN/Inf: total={total_bad}")
         # Ensure shape compatibility: v is [batch, 1], z is [batch]
         if v.dim() > 1 and v.shape[1] == 1:
             v = v.squeeze(1)
@@ -648,8 +677,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                         logger.debug("No piece SSL logits available; skipping SSL for this batch")
                     else:
                         if torch.isnan(ssl_logits).any() or torch.isinf(ssl_logits).any():
-                            logger.warning("SSL logits contain NaN/Inf; sanitizing")
-                            ssl_logits = torch.nan_to_num(ssl_logits, nan=0.0, posinf=0.0, neginf=0.0)
+                            total_bad = int(torch.isnan(ssl_logits).sum().item() + torch.isinf(ssl_logits).sum().item())
+                            raise RuntimeError(f"SSL logits contain NaN/Inf: total={total_bad}")
                         logits = ssl_logits.permute(0, 2, 3, 1).reshape(-1, ssl_logits.size(1))
                         targets_flat = ssl_targets
                         if targets_flat.dim() == 4 and targets_flat.size(1) == ssl_logits.size(1):
@@ -738,9 +767,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 try:
                     scaler.scale(loss / accum_steps).backward()
                 except Exception as scaler_err:
-                    logger.warning(f"Scaler error during backward pass: {scaler_err}, skipping this batch")
                     optimizer.zero_grad(set_to_none=True)
-                    return None, None, None, None, None
+                    raise RuntimeError(f"Scaler error during backward pass: {scaler_err}") from scaler_err
             else:
                 (loss / accum_steps).backward()
 
@@ -1316,10 +1344,11 @@ def train_comprehensive(
                 train_step_start = time.time()
 
                 # tr_cfg already assigned at function start
+                ssl_weight_cfg = float(tr_cfg.get('ssl_weight', 0.1))
                 loss_values = train_step(
                 model, optimizer, scaler, batch, device, accum_steps, augment,
                 augment_rotate180=safe_config_get(cfg, 'augment_rotate180', True, section='training'),
-                ssl_weight=float(tr_cfg.get('ssl_weight', 0.1)), enable_ssl=bool(cfg.model().get('self_supervised', False)),
+                ssl_weight=ssl_weight_cfg, enable_ssl=bool(cfg.model().get('self_supervised', False)) and ssl_weight_cfg > 0.0,
                 ssrl_weight=float(tr_cfg.get('ssrl_weight', 0.0)), enable_ssrl=False,
                 label_smoothing=float(tr_cfg.get('policy_label_smoothing', 0.0)),
                 value_loss_type=str(tr_cfg.get('value_loss', 'mse')),
@@ -1335,13 +1364,12 @@ def train_comprehensive(
                 precision=tr_cfg.get("precision", "fp16"),
                 ssl_every_n=int(tr_cfg.get('ssl_every_n', 1)),
                 ssl_chunk_size=int(tr_cfg.get('ssl_chunk_size', 0)),
-                legal_mass_weight=float(tr_cfg.get('legal_mass_weight', 0.0))
+                legal_mass_weight=float(tr_cfg.get('legal_mass_weight', 0.0)),
+                legal_policy_weight=float(tr_cfg.get('legal_policy_weight', 0.0))
                 )
                 
-                # Check if train_step returned None (indicating invalid batch)
                 if loss_values is None:
-                    logger.warning("train_step returned None, skipping batch")
-                    continue
+                    raise RuntimeError("train_step returned None")
                 
                 # PERFORMANCE PROFILING: train_step complete
                 train_step_time = time.time() - train_step_start

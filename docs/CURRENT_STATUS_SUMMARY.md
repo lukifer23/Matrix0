@@ -135,24 +135,23 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M
 
 ## Current Development Priorities
 
-### Priority 1: SSL Performance Validation (1-2 weeks)
-1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 5 production objectives
-2. **SSL Contribution Analysis**: Quantify SSL impact on policy/value learning
-3. **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
-4. **SSL Curriculum Tuning**: Fine-tune progressive difficulty parameters
-5. **Experimental Task Planning**: Define data requirements for pawn structure and king safety heads before activation
+### Priority 1: Reliable Local-Loop Improvement (active)
+1. **Generator Quality Gate**: Keep `checkpoints/bootstrap_006_capped_value.pt` as parent until a candidate improves heldout metrics and generates better data
+2. **Fixed-Jitter Probe**: Rerun the anchor-only no-SSL candidate generator with exact `--selection-jitter 0.0`
+3. **Capped-Game Diagnosis**: Use final-position metadata to identify whether caps come from material, draw-claim, or search-quality issues
+4. **Legal-Policy Validation**: Treat raw policy CE gains as insufficient unless legal-policy metrics and value MSE are stable
 
-### Priority 2: Enhanced Evaluation System (2-3 weeks)
+### Priority 2: SSL Performance Validation
+1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 5 production objectives
+2. **SSL Contribution Analysis**: Quantify SSL impact on policy/value learning after the local-loop signal is reliable
+3. **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
+4. **Experimental Task Planning**: Define data requirements for pawn structure and king safety heads before activation
+
+### Priority 3: Enhanced Evaluation System
 1. **Multi-Engine Tournaments**: Automated competitive evaluation against Stockfish/LC0
 2. **SSL Effectiveness Metrics**: Comprehensive SSL learning measurement
 3. **ELO Estimation**: Improved rating calculation with SSL-aware evaluation
 4. **Comparative Analysis**: Side-by-side model comparison with SSL breakdown
-
-### Priority 3: Advanced Features (3-4 weeks)
-1. **SSL Visualization**: Enhanced WebUI SSL task visualization and heatmaps
-2. **Performance Analytics**: Deep training performance analysis and optimization
-3. **Model Interpretability**: SSL decision explanation and analysis tools
-4. **Automated Testing**: Comprehensive SSL and training validation suites
 
 ## 📊 Current Performance Metrics
 
@@ -282,11 +281,11 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M
 3. ✅ **Training Stability Resolved**: All scheduler/gradient issues fixed
 4. ✅ **Documentation Update**: Current status summary completely updated
 
-### Short Term Actions (1-2 weeks)
-1. **SSL Learning Validation**: Measure effectiveness of SSL task learning
-2. **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
-3. **WebUI Documentation**: Update docs/webui.md with new capabilities
-4. **Performance Benchmarking**: Establish SSL contribution baselines
+### Short Term Actions (1-2 weeks, updated May 10, 2026)
+1. **Local-Loop Promotion Gate**: Promote checkpoints only after stable heldout metrics and candidate generator quality both pass
+2. **Fixed-Jitter Generator Probe**: Rerun the anchor-only no-SSL candidate generator now that `--selection-jitter 0.0` is exact
+3. **Capped-Game Diagnosis**: Use final-position metadata to determine whether capped games are material-heavy, draw-claim related, or search-quality related
+4. **SSL Learning Validation**: Resume SSL contribution measurement after the policy/value self-play loop is trustworthy
 
 ### Medium Term Actions (2-4 weeks)
 1. **Enhanced SSL Evaluation**: Multi-engine tournaments with SSL-aware metrics
@@ -312,10 +311,10 @@ Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 44.2M par
 - ✅ **System Stability**: No critical issues, robust error handling and recovery with SSL validation
 
 ### Current Focus
-- 🎯 **SSL Performance Validation**: Measure and validate SSL learning effectiveness
-- 🎯 **SSL Task Balancing**: Optimize loss weights for balanced multi-task learning
-- 🎯 **Enhanced Evaluation**: Multi-engine tournaments with SSL-aware strength estimation
-- 🎯 **WebUI Refinement**: Enhance SSL visualization and monitoring features
+- 🎯 **Reliable Self-Play Improvement**: Validate labels and outcome mix before training or promotion
+- 🎯 **Generator Quality Gate**: Current best remains `checkpoints/bootstrap_006_capped_value.pt` until a candidate improves heldout metrics and generates better data
+- 🎯 **Capped-Game Diagnosis**: Use final FEN, material, halfmove, legal-count, and draw-claim metadata to choose the next search/termination fix
+- 🎯 **SSL Performance Validation**: Secondary until the local-loop promotion gate is reliable
 
 ### Success Criteria (All Met)
 - ✅ **SSL Integration**: Five production SSL algorithms working with the training pipeline; experimental pawn structure and king safety heads are tracked separately
@@ -324,9 +323,9 @@ Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 44.2M par
 - ✅ **Documentation**: All technical docs updated and comprehensive
 - ✅ **WebUI Monitoring**: Real-time SSL and training monitoring operational
 
-**Matrix0 has achieved FULL SSL INTEGRATION + Data Pipeline Fixes + EX0Bench System and is ready for SSL performance validation and enhancement!** 🚀
+**Matrix0 has achieved FULL SSL INTEGRATION + Data Pipeline Fixes + EX0Bench System. Active work is now focused on making local self-play produce promotable policy/value improvements instead of artifact wins.**
 
 ---
 
-**Status**: Production training pipeline operational with complete SSL integration, data pipeline fixes, EX0Bench external benchmarking, and enhanced WebUI monitoring
-**Next Review**: After SSL performance validation and multi-engine evaluation with SSL-aware metrics
+**Status**: Production training pipeline operational with complete SSL integration, data pipeline fixes, EX0Bench external benchmarking, enhanced WebUI monitoring, and active local-loop reliability diagnostics
+**Next Review**: After the fixed-jitter candidate generator probe and capped-game final-position analysis

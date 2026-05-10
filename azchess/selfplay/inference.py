@@ -178,8 +178,9 @@ def run_inference_server(
                 if device == "mps":
                     torch.mps.empty_cache()
 
+                strict_checkpoint = str(os.environ.get("MATRIX0_STRICT_CHECKPOINT", "")).lower() in ("1", "true", "yes")
                 missing, unexpected = model.load_state_dict(
-                    model_state_dict, strict=False
+                    model_state_dict, strict=bool(strict_checkpoint)
                 )
                 if missing:
                     total_expected = len(model_state_dict) + len(missing)
@@ -194,7 +195,13 @@ def run_inference_server(
                         f"Unexpected keys during load (ignored): {len(unexpected)} keys"
                     )
                     logger.debug(f"Unexpected keys: {sorted(list(unexpected))[:10]}")  # Show more keys for debugging
-                logger.info("Model loaded from state_dict successfully (non-strict).")
+                if strict_checkpoint and (missing or unexpected):
+                    raise RuntimeError(
+                        f"Inference checkpoint did not match model exactly: "
+                        f"missing={len(missing)} unexpected={len(unexpected)}"
+                    )
+                mode_name = "strict" if strict_checkpoint else "non-strict"
+                logger.info(f"Model loaded from state_dict successfully ({mode_name}).")
 
                 # Log detailed parameter information
                 actual_params = sum(p.numel() for p in model.parameters())
@@ -205,6 +212,8 @@ def run_inference_server(
                     logger.warning(f"High number of missing keys ({len(missing)}), model may not perform as expected")
 
             except Exception as e:
+                if str(os.environ.get("MATRIX0_STRICT_CHECKPOINT", "")).lower() in ("1", "true", "yes"):
+                    raise RuntimeError(f"Model state_dict load failed in strict mode: {e}") from e
                 logger.error(
                     f"Model state_dict load failed: {e}; attempting with individual key matching."
                 )
@@ -227,6 +236,8 @@ def run_inference_server(
                     logger.error(f"All loading attempts failed: {fallback_error}")
                     raise
         else:
+            if str(os.environ.get("MATRIX0_STRICT_CHECKPOINT", "")).lower() in ("1", "true", "yes"):
+                raise RuntimeError("No model state_dict provided in strict checkpoint mode")
             logger.warning("No model state_dict provided, using random weights.")
 
         # Log device and memory information

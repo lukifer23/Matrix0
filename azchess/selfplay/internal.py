@@ -261,10 +261,16 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             logger.warning(f"Worker {proc_id}: Value orientation detection failed: {e}, defaulting to side-to-move")
             return False
     
-    # Allow config override; otherwise auto-detect
-    force_vfw = bool(cfg_dict.get("mcts", {}).get("value_from_white", False))
-    value_from_white = force_vfw or _detect_value_from_white()
-    logger.info(f"Worker {proc_id}: Using value_from_white={value_from_white} (forced={force_vfw})")
+    # Respect an explicit config override. Auto-detection is only a compatibility
+    # path for older configs that do not declare value orientation.
+    mcts_orientation_cfg = cfg_dict.get("mcts", {}) or {}
+    if "value_from_white" in mcts_orientation_cfg:
+        value_from_white = bool(mcts_orientation_cfg["value_from_white"])
+        value_from_white_source = "config"
+    else:
+        value_from_white = _detect_value_from_white()
+        value_from_white_source = "auto"
+    logger.info(f"Worker {proc_id}: Using value_from_white={value_from_white} (source={value_from_white_source})")
     
     # Load opening book
     book_path = sp_cfg.get("book_path")
@@ -661,6 +667,14 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     "meta_draw": np.array([1 if z == 0.0 else 0], dtype=np.int8),
                     "meta_avg_policy_entropy": np.array([entropy_sum / max(1, entropy_count)], dtype=np.float32),
                     "meta_avg_sims": np.array([float(sum(sims_used)) / max(1, len(sims_used)) if sims_used else 0.0], dtype=np.float32),
+                    "meta_final_fen": np.array([board.fen()]),
+                    "meta_final_piece_count": np.array([len(board.piece_map())], dtype=np.int16),
+                    "meta_final_halfmove_clock": np.array([board.halfmove_clock], dtype=np.int16),
+                    "meta_final_legal_count": np.array([board.legal_moves.count()], dtype=np.int16),
+                    "meta_final_can_claim_draw": np.array(
+                        [1 if board.can_claim_draw() else 0],
+                        dtype=np.int8,
+                    ),
                 }
                 # Always include legal masks (precomputed for training efficiency)
                 if legal_masks:
@@ -716,22 +730,13 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
 
 def sample_move_from_counts(board: chess.Board, counts: Dict[chess.Move, int], temperature: float) -> chess.Move:
     if not counts:
-        # Should not happen in a normal game, but as a fallback
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            return chess.Move.null()
-        return legal_moves[0]
+        raise RuntimeError("Cannot sample move from empty MCTS visit counts")
 
     moves = list(counts.keys())
     visits = np.array(list(counts.values()), dtype=np.float32)
     
-    # Handle edge cases: all zero visits or NaN values
     if np.any(np.isnan(visits)) or np.all(visits == 0):
-        # Fallback to uniform distribution over legal moves
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            return chess.Move.null()
-        return np.random.choice(legal_moves)
+        raise RuntimeError(f"Invalid MCTS visit counts: {counts}")
     
     if temperature < 1e-3:
         # Deterministic: pick the best move
@@ -743,20 +748,11 @@ def sample_move_from_counts(board: chess.Board, counts: Dict[chess.Move, int], t
     # Ensure we don't have division by zero or NaN
     visit_sum = visit_dist.sum()
     if visit_sum <= 0 or np.isnan(visit_sum):
-        # Fallback to uniform distribution
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            return chess.Move.null()
-        return np.random.choice(legal_moves)
+        raise RuntimeError(f"Invalid temperature-adjusted MCTS visit distribution: counts={counts}, temperature={temperature}")
     
     visit_dist /= visit_sum
-    
-    # Final safety check for NaN
     if np.any(np.isnan(visit_dist)):
-        legal_moves = list(board.legal_moves)
-        if not legal_moves:
-            return chess.Move.null()
-        return np.random.choice(legal_moves)
+        raise RuntimeError(f"MCTS visit distribution contains NaN: counts={counts}, temperature={temperature}")
     
     idx = np.random.choice(len(moves), p=visit_dist)
     return moves[idx]

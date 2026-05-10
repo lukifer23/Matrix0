@@ -77,3 +77,36 @@ def test_mcts_priors_match_logits_with_legal_softmax():
     )
 
     _assert_child_priors(board, node, logits)
+
+
+def test_precomputed_legal_logits_are_softmaxed_even_when_positive():
+    board = chess.Board()
+    legal_moves = list(board.legal_moves)
+    legal_logits = np.linspace(1.0, 3.0, len(legal_moves), dtype=np.float32)
+    expected = torch.softmax(torch.from_numpy(legal_logits), dim=-1).numpy()
+
+    node = Node()
+    node._expand_with_legal_priors(
+        board,
+        legal_moves,
+        legal_logits,
+        from_logits=True,
+    )
+
+    for i, move in enumerate(legal_moves):
+        assert node.children[move].prior == pytest.approx(float(expected[i]), rel=1e-6, abs=1e-6)
+
+
+def test_mcts_root_searches_are_fresh_by_default():
+    board = chess.Board()
+    logits = np.zeros(4672, dtype=np.float32)
+    backend = DummyBackend(logits, value=0.1)
+
+    cfg = MCTSConfig(num_simulations=4, dirichlet_frac=0.0, enable_entropy_noise=False, batch_size=2)
+    mcts = MCTS(cfg, None, device="cpu", inference_backend=backend)
+
+    visits_1, _, _ = mcts.run(board)
+    visits_2, _, _ = mcts.run(board)
+
+    assert sum(visits_1.values()) == cfg.num_simulations
+    assert sum(visits_2.values()) == cfg.num_simulations

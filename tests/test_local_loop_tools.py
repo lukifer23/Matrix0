@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -14,6 +17,7 @@ from azchess.tools.bench_local_loop import (
     copy_anchor_shards,
     evaluate_checkpoint_batches,
     evaluate_checkpoint,
+    limit_fresh_selfplay_shards,
     summarize_npz_shards,
     write_loop_config,
 )
@@ -50,6 +54,10 @@ def test_summarize_npz_shards_reports_policy_legal_and_ssl(tmp_path):
         "meta_result_source": np.array(["capped"]),
         "meta_value_bootstrap": np.array([1], dtype=np.int8),
         "meta_value_weight": np.array([0.25], dtype=np.float32),
+        "meta_final_piece_count": np.array([18], dtype=np.int16),
+        "meta_final_halfmove_clock": np.array([72], dtype=np.int16),
+        "meta_final_legal_count": np.array([31], dtype=np.int16),
+        "meta_final_can_claim_draw": np.array([1], dtype=np.int8),
     }
     dm.add_selfplay_data(data, worker_id=0, game_id=0)
 
@@ -65,8 +73,13 @@ def test_summarize_npz_shards_reports_policy_legal_and_ssl(tmp_path):
     assert metrics["game_outcomes"]["capped"] == 1
     assert metrics["game_outcomes"]["value_bootstrap"] == 1
     assert metrics["game_outcomes"]["result_sources"] == {"capped": 1}
+    assert metrics["final_position"]["piece_count"]["mean"] == 18.0
+    assert metrics["final_position"]["halfmove_clock"]["mean"] == 72.0
+    assert metrics["final_position"]["legal_count"]["mean"] == 31.0
+    assert metrics["final_position"]["can_claim_draw"] == 1
     assert metrics["source_metrics"]["capped"]["shards"] == 1
     assert metrics["source_metrics"]["capped"]["samples"] == 4
+    assert metrics["source_metrics"]["capped"]["final_piece_count"]["mean"] == 18.0
     assert np.isclose(metrics["source_metrics"]["capped"]["policy_top_prob"]["mean"], 0.7)
 
 
@@ -158,6 +171,45 @@ def test_copy_anchor_shards_imports_prior_data_into_replays(tmp_path):
     assert metrics["samples"] == 2
 
 
+def test_limit_fresh_selfplay_shards_moves_excess_out_of_training_path(tmp_path):
+    run_data = tmp_path / "run" / "data"
+    dm = DataManager(base_dir=str(run_data))
+    states = np.zeros((2, 19, 8, 8), dtype=np.float32)
+    pi = np.zeros((2, 4672), dtype=np.float32)
+    legal = np.zeros((2, 4672), dtype=np.uint8)
+    pi[:, 0] = 1.0
+    legal[:, 0] = 1
+    for game_id in range(5):
+        dm.add_selfplay_data(
+            {
+                "s": states,
+                "pi": pi,
+                "z": np.zeros((2,), dtype=np.float32),
+                "legal_mask": legal,
+                "value_weight": np.zeros((2,), dtype=np.float32),
+            },
+            worker_id=0,
+            game_id=game_id,
+        )
+
+    before = summarize_npz_shards(run_data)
+    info = limit_fresh_selfplay_shards(run_data, max_files=2, seed=7)
+    after = summarize_npz_shards(run_data)
+
+    assert before["shards"] == 5
+    assert info["kept_files"] == 2
+    assert info["moved_files"] == 3
+    assert info["metadata_rows_removed"] == 3
+    assert after["shards"] == 2
+    assert len(list((run_data / "excluded_selfplay").glob("*.npz"))) == 3
+
+    with sqlite3.connect(run_data / "data_metadata.db") as conn:
+        rows = conn.execute("SELECT path FROM shards").fetchall()
+    db_paths = [path for (path,) in rows]
+    assert len(db_paths) == 2
+    assert all((run_data / "selfplay" / Path(path).name).exists() for path in db_paths)
+
+
 def test_sample_eval_batch_can_filter_by_source_prefix(tmp_path):
     dm = DataManager(base_dir=str(tmp_path))
     states = np.zeros((3, 19, 8, 8), dtype=np.float32)
@@ -222,6 +274,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
         train_steps=20,
         dataloader_workers=0,
         legal_mass_weight=0.05,
+        legal_policy_weight=0.25,
         ssl_weight=0.0,
         policy_label_smoothing=0.0,
         draw_halfmove_cap=80,
@@ -246,6 +299,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
     assert written["selfplay"]["resign_min_entropy"] == 0.2
     assert written["training"]["ssl_weight"] == 0.0
     assert written["training"]["policy_label_smoothing"] == 0.0
+    assert written["training"]["legal_policy_weight"] == 0.25
     assert draw["enabled"] is True
     assert draw["halfmove_cap"] == 80
     assert draw["material_draw_threshold"] == 14

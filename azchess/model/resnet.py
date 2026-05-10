@@ -690,8 +690,8 @@ class PolicyValueNet(nn.Module):
 
         # Sanitize features if any non-finite values slipped through
         if not torch.isfinite(x).all():
-            logger.warning("Feature tensor contains NaN/Inf; sanitizing to zeros")
-            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+            total_bad = int((~torch.isfinite(x)).sum().item())
+            raise RuntimeError(f"Feature tensor contains NaN/Inf: total={total_bad}")
         return x
 
     def _compute_policy_value(self, feats: torch.Tensor, return_ssl: bool = False) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
@@ -711,9 +711,8 @@ class PolicyValueNet(nn.Module):
         p = p * logit_scale.to(dtype=p.dtype, device=p.device)
 
         if torch.isnan(p).any() or torch.isinf(p).any():
-            logger.warning(f"Policy output contains NaN/Inf: total={torch.isnan(p).sum() + torch.isinf(p).sum()}")
-            logger.warning("Replacing NaN/Inf with safe values to continue training")
-            p = torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
+            total_bad = int(torch.isnan(p).sum().item() + torch.isinf(p).sum().item())
+            raise RuntimeError(f"Policy output contains NaN/Inf: total={total_bad}")
 
         # Avoid over-constraining logits; let CE handle stability
 
@@ -722,12 +721,12 @@ class PolicyValueNet(nn.Module):
         v = v.contiguous().reshape(v.size(0), -1)
         v = self._value_activation(self.value_fc1(v))
         if torch.isnan(v).any() or torch.isinf(v).any():
-            logger.warning("Value head intermediate contains NaN/Inf after fc1; sanitizing")
-            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+            total_bad = int(torch.isnan(v).sum().item() + torch.isinf(v).sum().item())
+            raise RuntimeError(f"Value head intermediate contains NaN/Inf after fc1: total={total_bad}")
         v = self._value_activation(self.value_fc2(v))
         if torch.isnan(v).any() or torch.isinf(v).any():
-            logger.warning("Value head intermediate contains NaN/Inf after fc2; sanitizing")
-            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+            total_bad = int(torch.isnan(v).sum().item() + torch.isinf(v).sum().item())
+            raise RuntimeError(f"Value head intermediate contains NaN/Inf after fc2: total={total_bad}")
         if hasattr(self, 'value_gate') and self.value_gate is not None:
             gate = self.value_gate(v)
             v = v * gate
@@ -740,15 +739,15 @@ class PolicyValueNet(nn.Module):
             for task_name, head in self.ssl_heads.items():
                 task_output = head(feats).contiguous()
                 if torch.isnan(task_output).any() or torch.isinf(task_output).any():
-                    logger.warning(f"SSL {task_name} head output contains NaN/Inf; sanitizing")
-                    task_output = torch.nan_to_num(task_output, nan=0.0, posinf=0.0, neginf=0.0)
+                    total_bad = int(torch.isnan(task_output).sum().item() + torch.isinf(task_output).sum().item())
+                    raise RuntimeError(f"SSL {task_name} head output contains NaN/Inf: total={total_bad}")
                 ssl_output[task_name] = task_output
         elif self.ssl_piece_head is not None and return_ssl:
             # Backward compatibility: return piece head output directly
             ssl_output = self.ssl_piece_head(feats).contiguous()
             if torch.isnan(ssl_output).any() or torch.isinf(ssl_output).any():
-                logger.warning("SSL head output contains NaN/Inf; sanitizing")
-                ssl_output = torch.nan_to_num(ssl_output, nan=0.0, posinf=0.0, neginf=0.0)
+                total_bad = int(torch.isnan(ssl_output).sum().item() + torch.isinf(ssl_output).sum().item())
+                raise RuntimeError(f"SSL head output contains NaN/Inf: total={total_bad}")
 
         return p, v.squeeze(-1).contiguous(), ssl_output
 

@@ -24,6 +24,10 @@ Inspect these in `local_loop_report.json` under `fresh_data.quality`.
 - `policy_support`: number of moves with non-trivial target probability. Lower means more focused labels.
 - `avg_sims`: actual average simulations per move.
 - `source_metrics`: the same metrics split by `capped`, `tablebase`, `terminal`, and `draw_adjudication`.
+- `source_metrics.<source>.final_piece_count`: material remaining when the game ended or capped.
+- `source_metrics.<source>.final_halfmove_clock`: final halfmove clock; high values indicate fifty-move pressure.
+- `source_metrics.<source>.final_legal_count`: final mobility at termination/cap.
+- `source_metrics.<source>.final_can_claim_draw`: count of games where a draw claim was available at the final position.
 
 Current rough targets:
 
@@ -32,6 +36,7 @@ Current rough targets:
 - `policy_entropy < 1.9` for sharp-search experiments
 - low draw adjudication unless a draw-specific run is intentional
 - enough tablebase/terminal data for value learning, or explicit anchor data
+- capped games whose final-position metadata explains why they capped
 
 ## Search Knobs
 
@@ -81,6 +86,8 @@ Adds random jitter to child selection scores.
 - Useful for diversity.
 - Bad for clean label-quality experiments.
 - Current sharp-search baseline: `0.0`.
+
+As of the May 10, 2026 local-loop hardening pass, `0.0` is exact: MCTS selection no longer adds hidden random tie-breaking jitter when this is disabled. Rerun old no-jitter generator probes before drawing conclusions from them.
 
 ### `--disable-entropy-noise`
 
@@ -178,11 +185,19 @@ Current baseline: `0.05`.
 
 Strict local-loop data mode requires legal masks when this is enabled.
 
+### `--legal-policy-weight`
+
+Extra policy CE term computed after masking logits and targets to legal moves.
+
+Use this when full policy CE improves mostly by increasing legal probability mass,
+but `policy_legal_ce` / `policy_legal_kl` are flat or worse. This directly
+trains ranking among legal moves.
+
 ### `--ssl-weight`
 
 Overrides SSL loss weight.
 
-Use `0.0` for ablations, but note this does not remove SSL heads from the architecture.
+Use `0.0` for no-SSL ablations. With the current training path this disables SSL target creation and SSL forward compute for the training loop, while the checkpoint architecture can still contain SSL heads.
 
 ### `--policy-label-smoothing`
 
@@ -201,6 +216,21 @@ Example:
 ```text
 --train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
 --train-anchor-max-files 16
+```
+
+### `--train-fresh-max-files`
+
+Limits how many fresh self-play shards remain visible to the training stage.
+
+The local-loop report still records the full generator output in `data_after_selfplay`. Extra fresh shards are moved under `data/excluded_selfplay`, outside the training scan paths. Use this when a long generator run produces good policy labels but too many capped games compared with the anchor set.
+
+Moved fresh shards are also removed from local-loop metadata so the training data manager does not sample excluded files.
+
+Example:
+
+```text
+--train-fresh-max-files 48
+--train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
 ```
 
 ## Evaluation Knobs
@@ -234,8 +264,10 @@ This means:
 
 - corrupted shards raise instead of being skipped
 - missing legal masks raise where legal masks are required
+- decoded curriculum/source-prefix batches raise on legal-mask construction failures instead of substituting all-legal masks
 - partial checkpoint loads raise unless explicitly configured as a migration
 - bad MCTS priors/logits raise instead of becoming uniform labels
+- invalid MCTS visit distributions, stale root-policy counts, and NaN/Inf training outputs raise instead of being sanitized or sampled through
 
 This is intentional. A failed run is better than a plausible but corrupted training signal.
 
@@ -244,6 +276,14 @@ This is intentional. A failed run is better than a plausible but corrupted train
 ### Generator-Only Search Probe
 
 Use `--skip-train` to validate labels and outcome mix before training.
+
+Current active probe:
+
+```text
+logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter
+```
+
+Use it to decide whether the anchor-only no-SSL candidate can generate data at least as good as the parent. If it remains all capped with weak target sharpness, do not train or promote it; inspect final-position metadata and fix generation/search behavior first.
 
 ### Heldout Training Probe
 
@@ -264,4 +304,3 @@ Use sharp fresh data plus anchor data:
 ```
 
 Accept only if legal policy improves and value does not regress materially.
-

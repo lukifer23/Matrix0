@@ -6,8 +6,8 @@ For current problem areas, see the [Open Issues](index.md#open-issues) section.
 ## Project Status: PRODUCTION TRAINING + EX0BENCH
 
 **Current Version**: v2.2
-**Last Updated**: May 9, 2026
-**Status**: Production training pipeline active, SSL foundation optimized with 5-task configuration, data pipeline fixes complete, EX0Bench external benchmarking system deployed
+**Last Updated**: May 10, 2026
+**Status**: Production training pipeline active, SSL foundation optimized with 5-task configuration, data pipeline fixes complete, EX0Bench external benchmarking deployed, and local-loop promotion gated on verified generator quality
 
 ## Current Achievement Summary
 
@@ -74,7 +74,15 @@ Matrix0 has achieved **production training capability** with a sophisticated 44.
 
 ## Current Development Priorities
 
-### Priority 1: SSL Algorithm Validation (Active)
+### Priority 1: Reliable Local-Loop Improvement (Active)
+- [x] **Strict self-play/training diagnostics** - fail fast on invalid masks, corrupt shards, checkpoint mismatches, bad MCTS priors, and NaN/Inf outputs
+- [x] **Fresh MCTS roots and current-search targets** - prevent stale visit counts from contaminating policy labels
+- [x] **Legal-conditioned policy loss** - `--legal-policy-weight` directly trains legal-move ranking
+- [x] **Exact no-jitter ablations** - `--selection-jitter 0.0` no longer adds hidden random noise
+- [x] **Final-position metadata** - capped-game reports include final FEN, material, halfmove clock, legal count, and draw-claim availability
+- [ ] **Candidate generator gate** - current best remains `checkpoints/bootstrap_006_capped_value.pt` until a candidate improves heldout metrics and generates better data
+
+### Priority 2: SSL Algorithm Validation
 - [x] **Basic piece recognition** - working and operational
 - [x] **Advanced SSL algorithms** - implemented and integrated in training pipeline
 - [x] **Complete threat detection algorithm** - integrated with training pipeline
@@ -83,13 +91,13 @@ Matrix0 has achieved **production training capability** with a sophisticated 44.
 - [x] **Add square control calculation** - integrated with training pipeline
 - [ ] **Validate SSL integration** - ensure all algorithms work effectively in training
 
-### Priority 2: Performance Optimization (Next)
+### Priority 3: Performance Optimization (Next)
 - [ ] **Memory usage optimization** - reduce training memory footprint
 - [ ] **Training throughput improvement** - decrease time per training step
 - [ ] **SSL loss convergence** - verify meaningful SSL learning across all tasks
 - [ ] **Batch size optimization** - maximize MPS utilization
 
-### Priority 3: Enhanced Evaluation (Future)
+### Priority 4: Enhanced Evaluation (Future)
 - [ ] **Tournament system enhancement** - multi-engine competitive evaluation
 - [ ] **Strength estimation improvement** - better ELO calculation
 - [ ] **Comparative analysis tools** - side-by-side model comparison
@@ -104,6 +112,7 @@ Matrix0 has achieved **production training capability** with a sophisticated 44.
 - **Stability**: No NaN/Inf crashes with current safeguards
 - **SSL Status**: Optimized 5-task configuration with data pipeline fixes
 - **EX0Bench Status**: External engine benchmarking system deployed and operational
+- **Promotion Gate**: Candidate checkpoints must pass stable heldout metrics and generator-quality checks before replacing the parent
 
 ### Recent Achievements (v2.2)
 

@@ -16,23 +16,24 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 
 ## Current Project Status
 
-**Matrix0 v2.2** - SSL Architecture Integration + hardened local-loop training diagnostics + EX0Bench System deployed.
+**Matrix0 v2.2** - SSL Architecture Integration + hardened local-loop training diagnostics + EX0Bench System deployed. Active work is focused on reliable self-play improvement before checkpoint promotion.
 
 ### ✅ What's Working
-- **Training Pipeline**: Complete self-play → training → evaluation → promotion cycle with strict local-loop diagnostics
+- **Training Pipeline**: Complete self-play → training → evaluation cycle with strict diagnostics and promotion gates
 - **Model Architecture**: 44.2M parameter ResNet-22 with attention and SSL foundation
 - **SSL Foundation**: Complete 5-SSL-head integration (threat, pin, fork, control, piece detection) with optimized pipeline
 - **EX0Bench System**: Pure external engine battles (Stockfish vs LC0) without neural network inference
 - **Advanced Benchmark System**: Multi-engine tournaments, SSL performance tracking, Apple Silicon optimization
 - **Data Pipeline**: Fixed SSL target concatenation, shape mismatches, and value target corrections
+- **Local-Loop Diagnostics**: Fresh MCTS roots, current-search visit targets, exact zero-jitter ablations, final-position metadata, and legal-policy evaluation
 - **External Engines**: Stockfish and LC0 integration with automatic discovery and optimization
 - **Apple Silicon**: MPS optimization with 14GB memory management and Metal backend support
 - **Web Interface**: FastAPI-based evaluation and analysis interface with comprehensive monitoring
 
 ### 🔄 Active Development
-- **Reliable Model Improvement**: Validate self-play labels before training and promote only on stable heldout metrics
-- **Search/Data Tuning**: Tune MCTS, draw adjudication, capped value weights, and anchor data mix
-- **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks
+- **Reliable Model Improvement**: Validate self-play labels before training and promote only on stable heldout metrics plus candidate generator quality
+- **Search/Data Tuning**: Diagnose capped games with final-position metadata; tune MCTS, draw adjudication, capped value weights, and anchor data mix
+- **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks after the local-loop promotion gate is trustworthy
 - **Performance Optimization**: Memory usage and training throughput improvements
 
 ### 📚 Documentation Status
@@ -45,17 +46,18 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - **Benchmark System**: ✅ New comprehensive guide added
 - **EX0Bench System**: ✅ New comprehensive guide added
 - **Changelog**: ✅ New comprehensive changelog added
-- **Status & Roadmap**: ✅ Current and accurate (updated for v2.2)
+- **Status & Roadmap**: ✅ Current and accurate for active local-loop reliability work
 
 ## Open Issues
 
 For a quick look at current problem areas, check the [status report](status.md).
 
 ### Current Priorities
-1. **Reliable Training Signal**: Improve model only from verified self-play and heldout evaluation
+1. **Reliable Training Signal**: Improve model only from verified self-play, heldout evaluation, and candidate generator checks
 2. **Search/Outcome Mix**: Reduce capped-game dominance while preserving sharp policy labels
-3. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
-4. **Performance Optimization**: Memory usage and training throughput improvements
+3. **Capped-Game Diagnosis**: Use final-position metadata to decide whether to fix search, draw adjudication, or value targets
+4. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
+5. **Performance Optimization**: Memory usage and training throughput improvements
 
 ## Quick Start
 
@@ -92,5 +94,5 @@ python -m azchess.eval --external-engines --games 50
 
 ---
 
-**Last Updated**: 2026-05-09
-**Status**: Production training pipeline operational with strict local-loop diagnostics, complete SSL architecture integration, and EX0Bench external benchmarking system deployed
+**Last Updated**: 2026-05-10
+**Status**: Production training pipeline operational with strict local-loop diagnostics, complete SSL architecture integration, EX0Bench external benchmarking, and active generator-quality gating before checkpoint promotion

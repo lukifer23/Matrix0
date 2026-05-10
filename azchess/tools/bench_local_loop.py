@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -89,13 +90,104 @@ def copy_anchor_shards(anchor_dirs: Iterable[str], run_data_dir: Path, max_files
     }
 
 
+def _metadata_path_variants(path: Path) -> List[str]:
+    variants = {str(path)}
+    try:
+        variants.add(str(path.resolve()))
+    except OSError:
+        pass
+    try:
+        variants.add(str(path.relative_to(Path.cwd())))
+    except ValueError:
+        pass
+    return sorted(variants)
+
+
+def remove_shard_metadata_rows(run_data_dir: Path, shard_paths: Iterable[Path]) -> int:
+    """Remove shard metadata entries for files that are no longer train-visible."""
+    db_path = run_data_dir / "data_metadata.db"
+    if not db_path.exists():
+        return 0
+
+    path_values: List[str] = []
+    for shard_path in shard_paths:
+        path_values.extend(_metadata_path_variants(shard_path))
+    path_values = sorted(set(path_values))
+    if not path_values:
+        return 0
+
+    removed = 0
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        for start in range(0, len(path_values), 256):
+            chunk = path_values[start : start + 256]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor.execute(f"DELETE FROM shards WHERE path IN ({placeholders})", chunk)
+            if cursor.rowcount > 0:
+                removed += int(cursor.rowcount)
+        conn.commit()
+    finally:
+        conn.close()
+    return removed
+
+
+def limit_fresh_selfplay_shards(run_data_dir: Path, max_files: int = 0, seed: int = 1234) -> Dict[str, Any]:
+    """Keep only a bounded number of fresh self-play shards train-visible.
+
+    The full generator output remains on disk under ``excluded_selfplay`` for
+    inspection, but those files are outside the directories scanned for training.
+    """
+    selfplay_dir = run_data_dir / "selfplay"
+    files = sorted(selfplay_dir.glob("*.npz"))
+    if max_files <= 0 or len(files) <= max_files:
+        return {
+            "max_files": int(max_files),
+            "kept_files": len(files),
+            "moved_files": 0,
+            "destination": None,
+            "metadata_rows_removed": 0,
+        }
+
+    rng = np.random.default_rng(int(seed))
+    order = np.arange(len(files))
+    rng.shuffle(order)
+    keep_indices = set(int(i) for i in order[: int(max_files)])
+    keep_files = {files[i] for i in keep_indices}
+    excluded_dir = run_data_dir / "excluded_selfplay"
+    excluded_dir.mkdir(parents=True, exist_ok=True)
+
+    moved = 0
+    moved_sources: List[Path] = []
+    for src in files:
+        if src in keep_files:
+            continue
+        dest = excluded_dir / src.name
+        if dest.exists():
+            raise FileExistsError(f"Fresh self-play exclusion destination already exists: {dest}")
+        shutil.move(str(src), str(dest))
+        moved_sources.append(src)
+        moved += 1
+    metadata_rows_removed = remove_shard_metadata_rows(run_data_dir, moved_sources)
+
+    return {
+        "max_files": int(max_files),
+        "kept_files": len(files) - moved,
+        "moved_files": moved,
+        "destination": str(excluded_dir),
+        "metadata_rows_removed": metadata_rows_removed,
+    }
+
+
 def _entropy(policy: np.ndarray) -> np.ndarray:
     clipped = np.clip(policy, 1e-12, 1.0)
     return -np.sum(np.where(policy > 0, policy * np.log(clipped), 0.0), axis=1)
 
 
-def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]:
-    files = _npz_files(data_dir)[:max_files]
+def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
+    files = _npz_files(data_dir)
+    if max_files > 0:
+        files = files[:max_files]
     total_samples = 0
     policy_sums: List[np.ndarray] = []
     policy_entropy: List[np.ndarray] = []
@@ -115,6 +207,10 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]
     meta_adjudicated_draw: List[float] = []
     meta_value_bootstrap: List[float] = []
     meta_value_weight: List[float] = []
+    meta_final_piece_count: List[float] = []
+    meta_final_halfmove_clock: List[float] = []
+    meta_final_legal_count: List[float] = []
+    meta_final_can_claim_draw: List[float] = []
     value_weights: List[np.ndarray] = []
     result_sources: Dict[str, int] = {}
     source_metrics: Dict[str, Dict[str, Any]] = {}
@@ -157,6 +253,10 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]
                     "legal_policy_mass": [],
                     "moves": [],
                     "avg_sims": [],
+                    "final_piece_count": [],
+                    "final_halfmove_clock": [],
+                    "final_legal_count": [],
+                    "final_can_claim_draw": [],
                 },
             )
             source_rec["shards"] += 1
@@ -203,6 +303,22 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]
                 meta_value_bootstrap.extend(float(v) for v in np.asarray(data["meta_value_bootstrap"]).reshape(-1))
             if "meta_value_weight" in data:
                 meta_value_weight.extend(float(v) for v in np.asarray(data["meta_value_weight"]).reshape(-1))
+            if "meta_final_piece_count" in data:
+                vals = [float(v) for v in np.asarray(data["meta_final_piece_count"]).reshape(-1)]
+                meta_final_piece_count.extend(vals)
+                source_rec["final_piece_count"].extend(vals)
+            if "meta_final_halfmove_clock" in data:
+                vals = [float(v) for v in np.asarray(data["meta_final_halfmove_clock"]).reshape(-1)]
+                meta_final_halfmove_clock.extend(vals)
+                source_rec["final_halfmove_clock"].extend(vals)
+            if "meta_final_legal_count" in data:
+                vals = [float(v) for v in np.asarray(data["meta_final_legal_count"]).reshape(-1)]
+                meta_final_legal_count.extend(vals)
+                source_rec["final_legal_count"].extend(vals)
+            if "meta_final_can_claim_draw" in data:
+                vals = [float(v) for v in np.asarray(data["meta_final_can_claim_draw"]).reshape(-1)]
+                meta_final_can_claim_draw.extend(vals)
+                source_rec["final_can_claim_draw"].extend(vals)
             if "meta_result_source" in data:
                 for raw in np.asarray(data["meta_result_source"]).reshape(-1):
                     source_name = str(raw)
@@ -247,6 +363,12 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]
         "game_results": stats([np.asarray(meta_results, dtype=np.float32)]) if meta_results else None,
         "value_weight": stats(value_weights),
         "game_value_weight": stats([np.asarray(meta_value_weight, dtype=np.float32)]) if meta_value_weight else None,
+        "final_position": {
+            "piece_count": stats([np.asarray(meta_final_piece_count, dtype=np.float32)]) if meta_final_piece_count else None,
+            "halfmove_clock": stats([np.asarray(meta_final_halfmove_clock, dtype=np.float32)]) if meta_final_halfmove_clock else None,
+            "legal_count": stats([np.asarray(meta_final_legal_count, dtype=np.float32)]) if meta_final_legal_count else None,
+            "can_claim_draw": int(np.sum(meta_final_can_claim_draw)) if meta_final_can_claim_draw else 0,
+        },
         "game_outcomes": {
             "capped": int(np.sum(meta_capped)) if meta_capped else 0,
             "resigned": int(np.sum(meta_resigned)) if meta_resigned else 0,
@@ -269,6 +391,10 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 128) -> Dict[str, Any]
                 "legal_policy_mass": stats(rec["legal_policy_mass"]),
                 "moves": stats([np.asarray(rec["moves"], dtype=np.float32)]) if rec["moves"] else None,
                 "avg_sims": stats([np.asarray(rec["avg_sims"], dtype=np.float32)]) if rec["avg_sims"] else None,
+                "final_piece_count": stats([np.asarray(rec["final_piece_count"], dtype=np.float32)]) if rec["final_piece_count"] else None,
+                "final_halfmove_clock": stats([np.asarray(rec["final_halfmove_clock"], dtype=np.float32)]) if rec["final_halfmove_clock"] else None,
+                "final_legal_count": stats([np.asarray(rec["final_legal_count"], dtype=np.float32)]) if rec["final_legal_count"] else None,
+                "final_can_claim_draw": int(np.sum(rec["final_can_claim_draw"])) if rec["final_can_claim_draw"] else 0,
             }
             for source, rec in sorted(source_metrics.items())
         },
@@ -584,6 +710,7 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "use_curriculum": False,
             "dataloader_workers": int(args.dataloader_workers),
             "legal_mass_weight": float(args.legal_mass_weight),
+            "legal_policy_weight": float(getattr(args, "legal_policy_weight", 0.0)),
         }
     )
     if args.ssl_weight is not None:
@@ -646,6 +773,14 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
 
     data_after_selfplay = summarize_npz_shards(run_dir / "data")
 
+    fresh_limit_info: Optional[Dict[str, Any]] = None
+    if int(args.train_fresh_max_files) > 0:
+        fresh_limit_info = limit_fresh_selfplay_shards(
+            run_dir / "data",
+            max_files=int(args.train_fresh_max_files),
+            seed=int(args.train_fresh_seed),
+        )
+
     anchor_info: Optional[Dict[str, Any]] = None
     if args.train_anchor_data_dir:
         anchor_info = copy_anchor_shards(
@@ -692,6 +827,8 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
             str(args.lr),
             "--warmup-steps",
             str(args.warmup_steps),
+            "--init-checkpoint",
+            str(initial_ckpt),
             "--checkpoint-dir",
             str(run_dir / "checkpoints"),
             "--log-dir",
@@ -737,6 +874,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
             "final": str(final_ckpt),
         },
         "stages": stages,
+        "fresh_selfplay_limit": fresh_limit_info,
         "anchor_data": anchor_info,
         "throughput": {
             "selfplay_games_per_hour": float(args.games / max(stages[0]["seconds"], 1e-9) * 3600.0),
@@ -825,10 +963,13 @@ def main() -> None:
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--dataloader-workers", type=int, default=0)
     parser.add_argument("--legal-mass-weight", type=float, default=0.05)
+    parser.add_argument("--legal-policy-weight", type=float, default=0.0, help="Optional extra CE term over logits/targets renormalized to legal moves.")
     parser.add_argument("--ssl-weight", type=float, default=None)
     parser.add_argument("--policy-label-smoothing", type=float, default=None)
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--skip-train", action="store_true", help="Only generate self-play data and report shard/generator metrics.")
+    parser.add_argument("--train-fresh-max-files", type=int, default=0, help="Optional max fresh self-play shards to keep train-visible after generation; 0 means all.")
+    parser.add_argument("--train-fresh-seed", type=int, default=1234, help="Seed used when selecting train-visible fresh self-play shards.")
     parser.add_argument(
         "--train-anchor-data-dir",
         action="append",

@@ -2,29 +2,34 @@
 
 ## Executive Summary
 
-**Date**: May 9, 2026
-**Status**: 🚀 SSL INTEGRATION COMPLETE - Production 5-task SSL multi-head operational; experimental pawn structure & king safety heads staged for future validation
-**Priority**: HIGH - SSL Performance Validation and Enhanced Evaluation System
+**Date**: May 10, 2026
+**Status**: Local-loop reliability work is active. Production 5-task SSL architecture is operational, but checkpoint promotion is gated on verified self-play label quality, legal-policy metrics, value stability, and candidate generator quality.
+**Priority**: HIGH - Reliable self-play/training signal before further model promotion
 
 ## Current Development Priorities
 
-### 1. SSL Performance Validation 🎯
+### 1. Reliable Local-Loop Improvement 🎯
    - **Priority**: High
-   - **Benefit**: Measures and validates SSL learning effectiveness across all 5 production tasks
-   - **Corresponding files/modules**: `webui/server.py`, `azchess/ssl_algorithms.py`
-   - **Status**: Ready for implementation
+   - **Benefit**: Prevents promotion of checkpoints that only improve artifact metrics or generate weaker self-play data
+   - **Corresponding files/modules**: `azchess/mcts.py`, `azchess/selfplay/internal.py`, `azchess/tools/bench_local_loop.py`, `azchess/training/train.py`
+   - **Status**: Active
+     - Current parent remains `checkpoints/bootstrap_006_capped_value.pt`
+     - `bootstrap_006_anchor_only_nossl_s600` is not promoted; its 64-game generator check produced `64/64` capped games and weak policy labels
+     - Next probe is `bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter`
 
-### 2. SSL Task Balancing ⚖️
+### 2. Search/Data Diagnostics 🔎
    - **Priority**: High
-   - **Benefit**: Optimizes loss weights for balanced multi-task learning
-   - **Corresponding files/modules**: `azchess/training/train.py`, `config.yaml`
-   - **Status**: Ready for implementation
+   - **Benefit**: Explains capped games and separates real legal-move ranking gains from legal-mass artifacts
+   - **Corresponding files/modules**: `azchess/tools/diagnose_policy_targets.py`, `azchess/tools/bench_local_loop.py`
+   - **Status**: Active
+     - New final-position metadata reports final FEN, piece count, halfmove clock, legal count, and draw-claim availability
+     - New policy-target diagnostics bucket CE/top-1/rank by entropy, target top probability, and legal count
 
-### 3. Enhanced SSL Evaluation 📊
+### 3. SSL Performance Validation 📊
    - **Priority**: Medium
-   - **Benefit**: Multi-engine tournaments with SSL-aware strength estimation
-   - **Corresponding files/modules**: `azchess/eval/`, `webui/server.py`
-   - **Status**: Ready for implementation
+   - **Benefit**: Measures and validates SSL learning effectiveness across all 5 production tasks
+   - **Corresponding files/modules**: `webui/server.py`, `azchess/ssl_algorithms.py`, `azchess/training/train.py`
+   - **Status**: Secondary until local-loop promotion criteria are reliable
 
 ### 4. SSL Visualization Enhancement 🎨
    - **Priority**: Medium
@@ -137,29 +142,29 @@
 - **Training Optimization**: Optimized training steps with enhanced memory management
 - **Training Stability**: No NaN/Inf crashes, consistent performance
 
-## 🎯 Current Action Plan (updated May 9, 2026)
+## 🎯 Current Action Plan (updated May 10, 2026)
 
-### Priority 1: SSL Performance Validation (ACTIVE)
+### Priority 1: Local-Loop Reliability (ACTIVE)
 
-#### 1.1 SSL Learning Effectiveness
-- [ ] **SSL Task Measurement**: Quantify learning effectiveness for all 5 SSL tasks
-- [ ] **SSL Contribution Analysis**: Measure SSL impact on policy/value learning
-- [ ] **Task Balancing Optimization**: Fine-tune loss weights for optimal multi-task learning
-- [ ] **SSL Curriculum Tuning**: Optimize progressive difficulty parameters
+#### 1.1 Generator Quality
+- [ ] **Fixed-Jitter Candidate Probe**: Rerun the 64-game anchor-only candidate generator now that `--selection-jitter 0.0` is exact
+- [ ] **Capped-Game Diagnosis**: Use final-position metadata to determine whether caps are material-heavy, fifty-move/draw-claim related, or search-quality related
+- [ ] **Parent-vs-Candidate Generator Gate**: Do not promote a checkpoint unless it generates data at least as good as the parent
 
-#### 1.2 SSL Monitoring Enhancement
-- [ ] **SSL Visualization**: Add heatmaps and decision explanation tools
-- [ ] **Real-Time SSL Metrics**: Enhanced WebUI SSL performance tracking
-- [ ] **SSL Head Analysis**: Deep-dive into individual SSL head performance
-- [ ] **SSL Learning Curves**: Track SSL learning progress over time
+#### 1.2 Training Signal Quality
+- [x] **Legal-Policy Loss**: Add `--legal-policy-weight` to directly train legal-move ranking
+- [x] **Fresh Shard Limiting**: Add `--train-fresh-max-files` and metadata pruning for mixed fresh/anchor training
+- [x] **True No-SSL Ablation**: Make `ssl_weight=0.0` skip SSL targets and SSL forward compute
+- [x] **Policy Diagnostics**: Add entropy/top-prob/legal-count bucket diagnostics for checkpoint comparisons
+- [ ] **Promotion Criteria Enforcement**: Require heldout legal-policy stability, value stability, and candidate generator quality before promotion
 
-#### 1.3 Multi-Task Optimization
-- [ ] **Loss Weight Tuning**: Optimize balance between policy, value, and SSL losses
-- [ ] **SSL Task Prioritization**: Dynamic SSL task weighting based on learning stage
-- [ ] **Gradient Flow Analysis**: Monitor gradient flow between SSL and policy/value heads
-- [ ] **SSL Integration Testing**: Comprehensive testing of SSL-policy interactions
+#### 1.3 Search Correctness
+- [x] **Fresh Root Visits**: Prevent stale transposition-table visit counts from contaminating policy targets
+- [x] **Current-Search Targets**: Build policy targets from current search visit deltas
+- [x] **Legal-Logit Softmax**: Softmax raw legal logits correctly in batched legal-only expansion
+- [x] **Exact Zero Jitter**: Remove hidden random jitter when `selection_jitter=0.0`
 
-### Priority 2: Performance & Stability (Next)
+### Priority 2: SSL And Performance Validation (Next)
 
 #### 2.1 Memory Optimization
 - [ ] **Tensor Memory Management**: Optimize allocation and cleanup patterns
