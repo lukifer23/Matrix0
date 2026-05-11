@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 from azchess.config import Config, select_device
-from azchess.tools.bench_local_loop import _sample_eval_batch, evaluate_checkpoint_batches, summarize_npz_shards
+from azchess.tools.bench_local_loop import (
+    _delta_source_metrics,
+    _sample_eval_batch,
+    evaluate_checkpoint_batches,
+    summarize_npz_shards,
+)
 
 
 def main() -> None:
@@ -67,6 +72,7 @@ def main() -> None:
         "model_a": metrics_a,
         "model_b": metrics_b,
         "delta_a_minus_b": delta,
+        "source_delta_a_minus_b": _delta_source_metrics(metrics_b, metrics_a),
     }
     if args.output:
         out = Path(args.output)

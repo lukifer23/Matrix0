@@ -162,6 +162,39 @@ def test_evaluate_checkpoint_batches_reports_mean_and_std(tmp_path):
     assert "policy_legal_ce" in metrics
 
 
+def test_evaluate_checkpoint_batches_reports_source_metrics(tmp_path):
+    cfg = Config({"model": _tiny_model_cfg()})
+    states = np.zeros((4, 19, 8, 8), dtype=np.float32)
+    pi = np.zeros((4, 4672), dtype=np.float32)
+    legal = np.zeros((4, 4672), dtype=np.uint8)
+    pi[:, 0] = 1.0
+    legal[:, 0] = 1
+    batch = {
+        "s": states,
+        "pi": pi,
+        "z": np.zeros((4,), dtype=np.float32),
+        "legal_mask": legal,
+        "result_source": np.asarray(["capped", "capped", "tablebase", "tablebase"]),
+    }
+    model = PolicyValueNet.from_config(cfg.model())
+    ckpt = tmp_path / "model.pt"
+    torch.save({"model": model.state_dict()}, ckpt)
+
+    metrics = evaluate_checkpoint_batches(
+        ckpt,
+        cfg,
+        tmp_path,
+        "cpu",
+        batch_size=4,
+        batches=1,
+        fixed_batches=[batch],
+    )
+
+    assert metrics["source_metrics"]["capped"]["samples"] == 2
+    assert metrics["source_metrics"]["tablebase"]["samples"] == 2
+    assert "value_mse" in metrics["source_metrics"]["capped"]
+
+
 def test_copy_anchor_shards_imports_prior_data_into_replays(tmp_path):
     anchor = tmp_path / "anchor"
     dm = DataManager(base_dir=str(anchor))

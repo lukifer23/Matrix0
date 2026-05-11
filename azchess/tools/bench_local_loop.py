@@ -460,6 +460,8 @@ def _sample_training_batch(data_dir: Path, batch_size: int) -> Dict[str, np.ndar
         out = {"s": s, "pi": pi, "z": z, "value_weight": value_weight}
         if legal is not None:
             out["legal_mask"] = legal
+        if len(batch) >= 6 and batch[5] is not None:
+            out["result_source"] = np.asarray(batch[5])
         return out
     if len(batch) == 4:
         s, pi, z, legal = batch
@@ -491,6 +493,36 @@ def _summarize_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     for key in ("checkpoint",):
         if key in records[0]:
             summary[key] = records[0][key]
+    source_metrics = _summarize_source_metric_records(records)
+    if source_metrics:
+        summary["source_metrics"] = source_metrics
+    return summary
+
+
+def _summarize_source_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_source: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        for source, metrics in (record.get("source_metrics") or {}).items():
+            rec = by_source.setdefault(source, {"samples": 0, "_weighted": {}})
+            samples = int(metrics.get("samples", 0))
+            if samples <= 0:
+                continue
+            rec["samples"] += samples
+            weighted = rec["_weighted"]
+            for key, value in metrics.items():
+                if key == "samples" or not isinstance(value, (int, float)):
+                    continue
+                weighted[key] = float(weighted.get(key, 0.0) + float(value) * samples)
+
+    summary: Dict[str, Any] = {}
+    for source, rec in sorted(by_source.items()):
+        samples = int(rec["samples"])
+        if samples <= 0:
+            continue
+        source_summary: Dict[str, Any] = {"samples": samples}
+        for key, weighted_value in sorted(rec["_weighted"].items()):
+            source_summary[key] = float(weighted_value / samples)
+        summary[source] = source_summary
     return summary
 
 
@@ -532,19 +564,74 @@ def _evaluate_loaded_model(
         "value_pred_mean": float(np.mean(value)),
         "value_target_mean": float(np.mean(z_target)),
     }
+    per_sample: Dict[str, np.ndarray] = {
+        "policy_ce": ce,
+        "policy_kl": ce - target_entropy,
+        "policy_top1_match": top1_match.astype(np.float32),
+        "target_entropy": target_entropy,
+        "pred_entropy": _entropy(probs),
+        "value_mse": (value - z_target) ** 2,
+        "value_pred_mean": value,
+        "value_target_mean": z_target,
+    }
     if "legal_mask" in batch:
         legal = np.asarray(batch["legal_mask"], dtype=np.float32)
         if legal.shape == probs.shape:
-            rec["legal_policy_mass"] = float(np.mean(np.sum(probs * legal, axis=1)))
+            legal_policy_mass = np.sum(probs * legal, axis=1)
+            rec["legal_policy_mass"] = float(np.mean(legal_policy_mass))
             masked_logits = policy_logits.masked_fill(torch.from_numpy(legal <= 0).to(device), -1e9)
             masked_log_probs = torch.log_softmax(masked_logits, dim=1).detach().cpu().numpy()
             masked_probs = np.exp(masked_log_probs)
             legal_ce = -np.sum(pi_target * masked_log_probs, axis=1)
             rec["policy_legal_ce"] = float(np.mean(legal_ce))
             rec["policy_legal_kl"] = float(np.mean(legal_ce - target_entropy))
-            rec["policy_legal_top1_match"] = float(np.mean(np.argmax(masked_probs, axis=1) == np.argmax(pi_target, axis=1)))
-            rec["legal_pred_entropy"] = float(np.mean(_entropy(masked_probs)))
+            legal_top1_match = np.argmax(masked_probs, axis=1) == np.argmax(pi_target, axis=1)
+            legal_pred_entropy = _entropy(masked_probs)
+            rec["policy_legal_top1_match"] = float(np.mean(legal_top1_match))
+            rec["legal_pred_entropy"] = float(np.mean(legal_pred_entropy))
+            per_sample.update(
+                {
+                    "legal_policy_mass": legal_policy_mass,
+                    "policy_legal_ce": legal_ce,
+                    "policy_legal_kl": legal_ce - target_entropy,
+                    "policy_legal_top1_match": legal_top1_match.astype(np.float32),
+                    "legal_pred_entropy": legal_pred_entropy,
+                }
+            )
+    if "result_source" in batch:
+        sources = np.asarray(batch["result_source"]).reshape(-1)
+        if sources.shape[0] == x.shape[0]:
+            source_metrics: Dict[str, Dict[str, Any]] = {}
+            for source in sorted({str(s) for s in sources}):
+                mask = sources.astype(str) == source
+                if not np.any(mask):
+                    continue
+                source_rec: Dict[str, Any] = {"samples": int(np.sum(mask))}
+                for key, values in per_sample.items():
+                    source_rec[key] = float(np.mean(values[mask]))
+                source_metrics[source] = source_rec
+            rec["source_metrics"] = source_metrics
     return rec
+
+
+def _delta_source_metrics(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    before_sources = before.get("source_metrics") or {}
+    after_sources = after.get("source_metrics") or {}
+    out: Dict[str, Any] = {}
+    for source in sorted(set(before_sources) & set(after_sources)):
+        before_metrics = before_sources[source]
+        after_metrics = after_sources[source]
+        delta: Dict[str, Any] = {
+            "samples_before": before_metrics.get("samples"),
+            "samples_after": after_metrics.get("samples"),
+        }
+        for key in sorted(set(before_metrics) & set(after_metrics)):
+            if key == "samples":
+                continue
+            if isinstance(before_metrics.get(key), (int, float)) and isinstance(after_metrics.get(key), (int, float)):
+                delta[key] = float(after_metrics[key] - before_metrics[key])
+        out[source] = delta
+    return out
 
 
 def _load_eval_model(checkpoint_path: Path, cfg: Config, device: str) -> torch.nn.Module:
@@ -912,6 +999,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 )
                 if key in eval_before and key in eval_after
             },
+            "source_delta": _delta_source_metrics(eval_before, eval_after),
         },
     }
     out_path = Path(args.output) if args.output else run_dir / "local_loop_report.json"
