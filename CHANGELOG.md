@@ -14,6 +14,7 @@
 - Added `--policy-target-temperature` for target-only MCTS policy label sharpening during low-simulation self-play. This does not affect move sampling.
 - Added `azchess.tools.reweight_npz_values` to copy NPZ data while overriding `value_weight` and `meta_value_weight` for selected result sources such as capped/unfinished games.
 - Added source-aware value-loss filtering through `--value-include-source` and `--value-exclude-source`, allowing capped self-play to train policy while terminal/tablebase/draw/teacher sources train value.
+- Added source-aware policy-loss filtering through `--policy-include-source` and `--policy-exclude-source`, allowing teacher data to train value without steering policy targets.
 - Added `azchess.tools.promotion_gate` to produce an explicit promote/reject verdict from heldout eval, generator quality, and candidate-vs-parent match reports.
 - Added `--legal-policy-weight` for legal-conditioned policy CE over masked logits and legal-renormalized targets.
 - Added final-position self-play metadata: final FEN, piece count, halfmove clock, legal count, and draw-claim availability.

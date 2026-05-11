@@ -102,7 +102,12 @@ def legal_policy_mass_loss(p: torch.Tensor, legal_mask: torch.Tensor) -> torch.T
     return -torch.log(legal_mass).mean()
 
 
-def legal_policy_ce_loss(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
+def legal_policy_ce_loss(
+    p: torch.Tensor,
+    pi: torch.Tensor,
+    legal_mask: torch.Tensor,
+    sample_weight: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """Cross-entropy after renormalizing logits and targets over legal moves."""
     if legal_mask is None:
         return torch.zeros((), device=p.device, dtype=p.dtype)
@@ -123,7 +128,14 @@ def legal_policy_ce_loss(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Te
     masked_logits = torch.where(legal, p, torch.full_like(p, -1e9))
     legal_log_probs = nn.functional.log_softmax(masked_logits[valid], dim=1)
     target_norm = target[valid] / target_mass[valid].clamp_min(1e-8)
-    return -(target_norm * legal_log_probs).sum(dim=1).mean()
+    per_sample = -(target_norm * legal_log_probs).sum(dim=1)
+    if sample_weight is None:
+        return per_sample.mean()
+    weights = sample_weight.to(device=p.device, dtype=p.dtype).reshape(-1)[valid].clamp_min(0.0)
+    weight_sum = weights.sum()
+    if weight_sum <= 0:
+        return torch.zeros((), device=p.device, dtype=p.dtype)
+    return (per_sample * weights).sum() / weight_sum
 
 
 def _source_filter_mask(sources, include_sources: Optional[list[str]], exclude_sources: Optional[list[str]]) -> Optional[torch.Tensor]:
@@ -160,7 +172,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                ssl_every_n: int = 1, ssl_chunk_size: int = 0, legal_mass_weight: float = 0.0,
                legal_policy_weight: float = 0.0,
                value_include_sources: Optional[list[str]] = None,
-               value_exclude_sources: Optional[list[str]] = None):
+               value_exclude_sources: Optional[list[str]] = None,
+               policy_include_sources: Optional[list[str]] = None,
+               policy_exclude_sources: Optional[list[str]] = None):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -209,6 +223,11 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             )
         value_weight = value_weight.reshape(-1)
         value_weight = value_weight * source_value_mask.to(dtype=value_weight.dtype)
+    source_policy_mask = _source_filter_mask(result_source_np, policy_include_sources, policy_exclude_sources)
+    if source_policy_mask is not None and source_policy_mask.numel() != pi.shape[0]:
+        raise ValueError(
+            f"result_source length {source_policy_mask.numel()} does not match policy batch length {pi.shape[0]}"
+        )
 
     try:
         policy_size = int(getattr(getattr(model, 'cfg', None), 'policy_size', 4672))
@@ -346,6 +365,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     pi = pi.to(device).contiguous().clone()
     z = z.to(device).contiguous()
     value_weight = value_weight.to(device).contiguous().to(dtype=torch.float32)
+    if source_policy_mask is not None:
+        source_policy_mask = source_policy_mask.to(device).contiguous().to(dtype=torch.float32)
     if legal_mask_t is not None:
         legal_mask_t = legal_mask_t.to(device).contiguous().clone()
 
@@ -596,9 +617,18 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             support_counts = support_mask.sum(dim=1, keepdim=True).clamp_min(1)
             q = support_mask.to(dtype=pi.dtype) / support_counts.to(dtype=pi.dtype)
             pi_smooth = (1.0 - eps) * pi + eps * q
-            policy_loss = -(pi_smooth * log_probs).sum(dim=1).mean()
+            per_sample_policy_loss = -(pi_smooth * log_probs).sum(dim=1)
         else:
-            policy_loss = -(pi * log_probs).sum(dim=1).mean()
+            per_sample_policy_loss = -(pi * log_probs).sum(dim=1)
+        if source_policy_mask is not None:
+            policy_weight = source_policy_mask.to(dtype=per_sample_policy_loss.dtype).clamp_min(0.0)
+            weight_sum = policy_weight.sum()
+            if weight_sum > 0:
+                policy_loss = (per_sample_policy_loss * policy_weight).sum() / weight_sum
+            else:
+                policy_loss = torch.zeros((), device=p.device, dtype=per_sample_policy_loss.dtype)
+        else:
+            policy_loss = per_sample_policy_loss.mean()
 
         # DEBUG: Log unusually small policy loss values to catch empty targets early
         try:
@@ -616,7 +646,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                 logger.info("LEGAL_MASS_LOSS: weight=%.4f penalty=%.4f", float(legal_mass_weight), float(legal_mass_penalty.detach().item()))
         legal_policy_penalty = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
         if legal_policy_weight > 0.0 and legal_mask_t is not None:
-            legal_policy_penalty = legal_policy_ce_loss(p, pi, legal_mask_t).to(dtype=policy_loss.dtype)
+            legal_policy_penalty = legal_policy_ce_loss(p, pi, legal_mask_t, sample_weight=source_policy_mask).to(dtype=policy_loss.dtype)
             policy_reg_loss = policy_reg_loss + (float(legal_policy_weight) * legal_policy_penalty)
             if current_step % 200 == 0:
                 logger.info("LEGAL_POLICY_LOSS: weight=%.4f ce=%.4f", float(legal_policy_weight), float(legal_policy_penalty.detach().item()))
@@ -912,6 +942,8 @@ def train_comprehensive(
     prefetch_factor: Optional[int] = None,
     value_include_sources: Optional[list[str]] = None,
     value_exclude_sources: Optional[list[str]] = None,
+    policy_include_sources: Optional[list[str]] = None,
+    policy_exclude_sources: Optional[list[str]] = None,
 ):
     """Train the model with comprehensive features and memory optimizations."""
 
@@ -1216,6 +1248,20 @@ def train_comprehensive(
             cfg_value_include_sources or None,
             cfg_value_exclude_sources or None,
         )
+    cfg_policy_include_sources = policy_include_sources
+    if cfg_policy_include_sources is None:
+        cfg_policy_include_sources = tr_cfg.get("policy_include_sources", None)
+    cfg_policy_exclude_sources = policy_exclude_sources
+    if cfg_policy_exclude_sources is None:
+        cfg_policy_exclude_sources = tr_cfg.get("policy_exclude_sources", None)
+    cfg_policy_include_sources = list(cfg_policy_include_sources or [])
+    cfg_policy_exclude_sources = list(cfg_policy_exclude_sources or [])
+    if cfg_policy_include_sources or cfg_policy_exclude_sources:
+        logger.info(
+            "Source-aware policy filtering: include=%s exclude=%s",
+            cfg_policy_include_sources or None,
+            cfg_policy_exclude_sources or None,
+        )
 
     # Memory limits are now set at the beginning of the orchestrator main() function
     memory_limit_gb = safe_config_get(cfg, 'memory_limit_gb', 14, section='training')  # Default 14GB for MPS
@@ -1421,6 +1467,8 @@ def train_comprehensive(
                 legal_policy_weight=float(tr_cfg.get('legal_policy_weight', 0.0)),
                 value_include_sources=cfg_value_include_sources,
                 value_exclude_sources=cfg_value_exclude_sources,
+                policy_include_sources=cfg_policy_include_sources,
+                policy_exclude_sources=cfg_policy_exclude_sources,
                 )
                 
                 if loss_values is None:
@@ -1880,6 +1928,8 @@ def main():
     parser.add_argument("--prefetch-factor", type=int, default=None, help="DataLoader prefetch factor")
     parser.add_argument("--value-include-source", action="append", default=None, help="Only these result sources contribute to value loss. Repeatable.")
     parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
+    parser.add_argument("--policy-include-source", action="append", default=None, help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
+    parser.add_argument("--policy-exclude-source", action="append", default=None, help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
     
     args = parser.parse_args()
     
@@ -1908,6 +1958,8 @@ def main():
         prefetch_factor=args.prefetch_factor,
         value_include_sources=args.value_include_source,
         value_exclude_sources=args.value_exclude_source,
+        policy_include_sources=args.policy_include_source,
+        policy_exclude_sources=args.policy_exclude_source,
     )
 
 def train_from_config(config_path: str = "config.yaml"):

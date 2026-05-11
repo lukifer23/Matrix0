@@ -226,7 +226,7 @@ trains ranking among legal moves.
 
 ### `--value-include-source`, `--value-exclude-source`
 
-Source-aware value-loss gates. These operate on shard `meta_result_source` values and only affect value loss; policy loss still sees the batch.
+Source-aware value-loss gates. These operate on shard `meta_result_source` values and only affect value loss.
 
 Recommended local-loop split while capped games dominate:
 
@@ -247,6 +247,18 @@ Alternative:
 ```
 
 Use include mode for promotion-oriented runs because it fails closed when new/unknown result sources appear.
+
+### `--policy-include-source`, `--policy-exclude-source`
+
+Source-aware policy-loss gates. These operate on shard `meta_result_source` values and affect the main policy CE plus legal-policy CE. Legal-mass regularization remains global.
+
+Use this when teacher data is useful for value but hurts heldout legal move ranking:
+
+```bash
+--policy-exclude-source teacher:
+```
+
+This keeps teacher positions in the batch for value loss if allowed by the value source filter, while preventing the teacher policy distribution from overriding the current self-play/anchor policy curriculum.
 
 ### `--ssl-weight`
 

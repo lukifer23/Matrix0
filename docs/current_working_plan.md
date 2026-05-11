@@ -54,6 +54,7 @@ The local-loop path now fails hard instead of silently producing bad data:
 - `azchess.tools.diagnose_policy_targets` now buckets checkpoint comparisons by target entropy, top probability, and legal count
 - `azchess.tools.reweight_npz_values` can copy existing NPZ data while changing value weights for selected result sources, so capped-policy experiments can be rerun without regenerating self-play
 - training now supports source-aware value-loss filtering via `--value-include-source` and `--value-exclude-source`
+- training now supports source-aware policy-loss filtering via `--policy-include-source` and `--policy-exclude-source`
 - `azchess.tools.promotion_gate` now turns eval, generator, and match reports into an explicit promote/reject verdict
 
 ## Current Findings
@@ -245,6 +246,7 @@ Do not run another 600-step retrain on the same ptt050 data without source-aware
 
 - keep capped shards usable for policy targets
 - include only terminal/tablebase/draw-adjudication/resignation sources in value loss for promotion-oriented runs
+- exclude `teacher:` from policy loss if teacher positions improve value but regress heldout legal ranking
 - run `promotion_gate` after eval/generator/match reports
 - reject candidates without a match report unless explicitly using diagnostic mode
 

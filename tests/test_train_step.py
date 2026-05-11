@@ -30,7 +30,8 @@ class SourceFilterModel(nn.Module):
 
     def forward(self, x, return_ssl=True):
         batch = x.size(0)
-        p = self.bias.expand(batch, int(np.prod(POLICY_SHAPE))).clone()
+        p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
+        p[:, 0] = self.bias + 4.0
         v = self.bias.expand(batch).clone()
         ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
         return p, v, ssl
@@ -194,3 +195,52 @@ def test_train_step_source_filters_match_prefixes():
     )
 
     assert value_loss == 0.0
+
+
+def test_train_step_can_exclude_teacher_from_policy_loss_but_keep_value():
+    model = SourceFilterModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    pi = np.zeros((2, policy_size), dtype=np.float32)
+    pi[0, 0] = 1.0
+    pi[1, 1] = 1.0
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": pi,
+        "z": np.array([10.0, 0.0], dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["teacher:bootstrap_007", "terminal"]),
+    }
+
+    _, unfiltered_policy_loss, unfiltered_value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+    )
+    optimizer.zero_grad()
+    _, filtered_policy_loss, filtered_value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_exclude_sources=["teacher:"],
+    )
+
+    assert filtered_policy_loss > unfiltered_policy_loss
+    assert unfiltered_value_loss > 40.0
+    assert filtered_value_loss == unfiltered_value_loss
