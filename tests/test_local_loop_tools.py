@@ -105,6 +105,26 @@ def test_copy_anchor_shards_accepts_direct_npz_directory(tmp_path):
     assert len(list((run_data / "replays").glob("*.npz"))) == 1
 
 
+def test_copy_anchor_shards_can_filter_by_meta_result_source(tmp_path):
+    source = tmp_path / "anchor"
+    source.mkdir()
+    for name, result_source in (("tablebase.npz", "tablebase"), ("capped.npz", "capped")):
+        np.savez_compressed(
+            source / name,
+            s=np.zeros((2, 19, 8, 8), dtype=np.float32),
+            pi=np.full((2, 4672), 1.0 / 4672.0, dtype=np.float32),
+            z=np.zeros((2,), dtype=np.float32),
+            value_weight=np.ones((2,), dtype=np.float32),
+            meta_result_source=np.array([result_source]),
+        )
+
+    info = copy_anchor_shards([str(source)], tmp_path / "run" / "data", source_prefixes=["tablebase"])
+
+    copied = list((tmp_path / "run" / "data" / "replays").glob("*.npz"))
+    assert info["copied_files"] == 1
+    assert copied[0].name.endswith("tablebase.npz")
+
+
 def test_evaluate_checkpoint_reports_batch_metrics(tmp_path):
     cfg = Config({"model": _tiny_model_cfg()})
     dm = DataManager(base_dir=str(tmp_path))
@@ -313,6 +333,29 @@ def test_sample_eval_batches_seed_is_stable_and_restores_rng(tmp_path):
     second = _sample_eval_batches(tmp_path, batch_size=2, batches=2, seed=123)
 
     assert [batch["z"].tolist() for batch in first] == [batch["z"].tolist() for batch in second]
+
+
+def test_sample_eval_batches_can_filter_by_meta_result_source(tmp_path):
+    for name, result_source, value in (("tablebase.npz", "tablebase", 1.0), ("capped.npz", "capped", -1.0)):
+        np.savez_compressed(
+            tmp_path / name,
+            s=np.full((4, 19, 8, 8), value, dtype=np.float32),
+            pi=np.full((4, 4672), 1.0 / 4672.0, dtype=np.float32),
+            z=np.full((4,), value, dtype=np.float32),
+            legal_mask=np.ones((4, 4672), dtype=np.uint8),
+            meta_result_source=np.array([result_source]),
+        )
+
+    batches = _sample_eval_batches(
+        tmp_path,
+        batch_size=3,
+        batches=2,
+        result_source_prefixes=["tablebase"],
+        seed=321,
+    )
+
+    assert all(np.all(batch["z"] == 1.0) for batch in batches)
+    assert all(set(batch["result_source"].astype(str)) == {"tablebase"} for batch in batches)
 
 
 def test_eval_delta_and_selection_policy_limits():

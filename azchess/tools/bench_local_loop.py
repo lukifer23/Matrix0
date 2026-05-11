@@ -59,7 +59,29 @@ def _npz_files(data_dir: Path) -> List[Path]:
     return files
 
 
-def copy_anchor_shards(anchor_dirs: Iterable[str], run_data_dir: Path, max_files_per_dir: int = 0) -> Dict[str, Any]:
+def _npz_result_source(path: Path) -> str:
+    try:
+        with np.load(path, mmap_mode="r") as data:
+            if "meta_result_source" in data:
+                raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)
+                if raw_sources.size:
+                    return str(raw_sources[0])
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _source_matches(source: str, prefixes: Iterable[str]) -> bool:
+    prefix_list = [str(prefix) for prefix in prefixes if str(prefix)]
+    return not prefix_list or any(str(source).startswith(prefix) for prefix in prefix_list)
+
+
+def copy_anchor_shards(
+    anchor_dirs: Iterable[str],
+    run_data_dir: Path,
+    max_files_per_dir: int = 0,
+    source_prefixes: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
     """Copy stable training shards into the run replay buffer before training.
 
     Self-play generation still writes only fresh data. Anchors are copied after
@@ -73,6 +95,8 @@ def copy_anchor_shards(anchor_dirs: Iterable[str], run_data_dir: Path, max_files
         if not source_dir.exists():
             raise FileNotFoundError(f"Anchor data directory not found: {source_dir}")
         files = _npz_files(source_dir)
+        if source_prefixes:
+            files = [path for path in files if _source_matches(_npz_result_source(path), source_prefixes)]
         if max_files_per_dir > 0:
             files = files[:max_files_per_dir]
         if not files:
@@ -86,6 +110,7 @@ def copy_anchor_shards(anchor_dirs: Iterable[str], run_data_dir: Path, max_files
     return {
         "dirs": [str(Path(d)) for d in anchor_dirs],
         "max_files_per_dir": int(max_files_per_dir),
+        "source_prefixes": list(source_prefixes or []),
         "copied_files": len(copied),
         "destination": str(replay_dir),
     }
@@ -470,7 +495,79 @@ def _sample_training_batch(data_dir: Path, batch_size: int) -> Dict[str, np.ndar
     return {"s": s, "pi": pi, "z": z}
 
 
-def _sample_eval_batch(data_dir: Path, batch_size: int, source_prefixes: Optional[List[str]] = None) -> Dict[str, np.ndarray]:
+def _sample_npz_eval_batch_by_result_source(
+    data_dir: Path,
+    batch_size: int,
+    result_source_prefixes: Iterable[str],
+) -> Dict[str, np.ndarray]:
+    files = [path for path in _npz_files(data_dir) if _source_matches(_npz_result_source(path), result_source_prefixes)]
+    if not files:
+        raise RuntimeError(f"No eval NPZ files matched result sources: {list(result_source_prefixes)}")
+
+    counts: List[int] = []
+    for path in files:
+        with np.load(path, mmap_mode="r") as data:
+            if "s" not in data or "pi" not in data or "z" not in data:
+                continue
+            counts.append(int(np.asarray(data["z"]).reshape(-1).shape[0]))
+    valid = [(path, count) for path, count in zip(files, counts) if count > 0]
+    if not valid:
+        raise RuntimeError(f"No valid eval samples matched result sources: {list(result_source_prefixes)}")
+
+    total = sum(count for _, count in valid)
+    offsets = np.cumsum([0] + [count for _, count in valid])
+    chosen = np.random.choice(total, size=int(batch_size), replace=total < int(batch_size))
+
+    states: List[np.ndarray] = []
+    policies: List[np.ndarray] = []
+    values: List[np.ndarray] = []
+    legal_masks: List[np.ndarray] = []
+    value_weights: List[float] = []
+    sources: List[str] = []
+
+    for file_idx, (path, _count) in enumerate(valid):
+        lo = offsets[file_idx]
+        hi = offsets[file_idx + 1]
+        local = chosen[(chosen >= lo) & (chosen < hi)] - lo
+        if local.size == 0:
+            continue
+        with np.load(path, mmap_mode="r") as data:
+            idx = local.astype(np.int64)
+            states.append(np.asarray(data["s"][idx], dtype=np.float32))
+            policies.append(np.asarray(data["pi"][idx], dtype=np.float32))
+            values.append(np.asarray(data["z"][idx], dtype=np.float32).reshape(-1))
+            if "legal_mask" in data:
+                legal = np.asarray(data["legal_mask"][idx])
+                if legal.ndim > 2:
+                    legal = legal.reshape(legal.shape[0], -1)
+                legal_masks.append(np.asarray(legal, dtype=np.uint8))
+            if "value_weight" in data:
+                weights = np.asarray(data["value_weight"][idx], dtype=np.float32).reshape(-1)
+                value_weights.extend(float(weight) for weight in weights)
+            source = _npz_result_source(path)
+            sources.extend([source] * len(idx))
+
+    out: Dict[str, np.ndarray] = {
+        "s": np.ascontiguousarray(np.concatenate(states, axis=0), dtype=np.float32),
+        "pi": np.ascontiguousarray(np.concatenate(policies, axis=0), dtype=np.float32),
+        "z": np.ascontiguousarray(np.concatenate(values, axis=0), dtype=np.float32),
+        "result_source": np.asarray(sources),
+    }
+    if legal_masks and sum(mask.shape[0] for mask in legal_masks) == out["s"].shape[0]:
+        out["legal_mask"] = np.ascontiguousarray(np.concatenate(legal_masks, axis=0), dtype=np.uint8)
+    if value_weights and len(value_weights) == out["s"].shape[0]:
+        out["value_weight"] = np.asarray(value_weights, dtype=np.float32)
+    return out
+
+
+def _sample_eval_batch(
+    data_dir: Path,
+    batch_size: int,
+    source_prefixes: Optional[List[str]] = None,
+    result_source_prefixes: Optional[List[str]] = None,
+) -> Dict[str, np.ndarray]:
+    if result_source_prefixes:
+        return _sample_npz_eval_batch_by_result_source(data_dir, batch_size, result_source_prefixes)
     dm = DataManager(base_dir=str(data_dir))
     if source_prefixes:
         batch = next(dm.get_training_batch_by_source_prefixes(batch_size=batch_size, prefixes=source_prefixes))
@@ -485,11 +582,17 @@ def _sample_eval_batches(
     batch_size: int,
     batches: int,
     source_prefixes: Optional[List[str]] = None,
+    result_source_prefixes: Optional[List[str]] = None,
     seed: Optional[int] = None,
 ) -> List[Dict[str, np.ndarray]]:
     if seed is None:
         return [
-            _sample_eval_batch(data_dir, batch_size=batch_size, source_prefixes=source_prefixes)
+            _sample_eval_batch(
+                data_dir,
+                batch_size=batch_size,
+                source_prefixes=source_prefixes,
+                result_source_prefixes=result_source_prefixes,
+            )
             for _ in range(max(1, int(batches)))
         ]
 
@@ -497,7 +600,12 @@ def _sample_eval_batches(
     try:
         np.random.seed(int(seed))
         return [
-            _sample_eval_batch(data_dir, batch_size=batch_size, source_prefixes=source_prefixes)
+            _sample_eval_batch(
+                data_dir,
+                batch_size=batch_size,
+                source_prefixes=source_prefixes,
+                result_source_prefixes=result_source_prefixes,
+            )
             for _ in range(max(1, int(batches)))
         ]
     finally:
@@ -985,11 +1093,13 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
             args.train_anchor_data_dir,
             run_dir / "data",
             max_files_per_dir=int(args.train_anchor_max_files),
+            source_prefixes=args.train_anchor_source_prefix,
         )
 
     data_metrics_before = summarize_npz_shards(run_dir / "data")
     eval_data_dir = Path(args.eval_data_dir) if args.eval_data_dir else run_dir / "data"
     eval_prefixes = args.eval_source_prefix if args.eval_source_prefix else None
+    eval_result_prefixes = args.eval_result_source if args.eval_result_source else None
     eval_batch_size = min(args.eval_batch_size, args.batch_size)
     eval_seed = getattr(args, "eval_seed", None)
     eval_batches = _sample_eval_batches(
@@ -997,6 +1107,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         batch_size=eval_batch_size,
         batches=int(args.eval_batches),
         source_prefixes=eval_prefixes,
+        result_source_prefixes=eval_result_prefixes,
         seed=None if eval_seed is None else int(eval_seed),
     )
     eval_before = evaluate_checkpoint_batches(
@@ -1127,6 +1238,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         "args": vars(args),
         "eval_data_dir": str(eval_data_dir),
         "eval_source_prefix": eval_prefixes,
+        "eval_result_source": eval_result_prefixes,
         "checkpoints": {
             "initial": str(initial_ckpt),
             "initial_info": initial_checkpoint_info,
@@ -1210,6 +1322,7 @@ def main() -> None:
     parser.add_argument("--eval-batches", type=int, default=1)
     parser.add_argument("--eval-data-dir", default=None, help="Optional stable data directory for before/after checkpoint eval.")
     parser.add_argument("--eval-source-prefix", action="append", default=[], help="Optional source prefix filter for eval data. Repeatable.")
+    parser.add_argument("--eval-result-source", action="append", default=[], help="Only sample eval batches from NPZ shards whose meta_result_source has this prefix. Repeatable.")
     parser.add_argument("--eval-seed", type=int, default=None, help="Optional deterministic seed for held-out eval batch sampling.")
     parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
@@ -1241,6 +1354,7 @@ def main() -> None:
         help="Copy NPZ shards from this data directory into the run replay buffer after self-play and before training. Repeatable.",
     )
     parser.add_argument("--train-anchor-max-files", type=int, default=0, help="Optional max anchor shards to copy from each anchor directory; 0 means all.")
+    parser.add_argument("--train-anchor-source-prefix", action="append", default=[], help="Only copy anchor NPZ shards whose meta_result_source has this prefix. Repeatable.")
     args = parser.parse_args()
     report = run_local_loop(args)
     data = report["data_after_train"]
