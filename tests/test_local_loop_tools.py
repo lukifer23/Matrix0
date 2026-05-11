@@ -393,6 +393,7 @@ def test_eval_delta_and_selection_policy_limits():
     args = Namespace(
         eval_select_max_policy_ce_delta=0.001,
         eval_select_max_policy_legal_ce_delta=1.0e-5,
+        eval_select_max_source_value_mse_delta=None,
     )
 
     delta = _eval_delta(before, after)
@@ -402,6 +403,28 @@ def test_eval_delta_and_selection_policy_limits():
 
     delta["policy_ce"] = 0.002
     assert not _selection_passes(delta, args)
+
+
+def test_selection_can_reject_source_value_regression():
+    delta = {
+        "policy_ce": 0.0005,
+        "policy_legal_ce": 0.000002,
+        "value_mse": -0.01,
+    }
+    source_delta = {
+        "capped": {"value_mse": -0.02},
+        "terminal": {"value_mse": 0.00001},
+    }
+    args = Namespace(
+        eval_select_max_policy_ce_delta=0.001,
+        eval_select_max_policy_legal_ce_delta=1.0e-5,
+        eval_select_max_source_value_mse_delta=0.0000005,
+    )
+
+    assert not _selection_passes(delta, args, source_delta)
+
+    source_delta["terminal"]["value_mse"] = 0.0000001
+    assert _selection_passes(delta, args, source_delta)
 
 
 def test_prepare_initial_checkpoint_copies_and_validates_provided_checkpoint(tmp_path):

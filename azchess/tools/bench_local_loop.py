@@ -1083,13 +1083,29 @@ def _build_train_cmd(
     return train_cmd
 
 
-def _selection_passes(delta: Dict[str, float], args: argparse.Namespace) -> bool:
+def _selection_passes(
+    delta: Dict[str, float],
+    args: argparse.Namespace,
+    source_delta: Optional[Dict[str, Any]] = None,
+) -> bool:
     policy_ce = float(delta.get("policy_ce", 0.0))
     policy_legal_ce = float(delta.get("policy_legal_ce", 0.0))
-    return (
-        policy_ce <= float(args.eval_select_max_policy_ce_delta)
-        and policy_legal_ce <= float(args.eval_select_max_policy_legal_ce_delta)
-    )
+    if policy_ce > float(args.eval_select_max_policy_ce_delta):
+        return False
+    if policy_legal_ce > float(args.eval_select_max_policy_legal_ce_delta):
+        return False
+    max_source_value_mse = getattr(args, "eval_select_max_source_value_mse_delta", None)
+    if max_source_value_mse is not None:
+        if not source_delta:
+            return False
+        cap = float(max_source_value_mse)
+        for metrics in source_delta.values():
+            if not isinstance(metrics, dict):
+                continue
+            value = metrics.get("value_mse")
+            if value is not None and float(value) > cap:
+                return False
+    return True
 
 
 def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
@@ -1227,13 +1243,15 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                     fixed_batches=eval_batches,
                 )
                 delta = _eval_delta(eval_before, chunk_eval)
+                source_delta = _delta_source_metrics(eval_before, chunk_eval)
                 metric_value = float(delta.get(args.eval_select_metric, float("inf")))
-                passed = _selection_passes(delta, args)
+                passed = _selection_passes(delta, args, source_delta)
                 candidate = {
                     "chunk": chunk_idx,
                     "steps": int(chunk_steps),
                     "checkpoint": str(chunk_ckpt),
                     "delta": delta,
+                    "source_delta": source_delta,
                     "metric": str(args.eval_select_metric),
                     "metric_value": metric_value,
                     "passes_policy_limits": bool(passed),
@@ -1388,6 +1406,7 @@ def main() -> None:
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
     parser.add_argument("--eval-select-max-policy-ce-delta", type=float, default=0.001, help="Maximum allowed held-out policy CE regression for selected checkpoints.")
     parser.add_argument("--eval-select-max-policy-legal-ce-delta", type=float, default=1.0e-5, help="Maximum allowed held-out legal-policy CE regression for selected checkpoints.")
+    parser.add_argument("--eval-select-max-source-value-mse-delta", type=float, default=None, help="Optional maximum allowed value MSE delta for every held-out source slice during eval selection.")
     parser.add_argument("--lr", type=float, default=4e-4)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--dataloader-workers", type=int, default=0)
