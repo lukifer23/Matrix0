@@ -612,6 +612,45 @@ def _sample_eval_batches(
         np.random.set_state(state)
 
 
+def _full_npz_eval_batches(
+    data_dir: Path,
+    *,
+    batch_size: int,
+    result_source_prefixes: Optional[List[str]] = None,
+) -> List[Dict[str, np.ndarray]]:
+    files = _npz_files(data_dir)
+    if result_source_prefixes:
+        files = [path for path in files if _source_matches(_npz_result_source(path), result_source_prefixes)]
+    batches: List[Dict[str, np.ndarray]] = []
+    for path in files:
+        source = _npz_result_source(path)
+        with np.load(path, mmap_mode="r") as data:
+            if "s" not in data or "pi" not in data or "z" not in data:
+                continue
+            total = int(np.asarray(data["z"]).reshape(-1).shape[0])
+            for start in range(0, total, int(batch_size)):
+                end = min(total, start + int(batch_size))
+                out: Dict[str, np.ndarray] = {
+                    "s": np.ascontiguousarray(np.asarray(data["s"][start:end], dtype=np.float32)),
+                    "pi": np.ascontiguousarray(np.asarray(data["pi"][start:end], dtype=np.float32)),
+                    "z": np.ascontiguousarray(np.asarray(data["z"][start:end], dtype=np.float32).reshape(-1)),
+                    "result_source": np.asarray([source] * (end - start)),
+                }
+                if "legal_mask" in data:
+                    legal = np.asarray(data["legal_mask"][start:end])
+                    if legal.ndim > 2:
+                        legal = legal.reshape(legal.shape[0], -1)
+                    out["legal_mask"] = np.ascontiguousarray(legal, dtype=np.uint8)
+                if "value_weight" in data:
+                    out["value_weight"] = np.ascontiguousarray(
+                        np.asarray(data["value_weight"][start:end], dtype=np.float32).reshape(-1)
+                    )
+                batches.append(out)
+    if not batches:
+        raise RuntimeError(f"No full eval batches found in {data_dir}")
+    return batches
+
+
 def _summarize_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not records:
         raise ValueError("No metric records to summarize")
@@ -1102,14 +1141,21 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
     eval_result_prefixes = args.eval_result_source if args.eval_result_source else None
     eval_batch_size = min(args.eval_batch_size, args.batch_size)
     eval_seed = getattr(args, "eval_seed", None)
-    eval_batches = _sample_eval_batches(
-        eval_data_dir,
-        batch_size=eval_batch_size,
-        batches=int(args.eval_batches),
-        source_prefixes=eval_prefixes,
-        result_source_prefixes=eval_result_prefixes,
-        seed=None if eval_seed is None else int(eval_seed),
-    )
+    if bool(getattr(args, "eval_full_dataset", False)):
+        eval_batches = _full_npz_eval_batches(
+            eval_data_dir,
+            batch_size=eval_batch_size,
+            result_source_prefixes=eval_result_prefixes,
+        )
+    else:
+        eval_batches = _sample_eval_batches(
+            eval_data_dir,
+            batch_size=eval_batch_size,
+            batches=int(args.eval_batches),
+            source_prefixes=eval_prefixes,
+            result_source_prefixes=eval_result_prefixes,
+            seed=None if eval_seed is None else int(eval_seed),
+        )
     eval_before = evaluate_checkpoint_batches(
         initial_ckpt,
         loop_cfg,
@@ -1323,6 +1369,7 @@ def main() -> None:
     parser.add_argument("--eval-data-dir", default=None, help="Optional stable data directory for before/after checkpoint eval.")
     parser.add_argument("--eval-source-prefix", action="append", default=[], help="Optional source prefix filter for eval data. Repeatable.")
     parser.add_argument("--eval-result-source", action="append", default=[], help="Only sample eval batches from NPZ shards whose meta_result_source has this prefix. Repeatable.")
+    parser.add_argument("--eval-full-dataset", action="store_true", help="Evaluate every NPZ sample matching --eval-result-source instead of sampled eval batches.")
     parser.add_argument("--eval-seed", type=int, default=None, help="Optional deterministic seed for held-out eval batch sampling.")
     parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")

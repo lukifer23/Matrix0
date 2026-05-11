@@ -13,6 +13,7 @@ from argparse import Namespace
 
 from azchess.tools.bench_local_loop import (
     _eval_delta,
+    _full_npz_eval_batches,
     _prepare_initial_checkpoint,
     _sample_eval_batch,
     _sample_eval_batches,
@@ -356,6 +357,24 @@ def test_sample_eval_batches_can_filter_by_meta_result_source(tmp_path):
 
     assert all(np.all(batch["z"] == 1.0) for batch in batches)
     assert all(set(batch["result_source"].astype(str)) == {"tablebase"} for batch in batches)
+
+
+def test_full_npz_eval_batches_iterates_all_matching_samples(tmp_path):
+    for name, result_source, value in (("tablebase.npz", "tablebase", 1.0), ("terminal.npz", "terminal", -1.0)):
+        np.savez_compressed(
+            tmp_path / name,
+            s=np.full((5, 19, 8, 8), value, dtype=np.float32),
+            pi=np.full((5, 4672), 1.0 / 4672.0, dtype=np.float32),
+            z=np.full((5,), value, dtype=np.float32),
+            legal_mask=np.ones((5, 4672), dtype=np.uint8),
+            meta_result_source=np.array([result_source]),
+        )
+
+    batches = _full_npz_eval_batches(tmp_path, batch_size=2, result_source_prefixes=["tablebase"])
+
+    assert [batch["z"].shape[0] for batch in batches] == [2, 2, 1]
+    assert sum(batch["z"].shape[0] for batch in batches) == 5
+    assert all(np.all(batch["z"] == 1.0) for batch in batches)
 
 
 def test_eval_delta_and_selection_policy_limits():
