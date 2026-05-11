@@ -6,7 +6,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from azchess.training.train import POLICY_SHAPE, apply_policy_mask, legal_policy_ce_loss, legal_policy_mass_loss, train_step
+from azchess.training.train import (
+    POLICY_SHAPE,
+    apply_policy_mask,
+    apply_trainable_scope,
+    legal_policy_ce_loss,
+    legal_policy_mass_loss,
+    train_step,
+)
 
 
 class DummyModel(nn.Module):
@@ -33,6 +40,23 @@ class SourceFilterModel(nn.Module):
         p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
         p[:, 0] = self.bias + 4.0
         v = self.bias.expand(batch).clone()
+        ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
+        return p, v, ssl
+
+
+class ScopedTrainModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.trunk_bn = nn.BatchNorm2d(19)
+        self.policy_head = nn.Linear(1, int(np.prod(POLICY_SHAPE)))
+        self.value_fc1 = nn.Linear(1, 1)
+
+    def forward(self, x, return_ssl=True):
+        batch = x.size(0)
+        _ = self.trunk_bn(x)
+        seed = torch.ones((batch, 1), dtype=torch.float32, device=x.device)
+        p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
+        v = self.value_fc1(seed).reshape(batch)
         ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
         return p, v, ssl
 
@@ -244,3 +268,40 @@ def test_train_step_can_exclude_teacher_from_policy_loss_but_keep_value():
     assert filtered_policy_loss > unfiltered_policy_loss
     assert unfiltered_value_loss > 40.0
     assert filtered_value_loss == unfiltered_value_loss
+
+
+def test_value_head_scope_freezes_non_value_params_and_norm_stats():
+    model = ScopedTrainModel()
+    stats = apply_trainable_scope(model, "value_head")
+
+    assert stats["trainable_params"] == sum(p.numel() for p in model.value_fc1.parameters())
+    assert all(param.requires_grad for param in model.value_fc1.parameters())
+    assert not any(param.requires_grad for param in model.policy_head.parameters())
+    assert not any(param.requires_grad for param in model.trunk_bn.parameters())
+
+    optimizer = optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.1)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.ones((2,), dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+    }
+
+    train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+    )
+
+    assert model.trunk_bn.training is False
+    assert model.value_fc1.weight.grad is not None
+    assert model.policy_head.weight.grad is None

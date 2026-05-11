@@ -804,6 +804,7 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "value_exclude_sources": list(getattr(args, "value_exclude_source", []) or []),
             "policy_include_sources": list(getattr(args, "policy_include_source", []) or []),
             "policy_exclude_sources": list(getattr(args, "policy_exclude_source", []) or []),
+            "trainable_scope": str(getattr(args, "trainable_scope", "all") or "all"),
         }
     )
     if args.ssl_weight is not None:
@@ -939,6 +940,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
             train_cmd.extend(["--policy-include-source", str(source)])
         for source in getattr(args, "policy_exclude_source", []) or []:
             train_cmd.extend(["--policy-exclude-source", str(source)])
+        train_cmd.extend(["--trainable-scope", str(getattr(args, "trainable_scope", "all") or "all")])
         if args.no_amp:
             train_cmd.append("--no-amp")
         stages.append(_run_stage("train", train_cmd, repo, env))
@@ -1071,6 +1073,7 @@ def main() -> None:
     parser.add_argument("--value-exclude-source", action="append", default=[], help="Exclude these result sources from value loss. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=[], help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=[], help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
+    parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable during training.")
     parser.add_argument("--ssl-weight", type=float, default=None)
     parser.add_argument("--policy-label-smoothing", type=float, default=None)
     parser.add_argument("--no-amp", action="store_true")

@@ -43,6 +43,54 @@ from azchess.utils.env_info import log_environment_info
 # Setup logging
 logger = setup_logging(level=logging.INFO)
 
+
+VALUE_HEAD_PARAM_PREFIXES = ("value_head", "value_fc1", "value_fc2", "value_fc3", "value_gate")
+
+
+def _is_trainable_for_scope(name: str, scope: str) -> bool:
+    scope = str(scope or "all").lower()
+    if scope == "all":
+        return True
+    if scope == "value_head":
+        return name.startswith(VALUE_HEAD_PARAM_PREFIXES) or any(f".{prefix}" in name for prefix in VALUE_HEAD_PARAM_PREFIXES)
+    raise ValueError(f"Unknown trainable scope: {scope}")
+
+
+def apply_trainable_scope(model: nn.Module, scope: str) -> dict[str, int]:
+    """Restrict trainable parameters for surgical training runs."""
+    scope = str(scope or "all").lower()
+    trainable_params = 0
+    frozen_params = 0
+    trainable_tensors = 0
+    frozen_tensors = 0
+    for name, param in model.named_parameters():
+        trainable = _is_trainable_for_scope(name, scope)
+        param.requires_grad_(trainable)
+        count = int(param.numel())
+        if trainable:
+            trainable_params += count
+            trainable_tensors += 1
+        else:
+            frozen_params += count
+            frozen_tensors += 1
+    setattr(model, "_matrix0_trainable_scope", scope)
+    return {
+        "trainable_params": trainable_params,
+        "frozen_params": frozen_params,
+        "trainable_tensors": trainable_tensors,
+        "frozen_tensors": frozen_tensors,
+    }
+
+
+def _keep_frozen_norms_eval(model: nn.Module) -> None:
+    """Prevent frozen BatchNorm running stats from changing after model.train()."""
+    scope = str(getattr(model, "_matrix0_trainable_scope", "all") or "all").lower()
+    if scope == "all":
+        return
+    for module_name, module in model.named_modules():
+        if isinstance(module, nn.modules.batchnorm._BatchNorm) and not _is_trainable_for_scope(module_name, scope):
+            module.eval()
+
 class EMA:
     """Exponential Moving Average for model weights."""
     
@@ -182,6 +230,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     start_time = time.time()
 
     model.train()
+    _keep_frozen_norms_eval(model)
     # Support batches as tuple/list (s, pi, z[, legal_mask]) or dict with optional 'legal_mask'
     legal_mask_np = None
     value_weight_np = None
@@ -944,6 +993,7 @@ def train_comprehensive(
     value_exclude_sources: Optional[list[str]] = None,
     policy_include_sources: Optional[list[str]] = None,
     policy_exclude_sources: Optional[list[str]] = None,
+    trainable_scope: str = "all",
 ):
     """Train the model with comprehensive features and memory optimizations."""
 
@@ -1079,6 +1129,19 @@ def train_comprehensive(
             state = None
     else:
         logger.info("No initial checkpoint found; starting from scratch")
+
+    trainable_scope = str(trainable_scope or cfg.training().get("trainable_scope", "all"))
+    scope_stats = apply_trainable_scope(model, trainable_scope)
+    logger.info(
+        "Trainable scope '%s': trainable_params=%d frozen_params=%d trainable_tensors=%d frozen_tensors=%d",
+        trainable_scope,
+        scope_stats["trainable_params"],
+        scope_stats["frozen_params"],
+        scope_stats["trainable_tensors"],
+        scope_stats["frozen_tensors"],
+    )
+    if scope_stats["trainable_params"] <= 0:
+        raise ValueError(f"Trainable scope '{trainable_scope}' selected zero parameters")
     
     # Determine planned total steps BEFORE creating scheduler/optimizer math
     if total_steps is None:
@@ -1089,7 +1152,8 @@ def train_comprehensive(
             total_steps = int(cfg.training().get('steps_per_epoch', 10000)) * int(max(1, epochs))
 
     # Initialize optimizer, scheduler, and EMA
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    trainable_parameters = [param for param in model.parameters() if param.requires_grad]
+    optimizer = optim.AdamW(trainable_parameters, lr=learning_rate, weight_decay=weight_decay)
     # Scheduler defined on UPDATE steps when using gradient accumulation
     num_updates = int(math.ceil(float(total_steps) / float(max(1, accum_steps))))
     warmup_updates = int(math.ceil(float(warmup_steps) / float(max(1, accum_steps))))
@@ -1930,6 +1994,7 @@ def main():
     parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=None, help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=None, help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
+    parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable.")
     
     args = parser.parse_args()
     
@@ -1960,6 +2025,7 @@ def main():
         value_exclude_sources=args.value_exclude_source,
         policy_include_sources=args.policy_include_source,
         policy_exclude_sources=args.policy_exclude_source,
+        trainable_scope=args.trainable_scope,
     )
 
 def train_from_config(config_path: str = "config.yaml"):
