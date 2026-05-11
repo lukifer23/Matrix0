@@ -876,7 +876,12 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     backward_start = time.time()
 
     # Guard against NaN/Inf loss; skip backward if not finite; also guard if loss wasn't set due to earlier skip
-    if 'loss' in locals() and isinstance(loss, torch.Tensor) and torch.isfinite(loss):
+    if (
+        'loss' in locals()
+        and isinstance(loss, torch.Tensor)
+        and torch.isfinite(loss)
+        and bool(getattr(loss, "requires_grad", False))
+    ):
         try:
             # Use scaler for mixed precision if available and valid
             if scaler is not None and use_autocast:
@@ -925,6 +930,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             else:
                 logger.error(f"Runtime error during backward pass: {e}", exc_info=True)
             raise
+    elif 'loss' in locals() and isinstance(loss, torch.Tensor) and torch.isfinite(loss):
+        if current_step % 100 == 0:
+            logger.info("Skipping backward for no-op batch with no trainable loss contribution")
     else:
         logger.warning("Skipping backward for this batch (loss not set or non-finite)")
     

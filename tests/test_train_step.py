@@ -305,3 +305,38 @@ def test_value_head_scope_freezes_non_value_params_and_norm_stats():
     assert model.trunk_bn.training is False
     assert model.value_fc1.weight.grad is not None
     assert model.policy_head.weight.grad is None
+
+
+def test_train_step_skips_backward_for_noop_source_filtered_batch():
+    model = ScopedTrainModel()
+    apply_trainable_scope(model, "value_head")
+    optimizer = optim.SGD([param for param in model.parameters() if param.requires_grad], lr=0.1)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.ones((2,), dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["capped", "capped"]),
+    }
+
+    loss, policy_loss, value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        value_include_sources=["terminal"],
+        policy_include_sources=["__none__"],
+    )
+
+    assert loss == 0.0
+    assert policy_loss == 0.0
+    assert value_loss == 0.0
+    assert model.value_fc1.weight.grad is None
