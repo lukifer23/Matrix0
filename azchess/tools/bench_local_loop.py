@@ -48,6 +48,19 @@ def _run_stage(name: str, cmd: List[str], cwd: Path, env: Dict[str, str]) -> Dic
     return rec
 
 
+def _clone_or_copy2(src: Path, dest: Path) -> None:
+    """Create a cheap copy-on-write alias when possible, falling back to a copy."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        subprocess.run(["cp", "-c", str(src), str(dest)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        shutil.copy2(src, dest)
+    except subprocess.CalledProcessError:
+        shutil.copy2(src, dest)
+
+
 def _npz_files(data_dir: Path) -> List[Path]:
     roots = [data_dir / "selfplay", data_dir / "replays"]
     files: List[Path] = []
@@ -105,7 +118,7 @@ def copy_anchor_shards(
             dest = replay_dir / f"anchor{idx:02d}_{shard_idx:04d}_{src.name}"
             if dest.exists():
                 raise FileExistsError(f"Anchor destination already exists: {dest}")
-            shutil.copy2(src, dest)
+            _clone_or_copy2(src, dest)
             copied.append(str(dest))
     return {
         "dirs": [str(Path(d)) for d in anchor_dirs],
@@ -451,7 +464,7 @@ def _prepare_initial_checkpoint(cfg: Config, path: Path, device: str, init_check
             raise FileNotFoundError(f"Initial checkpoint not found: {source}")
         checkpoint = torch.load(source, map_location="cpu", weights_only=False)
         _state_dict_from_checkpoint(checkpoint, source)
-        shutil.copy2(source, path)
+        _clone_or_copy2(source, path)
         return {"mode": "provided", "source": str(source), "path": str(path)}
     _save_initial_checkpoint(cfg, path, device)
     return {"mode": "fresh", "source": None, "path": str(path)}
@@ -1202,7 +1215,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 train_seconds_total += float(stage["seconds"])
                 trained_ckpt = latest_checkpoint(run_dir / "checkpoints")
                 chunk_ckpt = run_dir / "checkpoints" / f"eval_select_chunk_{chunk_idx:03d}.pt"
-                shutil.copy2(trained_ckpt, chunk_ckpt)
+                _clone_or_copy2(trained_ckpt, chunk_ckpt)
                 current_init = chunk_ckpt
                 chunk_eval = evaluate_checkpoint_batches(
                     chunk_ckpt,
@@ -1233,7 +1246,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                     best_metric_value = metric_value
                 remaining -= chunk_steps
             selected_ckpt = run_dir / "checkpoints" / "local_loop_selected.pt"
-            shutil.copy2(best_ckpt, selected_ckpt)
+            _clone_or_copy2(best_ckpt, selected_ckpt)
             final_ckpt = selected_ckpt
             eval_after = best_eval
             eval_selection = {

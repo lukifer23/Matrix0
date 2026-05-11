@@ -123,12 +123,24 @@ def _replace_placeholders(values: list[str], *, parent: Path, cycle_run_dir: Pat
     ]
 
 
+def _clone_or_copy2(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        subprocess.run(["cp", "-c", str(src), str(dest)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        shutil.copy2(src, dest)
+    except subprocess.CalledProcessError:
+        shutil.copy2(src, dest)
+
+
 def _archive_existing(path: Path, archive_dir: Path) -> str | None:
     if not path.exists():
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
     archived = archive_dir / f"{path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix}"
-    shutil.copy2(path, archived)
+    _clone_or_copy2(path, archived)
     return str(archived)
 
 
@@ -142,7 +154,7 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
 
     if not best_checkpoint.exists() and bool(args.seed_best_checkpoint):
         best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(current_parent, best_checkpoint)
+        _clone_or_copy2(current_parent, best_checkpoint)
         current_parent = best_checkpoint
 
     cycle_reports: list[dict[str, Any]] = []
@@ -191,7 +203,7 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
         if gate["promote"]:
             best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
             promotion["archived_previous_best"] = _archive_existing(best_checkpoint, base_run_dir / "archives")
-            shutil.copy2(candidate, best_checkpoint)
+            _clone_or_copy2(candidate, best_checkpoint)
             current_parent = best_checkpoint
             promotion["promoted_checkpoint"] = str(best_checkpoint)
         elif bool(args.stop_on_reject):
