@@ -224,6 +224,30 @@ Use this when full policy CE improves mostly by increasing legal probability mas
 but `policy_legal_ce` / `policy_legal_kl` are flat or worse. This directly
 trains ranking among legal moves.
 
+### `--value-include-source`, `--value-exclude-source`
+
+Source-aware value-loss gates. These operate on shard `meta_result_source` values and only affect value loss; policy loss still sees the batch.
+
+Recommended local-loop split while capped games dominate:
+
+```bash
+--value-include-source terminal \
+--value-include-source tablebase \
+--value-include-source draw_adjudication \
+--value-include-source resignation
+```
+
+This keeps capped/unfinished self-play useful for policy targets but prevents weak capped bootstrap values from steering value learning.
+
+Alternative:
+
+```bash
+--value-exclude-source capped \
+--value-exclude-source unfinished
+```
+
+Use include mode for promotion-oriented runs because it fails closed when new/unknown result sources appear.
+
 ### `--ssl-weight`
 
 Overrides SSL loss weight.

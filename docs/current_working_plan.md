@@ -53,6 +53,8 @@ The local-loop path now fails hard instead of silently producing bad data:
 - self-play shards now save final-position metadata: FEN, piece count, halfmove clock, legal count, and draw-claim availability
 - `azchess.tools.diagnose_policy_targets` now buckets checkpoint comparisons by target entropy, top probability, and legal count
 - `azchess.tools.reweight_npz_values` can copy existing NPZ data while changing value weights for selected result sources, so capped-policy experiments can be rerun without regenerating self-play
+- training now supports source-aware value-loss filtering via `--value-include-source` and `--value-exclude-source`
+- `azchess.tools.promotion_gate` now turns eval, generator, and match reports into an explicit promote/reject verdict
 
 ## Current Findings
 
@@ -239,22 +241,30 @@ If the fixed-jitter plus virtual-loss generator remains mostly capped, the next 
 
 ## Current Next Step
 
-Do not run another 600-step retrain on the same ptt050 data. The next code/data step is source-aware training data selection:
+Do not run another 600-step retrain on the same ptt050 data without source-aware objective filtering and a promotion gate. The required path is now implemented:
 
-- allow training/eval commands to include or exclude source prefixes/result sources per objective
 - keep capped shards usable for policy targets
-- exclude capped/unfinished shards from value loss unless explicitly requested
-- report source mix before training starts and fail if the recipe violates the intended policy/value split
+- include only terminal/tablebase/draw-adjudication/resignation sources in value loss for promotion-oriented runs
+- run `promotion_gate` after eval/generator/match reports
+- reject candidates without a match report unless explicitly using diagnostic mode
 
-For a manual reweighting stopgap, this command creates a policy-only copy of an existing data directory:
+Source-aware value filtering example:
 
 ```bash
-.venv/bin/python -m azchess.tools.reweight_npz_values \
-  --input-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix/data \
-  --output-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_vw0/data \
-  --source capped \
-  --source unfinished \
-  --value-weight 0.0
+--value-include-source terminal \
+--value-include-source tablebase \
+--value-include-source draw_adjudication \
+--value-include-source resignation
+```
+
+Promotion gate diagnostic example:
+
+```bash
+.venv/bin/python -m azchess.tools.promotion_gate \
+  --eval-report logs/local_loop/<candidate>/eval_64batch.json \
+  --generator-report logs/local_loop/<candidate_generator>/local_loop_report.json \
+  --match-report logs/local_loop/<candidate>/match_parent.json \
+  --output logs/local_loop/<candidate>/promotion_gate.json
 ```
 
 ## Promotion Rules

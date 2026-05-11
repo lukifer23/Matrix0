@@ -82,6 +82,9 @@ class NPZBatchIterableDataset(IterableDataset):
                 # Ensure we return a tuple matching train_step expectations
                 if isinstance(batch, tuple) and len(batch) in (3, 4, 5):
                     yield batch
+                elif isinstance(batch, dict):
+                    self._log_batch_sanity(batch)
+                    yield batch
                 else:
                     try:
                         s = batch.get("s")

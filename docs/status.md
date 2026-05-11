@@ -18,7 +18,8 @@
      - Tablebase probing is configured and working; capped candidate games are not reaching low enough material for Syzygy to decide them
      - `bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix` confirmed target-only policy sharpening works, but outcome mix stayed weak (`31` capped, `1` terminal)
      - `bootstrap_006_ptt050_vw0_anchor_retrain_s600` is not promoted; legal-policy CE and value MSE regressed on stable heldout data
-     - Next step is source-aware policy/value data selection instead of another retrain on the same ptt050 labels
+     - Source-aware value filtering is now implemented so capped self-play can train policy while terminal/tablebase/draw/resignation sources train value
+     - Promotion decisions now require a promotion-gate verdict with heldout eval, generator quality, and candidate-vs-parent match evidence
 
 ### 2. Search/Data Diagnostics 🔎
    - **Priority**: High
@@ -29,6 +30,7 @@
      - New policy-target diagnostics bucket CE/top-1/rank by entropy, target top probability, and legal count
      - Batched MCTS virtual loss now applies in the actual leaf-collection path, reducing repeated same-edge collection before batched inference
      - `azchess.tools.reweight_npz_values` can create policy-only copies of existing self-play shards by zeroing capped/unfinished value weights
+     - `azchess.tools.promotion_gate` rejects candidates that pass artifact metrics but fail legal-policy/value/generator/match gates
 
 ### 3. SSL Performance Validation 📊
    - **Priority**: Medium
@@ -163,7 +165,8 @@
 - [x] **True No-SSL Ablation**: Make `ssl_weight=0.0` skip SSL targets and SSL forward compute
 - [x] **Policy Diagnostics**: Add entropy/top-prob/legal-count bucket diagnostics for checkpoint comparisons
 - [x] **Manual Capped-Value Reweighting**: Add a reusable NPZ reweighting tool and verify a ptt050 policy-only copy
-- [ ] **Source-Aware Objective Filtering**: Separate policy-usable capped data from value-usable terminal/tablebase/draw data during training
+- [x] **Source-Aware Objective Filtering**: Separate policy-usable capped data from value-usable terminal/tablebase/draw data during training
+- [x] **Promotion Gate Tooling**: Add an explicit promote/reject report that requires heldout eval, generator quality, and match evidence
 - [ ] **Promotion Criteria Enforcement**: Require heldout legal-policy stability, value stability, and candidate generator quality before promotion
 
 #### 1.3 Search Correctness

@@ -434,7 +434,20 @@ class DataManager:
             policies = np.ascontiguousarray(policies, dtype=np.float32)
             values = np.ascontiguousarray(values, dtype=np.float32)
 
-            if legal_mask is not None and value_weight is not None:
+            source_entries = None
+            if all(len(sample) >= 6 and sample[5] is not None for sample in combined):
+                source_entries = np.asarray([sample[5] for sample in combined])
+
+            if source_entries is not None:
+                yield {
+                    "s": states,
+                    "pi": policies,
+                    "z": values,
+                    **({"legal_mask": legal_mask} if legal_mask is not None else {}),
+                    **({"value_weight": value_weight} if value_weight is not None else {}),
+                    "result_source": source_entries,
+                }
+            elif legal_mask is not None and value_weight is not None:
                 yield (states, policies, values, legal_mask, value_weight)
             elif legal_mask is not None:
                 yield (states, policies, values, legal_mask)
@@ -447,19 +460,24 @@ class DataManager:
         if not shards:
             return None
 
-        shard_paths = [s.path for s in shards]
+        shard_items = [(s.path, s.source or "unknown") for s in shards]
         strict_data = os.environ.get("MATRIX0_STRICT_DATA") == "1"
 
         def generator() -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
-            local_paths = list(shard_paths)
+            local_items = list(shard_items)
             while True:
-                np.random.shuffle(local_paths)
+                np.random.shuffle(local_items)
                 made_progress = False
-                for shard_path in local_paths:
+                for shard_path, shard_source in local_items:
                     try:
                         with np.load(shard_path, mmap_mode='r') as data:
                             states, policies, values, legal_mask_all, ssl_targets = self._extract_training_arrays(data)
                             value_weight_all = data.get("value_weight", None)
+                            result_source = str(shard_source or "unknown")
+                            if "meta_result_source" in data:
+                                raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)
+                                if raw_sources.size:
+                                    result_source = str(raw_sources[0])
 
                             if values.ndim == 2 and values.shape[1] == 1:
                                 values = values.reshape(values.shape[0])
@@ -532,7 +550,7 @@ class DataManager:
                                 weight_entry = None
                                 if value_weight_batches is not None:
                                     weight_entry = value_weight_batches[idx]
-                                yield (states[idx], policies[idx], values[idx], legal_entry, weight_entry)
+                                yield (states[idx], policies[idx], values[idx], legal_entry, weight_entry, result_source)
                     except Exception as e:
                         logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
                         if strict_data:
@@ -1751,6 +1769,11 @@ class DataManager:
                 with np.load(shard_path, mmap_mode='r') as data:
                     states, policies, values, legal_mask_all, ssl_targets_all = self._extract_training_arrays(data)
                     value_weight_all = data.get("value_weight", None)
+                    result_source = "unknown"
+                    if "meta_result_source" in data:
+                        raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)
+                        if raw_sources.size:
+                            result_source = str(raw_sources[0])
 
                     # Check if this is SSL-enabled data
                     ssl_keys = list(ssl_targets_all.keys())
@@ -1849,6 +1872,7 @@ class DataManager:
                                 "s": batch_states,
                                 "pi": batch_policies,
                                 "z": batch_values,
+                                "result_source": np.asarray([result_source] * len(batch_states)),
                             }
                             if batch_legal is not None:
                                 out["legal_mask"] = batch_legal

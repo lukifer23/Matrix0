@@ -10,6 +10,13 @@ def _make_shard_data(num_samples: int, fill_value: float) -> dict[str, np.ndarra
     return {'s': states, 'pi': policies, 'z': values}
 
 
+def _make_sourced_shard_data(num_samples: int, source: str, value_weight: float) -> dict[str, np.ndarray]:
+    data = _make_shard_data(num_samples, 1.0)
+    data["value_weight"] = np.full((num_samples,), value_weight, dtype=np.float32)
+    data["meta_result_source"] = np.array([source])
+    return data
+
+
 def test_training_batch_balances_external_and_selfplay(tmp_path):
     np.random.seed(0)
 
@@ -27,10 +34,21 @@ def test_training_batch_balances_external_and_selfplay(tmp_path):
 
     for _ in range(num_batches):
         batch = next(generator)
-        states = batch[0]
+        states = batch["s"] if isinstance(batch, dict) else batch[0]
         total_samples += states.shape[0]
         external_samples += int(np.sum(np.isclose(states[:, 0, 0, 0], 2.0)))
 
     observed_ratio = external_samples / total_samples
 
     assert np.isclose(observed_ratio, 0.3, atol=0.05)
+
+
+def test_training_batch_includes_result_source_metadata(tmp_path):
+    manager = DataManager(base_dir=str(tmp_path))
+    manager.add_training_data(_make_sourced_shard_data(4, "capped", 0.25), shard_id=0, source="selfplay")
+
+    batch = next(manager.get_training_batch(4))
+
+    assert isinstance(batch, dict)
+    assert batch["result_source"].tolist() == ["capped"] * 4
+    np.testing.assert_allclose(batch["value_weight"], 0.25)

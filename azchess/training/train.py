@@ -126,6 +126,29 @@ def legal_policy_ce_loss(p: torch.Tensor, pi: torch.Tensor, legal_mask: torch.Te
     return -(target_norm * legal_log_probs).sum(dim=1).mean()
 
 
+def _source_filter_mask(sources, include_sources: Optional[list[str]], exclude_sources: Optional[list[str]]) -> Optional[torch.Tensor]:
+    if sources is None:
+        return None
+    include = set(include_sources or [])
+    exclude = set(exclude_sources or [])
+    if not include and not exclude:
+        return None
+    if torch.is_tensor(sources):
+        raw = sources.detach().cpu().numpy()
+    else:
+        raw = np.asarray(sources)
+    names = [str(x.decode("utf-8") if isinstance(x, bytes) else x) for x in raw.reshape(-1)]
+    keep = []
+    for name in names:
+        allowed = True
+        if include:
+            allowed = name in include
+        if name in exclude:
+            allowed = False
+        keep.append(allowed)
+    return torch.as_tensor(keep, dtype=torch.bool)
+
+
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
@@ -135,7 +158,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                ssl_targets_provider: str = "auto",
                use_wdl: bool = False, wdl_weight: float = 0.0, wdl_margin: float = 0.25, precision: str = "fp16",
                ssl_every_n: int = 1, ssl_chunk_size: int = 0, legal_mass_weight: float = 0.0,
-               legal_policy_weight: float = 0.0):
+               legal_policy_weight: float = 0.0,
+               value_include_sources: Optional[list[str]] = None,
+               value_exclude_sources: Optional[list[str]] = None):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -146,14 +171,18 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     # Support batches as tuple/list (s, pi, z[, legal_mask]) or dict with optional 'legal_mask'
     legal_mask_np = None
     value_weight_np = None
+    result_source_np = None
     if isinstance(batch, dict):
         s = batch['s']
         pi = batch['pi']
         z = batch['z']
         legal_mask_np = batch.get('legal_mask', None)
         value_weight_np = batch.get('value_weight', None)
+        result_source_np = batch.get('result_source', None)
     else:
-        if len(batch) >= 5:
+        if len(batch) >= 6:
+            s, pi, z, legal_mask_np, value_weight_np, result_source_np = batch[:6]
+        elif len(batch) >= 5:
             s, pi, z, legal_mask_np, value_weight_np = batch[:5]
         elif len(batch) == 4:
             s, pi, z, legal_mask_np = batch
@@ -172,6 +201,14 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         value_weight = value_weight_np if torch.is_tensor(value_weight_np) else torch.from_numpy(np.asarray(value_weight_np, dtype=np.float32))
     else:
         value_weight = torch.ones_like(z, dtype=torch.float32)
+    source_value_mask = _source_filter_mask(result_source_np, value_include_sources, value_exclude_sources)
+    if source_value_mask is not None:
+        if source_value_mask.numel() != value_weight.reshape(-1).numel():
+            raise ValueError(
+                f"result_source length {source_value_mask.numel()} does not match value_weight length {value_weight.reshape(-1).numel()}"
+            )
+        value_weight = value_weight.reshape(-1)
+        value_weight = value_weight * source_value_mask.to(dtype=value_weight.dtype)
 
     try:
         policy_size = int(getattr(getattr(model, 'cfg', None), 'policy_size', 4672))
@@ -873,6 +910,8 @@ def train_comprehensive(
     data_mode: Optional[str] = None,
     dataloader_workers: Optional[int] = None,
     prefetch_factor: Optional[int] = None,
+    value_include_sources: Optional[list[str]] = None,
+    value_exclude_sources: Optional[list[str]] = None,
 ):
     """Train the model with comprehensive features and memory optimizations."""
 
@@ -1163,6 +1202,20 @@ def train_comprehensive(
 
     # Get training config (needed for all device types)
     tr_cfg = cfg.training()  # Get training config
+    cfg_value_include_sources = value_include_sources
+    if cfg_value_include_sources is None:
+        cfg_value_include_sources = tr_cfg.get("value_include_sources", None)
+    cfg_value_exclude_sources = value_exclude_sources
+    if cfg_value_exclude_sources is None:
+        cfg_value_exclude_sources = tr_cfg.get("value_exclude_sources", None)
+    cfg_value_include_sources = list(cfg_value_include_sources or [])
+    cfg_value_exclude_sources = list(cfg_value_exclude_sources or [])
+    if cfg_value_include_sources or cfg_value_exclude_sources:
+        logger.info(
+            "Source-aware value filtering: include=%s exclude=%s",
+            cfg_value_include_sources or None,
+            cfg_value_exclude_sources or None,
+        )
 
     # Memory limits are now set at the beginning of the orchestrator main() function
     memory_limit_gb = safe_config_get(cfg, 'memory_limit_gb', 14, section='training')  # Default 14GB for MPS
@@ -1365,7 +1418,9 @@ def train_comprehensive(
                 ssl_every_n=int(tr_cfg.get('ssl_every_n', 1)),
                 ssl_chunk_size=int(tr_cfg.get('ssl_chunk_size', 0)),
                 legal_mass_weight=float(tr_cfg.get('legal_mass_weight', 0.0)),
-                legal_policy_weight=float(tr_cfg.get('legal_policy_weight', 0.0))
+                legal_policy_weight=float(tr_cfg.get('legal_policy_weight', 0.0)),
+                value_include_sources=cfg_value_include_sources,
+                value_exclude_sources=cfg_value_exclude_sources,
                 )
                 
                 if loss_values is None:
@@ -1823,6 +1878,8 @@ def main():
     parser.add_argument("--data-mode", type=str, default=None, help="Data mode: replay|mixed|phase:<name>")
     parser.add_argument("--dataloader-workers", type=int, default=None, help="DataLoader workers")
     parser.add_argument("--prefetch-factor", type=int, default=None, help="DataLoader prefetch factor")
+    parser.add_argument("--value-include-source", action="append", default=None, help="Only these result sources contribute to value loss. Repeatable.")
+    parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
     
     args = parser.parse_args()
     
@@ -1849,6 +1906,8 @@ def main():
         data_mode=args.data_mode,
         dataloader_workers=args.dataloader_workers,
         prefetch_factor=args.prefetch_factor,
+        value_include_sources=args.value_include_source,
+        value_exclude_sources=args.value_exclude_source,
     )
 
 def train_from_config(config_path: str = "config.yaml"):
