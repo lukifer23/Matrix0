@@ -21,6 +21,20 @@ def _delta(report: dict[str, Any], key: str) -> float | None:
     return None if value is None else float(value)
 
 
+def _source_deltas(report: dict[str, Any], key: str) -> list[tuple[str, float]]:
+    source_delta = report.get("eval", {}).get("source_delta", {})
+    if not isinstance(source_delta, dict):
+        return []
+    values: list[tuple[str, float]] = []
+    for source, metrics in source_delta.items():
+        if not isinstance(metrics, dict):
+            continue
+        value = metrics.get(key)
+        if value is not None:
+            values.append((str(source), float(value)))
+    return values
+
+
 def _fresh_game_total(report: dict[str, Any]) -> int:
     outcomes = report.get("fresh_data", report.get("data_after_selfplay", {})).get("game_outcomes", {})
     return sum(int(outcomes.get(k, 0)) for k in ("capped", "terminal", "tablebase", "adjudicated_draw"))
@@ -41,6 +55,7 @@ def evaluate_cycle_promotion(
     max_policy_ce_delta: float,
     max_policy_legal_ce_delta: float,
     max_fresh_capped_fraction: float,
+    max_source_value_mse_delta: float | None = None,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -79,6 +94,15 @@ def evaluate_cycle_promotion(
             value=capped_fraction,
             max=max_fresh_capped_fraction,
         )
+
+    if max_source_value_mse_delta is not None:
+        for source, source_value_mse in _source_deltas(report, "value_mse"):
+            add(
+                f"heldout_source_value_mse:{source}",
+                source_value_mse <= max_source_value_mse_delta,
+                value=source_value_mse,
+                max=max_source_value_mse_delta,
+            )
 
     promote = all(check["passed"] for check in checks)
     return {
@@ -151,6 +175,9 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
             max_policy_ce_delta=float(args.max_policy_ce_delta),
             max_policy_legal_ce_delta=float(args.max_policy_legal_ce_delta),
             max_fresh_capped_fraction=float(args.max_fresh_capped_fraction),
+            max_source_value_mse_delta=(
+                None if args.max_source_value_mse_delta is None else float(args.max_source_value_mse_delta)
+            ),
         )
         candidate = Path(report["checkpoints"]["final"])
         promotion: dict[str, Any] = {
@@ -203,6 +230,12 @@ def main() -> None:
     parser.add_argument("--max-policy-ce-delta", type=float, default=0.001)
     parser.add_argument("--max-policy-legal-ce-delta", type=float, default=1.0e-5)
     parser.add_argument("--max-fresh-capped-fraction", type=float, default=1.0)
+    parser.add_argument(
+        "--max-source-value-mse-delta",
+        type=float,
+        default=None,
+        help="Optional largest allowed per-source held-out value MSE delta for every eval.source_delta entry.",
+    )
     raw_args = sys.argv[1:]
     if "-h" in raw_args or "--help" in raw_args:
         parser.parse_args(raw_args)
