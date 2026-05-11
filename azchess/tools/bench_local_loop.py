@@ -805,6 +805,9 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "policy_include_sources": list(getattr(args, "policy_include_source", []) or []),
             "policy_exclude_sources": list(getattr(args, "policy_exclude_source", []) or []),
             "trainable_scope": str(getattr(args, "trainable_scope", "all") or "all"),
+            "policy_distill_checkpoint": str(getattr(args, "policy_distill_checkpoint", "") or ""),
+            "policy_distill_weight": float(getattr(args, "policy_distill_weight", 0.0) or 0.0),
+            "policy_distill_temperature": float(getattr(args, "policy_distill_temperature", 1.0) or 1.0),
         }
     )
     if args.ssl_weight is not None:
@@ -941,6 +944,10 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         for source in getattr(args, "policy_exclude_source", []) or []:
             train_cmd.extend(["--policy-exclude-source", str(source)])
         train_cmd.extend(["--trainable-scope", str(getattr(args, "trainable_scope", "all") or "all")])
+        if getattr(args, "policy_distill_checkpoint", None):
+            train_cmd.extend(["--policy-distill-checkpoint", str(args.policy_distill_checkpoint)])
+            train_cmd.extend(["--policy-distill-weight", str(float(getattr(args, "policy_distill_weight", 0.0) or 0.0))])
+            train_cmd.extend(["--policy-distill-temperature", str(float(getattr(args, "policy_distill_temperature", 1.0) or 1.0))])
         if args.no_amp:
             train_cmd.append("--no-amp")
         stages.append(_run_stage("train", train_cmd, repo, env))
@@ -1074,6 +1081,9 @@ def main() -> None:
     parser.add_argument("--policy-include-source", action="append", default=[], help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=[], help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable during training.")
+    parser.add_argument("--policy-distill-checkpoint", default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
+    parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
+    parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
     parser.add_argument("--ssl-weight", type=float, default=None)
     parser.add_argument("--policy-label-smoothing", type=float, default=None)
     parser.add_argument("--no-amp", action="store_true")

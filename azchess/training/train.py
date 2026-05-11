@@ -111,6 +111,31 @@ def select_checkpoint_model_state(state: dict) -> tuple[Optional[str], Optional[
             return key, value
     return None, None
 
+
+def load_frozen_policy_model(checkpoint_path: str, cfg: Config, device: str) -> nn.Module:
+    model = PolicyValueNet.from_config(cfg.model()).to(device)
+    path = Path(checkpoint_path)
+    state = torch.load(path, map_location=device, weights_only=False)
+    state_key, model_state = select_checkpoint_model_state(state)
+    if model_state is None:
+        raise ValueError(f"No model state found in policy distillation checkpoint: {path}")
+    result = model.load_state_dict(model_state, strict=False)
+    missing = list(getattr(result, "missing_keys", []))
+    unexpected = list(getattr(result, "unexpected_keys", []))
+    if missing or unexpected:
+        logger.warning(
+            "Policy distillation checkpoint key diff for %s: state_key=%s missing=%d unexpected=%d",
+            path,
+            state_key,
+            len(missing),
+            len(unexpected),
+        )
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad_(False)
+    return model
+
+
 class EMA:
     """Exponential Moving Average for model weights."""
     
@@ -206,6 +231,19 @@ def legal_policy_ce_loss(
     return (per_sample * weights).sum() / weight_sum
 
 
+def policy_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float = 1.0,
+) -> torch.Tensor:
+    """KL(teacher || student) over policy logits."""
+    temp = float(max(1e-6, temperature))
+    student_log_probs = nn.functional.log_softmax(student_logits / temp, dim=1)
+    teacher_log_probs = nn.functional.log_softmax(teacher_logits / temp, dim=1)
+    teacher_probs = teacher_log_probs.exp()
+    return (teacher_probs * (teacher_log_probs - student_log_probs)).sum(dim=1).mean() * (temp * temp)
+
+
 def _source_filter_mask(sources, include_sources: Optional[list[str]], exclude_sources: Optional[list[str]]) -> Optional[torch.Tensor]:
     if sources is None:
         return None
@@ -242,7 +280,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                value_include_sources: Optional[list[str]] = None,
                value_exclude_sources: Optional[list[str]] = None,
                policy_include_sources: Optional[list[str]] = None,
-               policy_exclude_sources: Optional[list[str]] = None):
+               policy_exclude_sources: Optional[list[str]] = None,
+               policy_distill_model: Optional[nn.Module] = None,
+               policy_distill_weight: float = 0.0,
+               policy_distill_temperature: float = 1.0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -719,6 +760,24 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             policy_reg_loss = policy_reg_loss + (float(legal_policy_weight) * legal_policy_penalty)
             if current_step % 200 == 0:
                 logger.info("LEGAL_POLICY_LOSS: weight=%.4f ce=%.4f", float(legal_policy_weight), float(legal_policy_penalty.detach().item()))
+        policy_distill_penalty = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
+        if policy_distill_model is not None and policy_distill_weight > 0.0:
+            with torch.no_grad():
+                teacher_out = policy_distill_model(s_forward, return_ssl=False)
+                teacher_policy = teacher_out[0] if isinstance(teacher_out, (tuple, list)) else teacher_out
+            policy_distill_penalty = policy_distillation_loss(
+                p,
+                teacher_policy.to(device=p.device, dtype=p.dtype),
+                temperature=float(policy_distill_temperature),
+            ).to(dtype=policy_loss.dtype)
+            policy_reg_loss = policy_reg_loss + (float(policy_distill_weight) * policy_distill_penalty)
+            if current_step % 200 == 0:
+                logger.info(
+                    "POLICY_DISTILL_LOSS: weight=%.4f temp=%.3f kl=%.6f",
+                    float(policy_distill_weight),
+                    float(policy_distill_temperature),
+                    float(policy_distill_penalty.detach().item()),
+                )
         
         # PERFORMANCE PROFILING: Start loss computation
         loss_comp_start = time.time()
@@ -1022,6 +1081,9 @@ def train_comprehensive(
     policy_include_sources: Optional[list[str]] = None,
     policy_exclude_sources: Optional[list[str]] = None,
     trainable_scope: str = "all",
+    policy_distill_checkpoint: Optional[str] = None,
+    policy_distill_weight: float = 0.0,
+    policy_distill_temperature: float = 1.0,
 ):
     """Train the model with comprehensive features and memory optimizations."""
 
@@ -1339,6 +1401,22 @@ def train_comprehensive(
             cfg_policy_include_sources or None,
             cfg_policy_exclude_sources or None,
         )
+    cfg_policy_distill_checkpoint = policy_distill_checkpoint or tr_cfg.get("policy_distill_checkpoint", None)
+    cfg_policy_distill_weight = float(policy_distill_weight if policy_distill_weight is not None else tr_cfg.get("policy_distill_weight", 0.0))
+    cfg_policy_distill_temperature = float(
+        policy_distill_temperature
+        if policy_distill_temperature is not None
+        else tr_cfg.get("policy_distill_temperature", 1.0)
+    )
+    policy_distill_model = None
+    if cfg_policy_distill_checkpoint and cfg_policy_distill_weight > 0.0:
+        policy_distill_model = load_frozen_policy_model(str(cfg_policy_distill_checkpoint), cfg, device)
+        logger.info(
+            "Policy distillation enabled: checkpoint=%s weight=%.4f temperature=%.3f",
+            cfg_policy_distill_checkpoint,
+            cfg_policy_distill_weight,
+            cfg_policy_distill_temperature,
+        )
 
     # Memory limits are now set at the beginning of the orchestrator main() function
     memory_limit_gb = safe_config_get(cfg, 'memory_limit_gb', 14, section='training')  # Default 14GB for MPS
@@ -1547,6 +1625,9 @@ def train_comprehensive(
                 value_exclude_sources=cfg_value_exclude_sources,
                 policy_include_sources=cfg_policy_include_sources,
                 policy_exclude_sources=cfg_policy_exclude_sources,
+                policy_distill_model=policy_distill_model,
+                policy_distill_weight=cfg_policy_distill_weight,
+                policy_distill_temperature=cfg_policy_distill_temperature,
                 )
                 
                 if loss_values is None:
@@ -2030,6 +2111,9 @@ def main():
     parser.add_argument("--policy-include-source", action="append", default=None, help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=None, help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable.")
+    parser.add_argument("--policy-distill-checkpoint", type=str, default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
+    parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
+    parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
     
     args = parser.parse_args()
     
@@ -2061,6 +2145,9 @@ def main():
         policy_include_sources=args.policy_include_source,
         policy_exclude_sources=args.policy_exclude_source,
         trainable_scope=args.trainable_scope,
+        policy_distill_checkpoint=args.policy_distill_checkpoint,
+        policy_distill_weight=args.policy_distill_weight,
+        policy_distill_temperature=args.policy_distill_temperature,
     )
 
 def train_from_config(config_path: str = "config.yaml"):

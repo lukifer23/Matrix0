@@ -13,6 +13,7 @@ from azchess.training.train import (
     select_checkpoint_model_state,
     legal_policy_ce_loss,
     legal_policy_mass_loss,
+    policy_distillation_loss,
     train_step,
 )
 
@@ -354,3 +355,49 @@ def test_checkpoint_state_selection_prefers_ema_once():
 
     assert key == "model_ema"
     assert selected["weight"].item() == 2.0
+
+
+def test_policy_distillation_loss_backprops_when_policy_targets_filtered_out():
+    student = SourceFilterModel()
+    teacher = SourceFilterModel()
+    with torch.no_grad():
+        student.bias.fill_(0.0)
+        teacher.bias.fill_(2.0)
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad_(False)
+    optimizer = optim.SGD(student.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.zeros((2,), dtype=np.float32),
+        "value_weight": np.zeros((2,), dtype=np.float32),
+        "result_source": np.array(["terminal", "terminal"]),
+    }
+
+    loss, policy_loss, value_loss, *_ = train_step(
+        student,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+        policy_distill_model=teacher,
+        policy_distill_weight=1.0,
+    )
+
+    assert policy_distillation_loss(
+        torch.zeros((1, 2), dtype=torch.float32),
+        torch.tensor([[2.0, 0.0]], dtype=torch.float32),
+    ).item() > 0.0
+    assert loss > 0.0
+    assert policy_loss == 0.0
+    assert value_loss == 0.0
+    assert student.bias.grad is not None
