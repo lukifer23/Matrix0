@@ -4,6 +4,7 @@
 
 ### Fixed
 - Prevented completed self-play subprocesses from hanging forever during worker shutdown by adding bounded joins and terminating workers that do not exit after all requested games are reported.
+- Treat self-play worker heartbeats as progress so long games with low inference batch sizes do not trip the parent process stall timer.
 - Wired batched MCTS virtual loss into the real leaf-collection path. Batched searches now share per-mini-batch in-flight edge counts, so multiple collected leaves are discouraged from selecting the same root/edge before backpropagation.
 - Made `--selection-jitter 0.0` exact in MCTS selection. The search no longer adds hidden random tie-breaking jitter during clean no-jitter ablations.
 - Prevented excluded fresh self-play shards from remaining train-visible through stale metadata after `--train-fresh-max-files`.

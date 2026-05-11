@@ -1,4 +1,4 @@
-from azchess.selfplay.__main__ import _join_or_terminate_workers
+from azchess.selfplay.__main__ import _handle_worker_message, _join_or_terminate_workers
 
 
 class FakeProcess:
@@ -53,3 +53,44 @@ def test_join_or_terminate_workers_leaves_exited_worker_alone():
     assert not proc.terminated
     assert not proc.killed
     assert proc.join_calls == [0.0]
+
+
+def test_heartbeat_worker_message_counts_as_progress(capsys):
+    done, made_progress = _handle_worker_message(
+        {
+            "type": "heartbeat",
+            "proc": 1,
+            "game": 2,
+            "moves": 123,
+            "avg_sims": 49.5,
+            "avg_policy_entropy": 2.75,
+        },
+        done=4,
+        total=8,
+    )
+
+    captured = capsys.readouterr()
+    assert done == 4
+    assert made_progress is True
+    assert "heartbeat p1" in captured.out
+
+
+def test_game_worker_message_increments_done(capsys):
+    done, made_progress = _handle_worker_message(
+        {
+            "type": "game",
+            "proc": 0,
+            "moves": 200,
+            "result": 0.0,
+            "result_source": "capped",
+            "capped": True,
+            "secs": 301.2,
+        },
+        done=4,
+        total=8,
+    )
+
+    captured = capsys.readouterr()
+    assert done == 5
+    assert made_progress is True
+    assert "5/8 gms" in captured.out

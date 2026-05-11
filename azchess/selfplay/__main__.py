@@ -43,6 +43,34 @@ def _join_or_terminate_workers(
         p.join(timeout=terminate_timeout)
 
 
+def _handle_worker_message(msg, done: int, total: int) -> tuple[int, bool]:
+    """Handle one worker message and report whether it counts as progress."""
+    if not isinstance(msg, dict):
+        return done, False
+
+    if msg.get("type") == "game":
+        done += 1
+        source = msg.get("result_source", "unknown")
+        capped = " capped" if msg.get("capped") else ""
+        print(
+            f"[SelfPlay] {done}/{total} gms | p{msg['proc']} moves={msg['moves']} "
+            f"res={msg['result']} src={source}{capped} time={msg['secs']:.1f}s"
+        )
+        return done, True
+
+    if msg.get("type") == "heartbeat":
+        moves = msg.get("moves", 0)
+        avg_sims = float(msg.get("avg_sims", 0.0) or 0.0)
+        entropy = float(msg.get("avg_policy_entropy", 0.0) or 0.0)
+        print(
+            f"[SelfPlay] heartbeat p{msg.get('proc', '?')} game={msg.get('game', '?')} "
+            f"moves={moves} avg_sims={avg_sims:.1f} entropy={entropy:.3f}"
+        )
+        return done, True
+
+    return done, False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
@@ -112,12 +140,9 @@ def main():
                 if time.time() - last_msg_time > 300:
                     raise RuntimeError("[SelfPlay] Stalled: no progress for 300s")
                 continue
-            if isinstance(msg, dict) and msg.get("type") == "game":
-                done += 1
+            done, made_progress = _handle_worker_message(msg, done, total)
+            if made_progress:
                 last_msg_time = time.time()
-                source = msg.get("result_source", "unknown")
-                capped = " capped" if msg.get("capped") else ""
-                print(f"[SelfPlay] {done}/{total} gms | p{msg['proc']} moves={msg['moves']} res={msg['result']} src={source}{capped} time={msg['secs']:.1f}s")
     finally:
         _join_or_terminate_workers(procs, done, total)
         try:
