@@ -12,8 +12,10 @@ from azchess.model import PolicyValueNet
 from argparse import Namespace
 
 from azchess.tools.bench_local_loop import (
+    _eval_delta,
     _prepare_initial_checkpoint,
     _sample_eval_batch,
+    _selection_passes,
     copy_anchor_shards,
     evaluate_checkpoint_batches,
     evaluate_checkpoint,
@@ -281,6 +283,33 @@ def test_sample_eval_batch_can_filter_by_source_prefix(tmp_path):
 
     assert batch["s"].shape[0] == 2
     assert np.all(batch["z"] == 1.0)
+
+
+def test_eval_delta_and_selection_policy_limits():
+    before = {
+        "policy_ce": 1.0,
+        "policy_legal_ce": 0.5,
+        "value_mse": 0.25,
+        "legal_policy_mass": 0.99,
+    }
+    after = {
+        "policy_ce": 1.0005,
+        "policy_legal_ce": 0.500002,
+        "value_mse": 0.24,
+        "legal_policy_mass": 0.991,
+    }
+    args = Namespace(
+        eval_select_max_policy_ce_delta=0.001,
+        eval_select_max_policy_legal_ce_delta=1.0e-5,
+    )
+
+    delta = _eval_delta(before, after)
+
+    assert np.isclose(delta["value_mse"], -0.01)
+    assert _selection_passes(delta, args)
+
+    delta["policy_ce"] = 0.002
+    assert not _selection_passes(delta, args)
 
 
 def test_prepare_initial_checkpoint_copies_and_validates_provided_checkpoint(tmp_path):

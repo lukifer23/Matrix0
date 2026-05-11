@@ -831,6 +831,82 @@ def latest_checkpoint(checkpoint_dir: Path) -> Path:
     return candidates[-1]
 
 
+def _eval_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, float]:
+    return {
+        key: float(after[key] - before[key])
+        for key in (
+            "policy_ce",
+            "policy_kl",
+            "policy_legal_ce",
+            "policy_legal_kl",
+            "value_mse",
+            "legal_policy_mass",
+        )
+        if key in before and key in after
+    }
+
+
+def _build_train_cmd(
+    args: argparse.Namespace,
+    config_path: Path,
+    init_checkpoint: Path,
+    checkpoint_dir: Path,
+    log_dir: Path,
+    device: str,
+    steps: int,
+) -> List[str]:
+    train_cmd = [
+        sys.executable,
+        "-m",
+        "azchess.training.train",
+        "--config",
+        str(config_path),
+        "--steps",
+        str(int(steps)),
+        "--batch-size",
+        str(args.batch_size),
+        "--lr",
+        str(args.lr),
+        "--warmup-steps",
+        str(args.warmup_steps),
+        "--init-checkpoint",
+        str(init_checkpoint),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+        "--log-dir",
+        str(log_dir),
+        "--device",
+        device,
+        "--dataloader-workers",
+        str(args.dataloader_workers),
+    ]
+    for source in getattr(args, "value_include_source", []) or []:
+        train_cmd.extend(["--value-include-source", str(source)])
+    for source in getattr(args, "value_exclude_source", []) or []:
+        train_cmd.extend(["--value-exclude-source", str(source)])
+    for source in getattr(args, "policy_include_source", []) or []:
+        train_cmd.extend(["--policy-include-source", str(source)])
+    for source in getattr(args, "policy_exclude_source", []) or []:
+        train_cmd.extend(["--policy-exclude-source", str(source)])
+    train_cmd.extend(["--trainable-scope", str(getattr(args, "trainable_scope", "all") or "all")])
+    if getattr(args, "policy_distill_checkpoint", None):
+        train_cmd.extend(["--policy-distill-checkpoint", str(args.policy_distill_checkpoint)])
+        train_cmd.extend(["--policy-distill-weight", str(float(getattr(args, "policy_distill_weight", 0.0) or 0.0))])
+        train_cmd.extend(["--policy-distill-temperature", str(float(getattr(args, "policy_distill_temperature", 1.0) or 1.0))])
+    if args.no_amp:
+        train_cmd.append("--no-amp")
+    return train_cmd
+
+
+def _selection_passes(delta: Dict[str, float], args: argparse.Namespace) -> bool:
+    policy_ce = float(delta.get("policy_ce", 0.0))
+    policy_legal_ce = float(delta.get("policy_legal_ce", 0.0))
+    return (
+        policy_ce <= float(args.eval_select_max_policy_ce_delta)
+        and policy_legal_ce <= float(args.eval_select_max_policy_legal_ce_delta)
+    )
+
+
 def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
     repo = Path.cwd()
     base_cfg = Config.load(args.config)
@@ -909,62 +985,106 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         data_metrics_after = data_metrics_before
         eval_after = eval_before
         train_steps_per_second: Optional[float] = None
+        eval_selection: Optional[Dict[str, Any]] = None
     else:
-        train_cmd = [
-            sys.executable,
-            "-m",
-            "azchess.training.train",
-            "--config",
-            str(config_path),
-            "--steps",
-            str(args.train_steps),
-            "--batch-size",
-            str(args.batch_size),
-            "--lr",
-            str(args.lr),
-            "--warmup-steps",
-            str(args.warmup_steps),
-            "--init-checkpoint",
-            str(initial_ckpt),
-            "--checkpoint-dir",
-            str(run_dir / "checkpoints"),
-            "--log-dir",
-            str(run_dir / "logs"),
-            "--device",
-            device,
-            "--dataloader-workers",
-            str(args.dataloader_workers),
-        ]
-        for source in getattr(args, "value_include_source", []) or []:
-            train_cmd.extend(["--value-include-source", str(source)])
-        for source in getattr(args, "value_exclude_source", []) or []:
-            train_cmd.extend(["--value-exclude-source", str(source)])
-        for source in getattr(args, "policy_include_source", []) or []:
-            train_cmd.extend(["--policy-include-source", str(source)])
-        for source in getattr(args, "policy_exclude_source", []) or []:
-            train_cmd.extend(["--policy-exclude-source", str(source)])
-        train_cmd.extend(["--trainable-scope", str(getattr(args, "trainable_scope", "all") or "all")])
-        if getattr(args, "policy_distill_checkpoint", None):
-            train_cmd.extend(["--policy-distill-checkpoint", str(args.policy_distill_checkpoint)])
-            train_cmd.extend(["--policy-distill-weight", str(float(getattr(args, "policy_distill_weight", 0.0) or 0.0))])
-            train_cmd.extend(["--policy-distill-temperature", str(float(getattr(args, "policy_distill_temperature", 1.0) or 1.0))])
-        if args.no_amp:
-            train_cmd.append("--no-amp")
-        stages.append(_run_stage("train", train_cmd, repo, env))
-
-        final_ckpt = latest_checkpoint(run_dir / "checkpoints")
+        train_seconds_total = 0.0
+        eval_selection = None
+        interval = int(getattr(args, "eval_select_interval", 0) or 0)
+        if interval > 0 and int(args.train_steps) > interval:
+            candidates: List[Dict[str, Any]] = []
+            best_ckpt = initial_ckpt
+            best_eval = eval_before
+            best_delta = _eval_delta(eval_before, eval_before)
+            best_metric_value = float(best_delta.get(args.eval_select_metric, 0.0))
+            current_init = initial_ckpt
+            remaining = int(args.train_steps)
+            chunk_idx = 0
+            while remaining > 0:
+                chunk_steps = min(interval, remaining)
+                chunk_idx += 1
+                train_cmd = _build_train_cmd(
+                    args,
+                    config_path,
+                    current_init,
+                    run_dir / "checkpoints",
+                    run_dir / "logs" / f"chunk_{chunk_idx:03d}",
+                    device,
+                    chunk_steps,
+                )
+                stage = _run_stage(f"train_chunk_{chunk_idx:03d}", train_cmd, repo, env)
+                stages.append(stage)
+                train_seconds_total += float(stage["seconds"])
+                trained_ckpt = latest_checkpoint(run_dir / "checkpoints")
+                chunk_ckpt = run_dir / "checkpoints" / f"eval_select_chunk_{chunk_idx:03d}.pt"
+                shutil.copy2(trained_ckpt, chunk_ckpt)
+                current_init = chunk_ckpt
+                chunk_eval = evaluate_checkpoint_batches(
+                    chunk_ckpt,
+                    loop_cfg,
+                    eval_data_dir,
+                    device,
+                    eval_batch_size,
+                    batches=len(eval_batches),
+                    fixed_batches=eval_batches,
+                )
+                delta = _eval_delta(eval_before, chunk_eval)
+                metric_value = float(delta.get(args.eval_select_metric, float("inf")))
+                passed = _selection_passes(delta, args)
+                candidate = {
+                    "chunk": chunk_idx,
+                    "steps": int(chunk_steps),
+                    "checkpoint": str(chunk_ckpt),
+                    "delta": delta,
+                    "metric": str(args.eval_select_metric),
+                    "metric_value": metric_value,
+                    "passes_policy_limits": bool(passed),
+                }
+                candidates.append(candidate)
+                if passed and metric_value < best_metric_value:
+                    best_ckpt = chunk_ckpt
+                    best_eval = chunk_eval
+                    best_delta = delta
+                    best_metric_value = metric_value
+                remaining -= chunk_steps
+            selected_ckpt = run_dir / "checkpoints" / "local_loop_selected.pt"
+            shutil.copy2(best_ckpt, selected_ckpt)
+            final_ckpt = selected_ckpt
+            eval_after = best_eval
+            eval_selection = {
+                "enabled": True,
+                "interval": interval,
+                "metric": str(args.eval_select_metric),
+                "selected_checkpoint": str(final_ckpt),
+                "selected_delta": best_delta,
+                "selected_metric_value": best_metric_value,
+                "candidates": candidates,
+            }
+        else:
+            train_cmd = _build_train_cmd(
+                args,
+                config_path,
+                initial_ckpt,
+                run_dir / "checkpoints",
+                run_dir / "logs",
+                device,
+                int(args.train_steps),
+            )
+            stage = _run_stage("train", train_cmd, repo, env)
+            stages.append(stage)
+            train_seconds_total = float(stage["seconds"])
+            final_ckpt = latest_checkpoint(run_dir / "checkpoints")
+            eval_after = evaluate_checkpoint_batches(
+                final_ckpt,
+                loop_cfg,
+                eval_data_dir,
+                device,
+                eval_batch_size,
+                batches=len(eval_batches),
+                fixed_batches=eval_batches,
+            )
+            eval_selection = {"enabled": False}
         data_metrics_after = summarize_npz_shards(run_dir / "data")
-        eval_after = evaluate_checkpoint_batches(
-            final_ckpt,
-            loop_cfg,
-            eval_data_dir,
-            device,
-            eval_batch_size,
-            batches=len(eval_batches),
-            fixed_batches=eval_batches,
-        )
-        train_seconds = stages[-1]["seconds"]
-        train_steps_per_second = float(args.train_steps / max(train_seconds, 1e-9))
+        train_steps_per_second = float(args.train_steps / max(train_seconds_total, 1e-9))
 
     report = {
         "type": "matrix0_local_loop_benchmark",
@@ -996,19 +1116,9 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         "eval": {
             "before": eval_before,
             "after": eval_after,
-            "delta": {
-                key: float(eval_after[key] - eval_before[key])
-                for key in (
-                    "policy_ce",
-                    "policy_kl",
-                    "policy_legal_ce",
-                    "policy_legal_kl",
-                    "value_mse",
-                    "legal_policy_mass",
-                )
-                if key in eval_before and key in eval_after
-            },
+            "delta": _eval_delta(eval_before, eval_after),
             "source_delta": _delta_source_metrics(eval_before, eval_after),
+            "selection": eval_selection,
         },
     }
     out_path = Path(args.output) if args.output else run_dir / "local_loop_report.json"
@@ -1071,6 +1181,10 @@ def main() -> None:
     parser.add_argument("--eval-batches", type=int, default=1)
     parser.add_argument("--eval-data-dir", default=None, help="Optional stable data directory for before/after checkpoint eval.")
     parser.add_argument("--eval-source-prefix", action="append", default=[], help="Optional source prefix filter for eval data. Repeatable.")
+    parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
+    parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
+    parser.add_argument("--eval-select-max-policy-ce-delta", type=float, default=0.001, help="Maximum allowed held-out policy CE regression for selected checkpoints.")
+    parser.add_argument("--eval-select-max-policy-legal-ce-delta", type=float, default=1.0e-5, help="Maximum allowed held-out legal-policy CE regression for selected checkpoints.")
     parser.add_argument("--lr", type=float, default=4e-4)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--dataloader-workers", type=int, default=0)
