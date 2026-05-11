@@ -50,6 +50,41 @@ def build_value_targets(
     value_weight = 0.0 if result_source in ("capped", "unfinished") else 1.0
     return targets, float(value_weight), False
 
+
+def sharpen_policy_target(pi: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """Apply a target-only temperature to an MCTS policy vector.
+
+    This does not affect move sampling. It only controls saved training target
+    sharpness for low-simulation self-play runs.
+    """
+    policy = np.asarray(pi, dtype=np.float32)
+    total = float(policy.sum())
+    if total <= 0.0 or not np.isfinite(total):
+        raise RuntimeError("Cannot sharpen an invalid policy target with non-positive sum")
+    policy = policy / total
+
+    temp = float(temperature)
+    if not np.isfinite(temp):
+        raise RuntimeError(f"Invalid policy target temperature: {temperature}")
+    if abs(temp - 1.0) < 1e-6:
+        return policy.astype(np.float32, copy=False)
+    if temp <= 1e-6:
+        out = np.zeros_like(policy, dtype=np.float32)
+        out[int(np.argmax(policy))] = 1.0
+        return out
+
+    mask = policy > 0.0
+    logits = np.full(policy.shape, -np.inf, dtype=np.float64)
+    logits[mask] = np.log(policy[mask].astype(np.float64)) / temp
+    logits[mask] -= float(np.max(logits[mask]))
+    sharpened = np.zeros(policy.shape, dtype=np.float64)
+    sharpened[mask] = np.exp(logits[mask])
+    sharpened_sum = float(sharpened.sum())
+    if sharpened_sum <= 0.0 or not np.isfinite(sharpened_sum):
+        raise RuntimeError("Policy target sharpening produced invalid distribution")
+    return (sharpened / sharpened_sum).astype(np.float32)
+
+
 def load_opening_book(pgn_path: str):
     """Loads positions from a PGN file into the global opening book."""
     global OPENING_BOOK
@@ -378,6 +413,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
             temp_start = float(sp_cfg.get("temperature_start", 1.0))
             temp_end = float(sp_cfg.get("temperature_end", 0.1))
             temp_moves = int(sp_cfg.get("temperature_moves", 20))
+            policy_target_temperature = float(sp_cfg.get("policy_target_temperature", 1.0))
     
             # Resign parameters (multi-factor)
             resign_thr = float(sp_cfg.get("resign_threshold", -0.98))
@@ -443,7 +479,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                 try:
                     t_move0 = perf_counter()
                     # Pass ply index to MCTS for ply-gated Dirichlet in early game
-                    visit_counts, pi, v = mcts.run(board, ply=len(states))
+                    visit_counts, raw_pi, v = mcts.run(board, ply=len(states))
                     t_move1 = perf_counter()
                     
                     # Validate visit counts - fail fast if MCTS search produced no valid results
@@ -463,6 +499,7 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                         if low_visit_thr > 0 and max_visits < low_visit_thr:
                             temp_eff = max(temperature, 0.8)
                         move = sample_move_from_counts(board, visit_counts, temp_eff)
+                        pi = sharpen_policy_target(raw_pi, policy_target_temperature)
                         # Track policy entropy from MCTS policy vector
                         try:
                             _pi = np.clip(pi.astype(np.float64, copy=False), 1e-12, 1.0)

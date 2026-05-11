@@ -143,6 +143,19 @@ The virtual-loss selector existed, but the production batched leaf collector was
 
 That is fixed now. New generator probes should use a fresh process/run directory; already-running generator processes loaded the old code and will not pick up this fix.
 
+### Correct 50-Sim Search Is Still Broad
+
+The fixed batch-size-1 probe completed all 32 games but hit a self-play worker shutdown hang, which is now fixed. Salvaged data showed:
+
+- `31` capped, `1` terminal, `0` tablebase
+- `policy_top_prob 0.140`
+- `policy_entropy 2.955`
+- `policy_support 26.6`
+
+By-ply diagnostics showed policy support nearly equal to legal move count. Interpretation: once virtual loss and per-simulation backprop are correct, 50 simulations with a weak model and broad priors spreads visits across most legal moves. The old `policy_support ~7` signal was probably a repeated-leaf artifact, not a healthy target.
+
+`--policy-target-temperature` now exists to sharpen saved training labels without changing move sampling.
+
 ## Active Hypotheses
 
 ### H1: Generator Quality Is The Blocker
@@ -163,6 +176,7 @@ If sharp self-play remains mostly capped, train policy on fresh sharp labels but
 - fresh sharp self-play for policy
 - `logs/local_loop/bootstrap_003_capped_value_48g/data` as anchor data for value/tablebase coverage
 - heldout eval on `logs/local_loop/bootstrap_003_capped_value_48g/data`
+- target-only policy sharpening for low-simulation self-play if raw visit targets remain nearly legal-uniform
 - low capped value weight; do not let capped bootstrap values dominate value loss
 
 Acceptance:

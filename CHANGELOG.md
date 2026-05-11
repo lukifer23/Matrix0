@@ -10,6 +10,7 @@
 - Made `ssl_weight=0.0` a true no-SSL training ablation by skipping SSL target creation and SSL forward compute.
 
 ### Added
+- Added `--policy-target-temperature` for target-only MCTS policy label sharpening during low-simulation self-play. This does not affect move sampling.
 - Added `--legal-policy-weight` for legal-conditioned policy CE over masked logits and legal-renormalized targets.
 - Added final-position self-play metadata: final FEN, piece count, halfmove clock, legal count, and draw-claim availability.
 - Added final-position summaries to local-loop reports under `final_position` and per-source `source_metrics`.

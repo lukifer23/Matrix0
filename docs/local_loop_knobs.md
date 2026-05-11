@@ -115,6 +115,18 @@ Uniform random legal moves before MCTS starts.
 - Less: cleaner comparison, less variety.
 - Current sharp-search baseline: `8`.
 
+## Target Label Knobs
+
+### `--policy-target-temperature`
+
+Applies temperature only to saved MCTS policy targets. It does not affect move sampling.
+
+- `1.0`: preserve raw visit-count distribution.
+- `< 1.0`: sharpen low-simulation targets before saving.
+- `0.0`: save one-hot argmax targets.
+
+Use this only after search correctness is verified. With a weak model and 50 simulations, correct MCTS can visit almost every legal move; target-only sharpening is a pragmatic way to train a clearer policy signal while keeping generator behavior unchanged.
+
 ## Draw Controls
 
 Draw adjudication can dominate training data. Use it intentionally.

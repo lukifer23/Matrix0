@@ -277,6 +277,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
         legal_policy_weight=0.25,
         ssl_weight=0.0,
         policy_label_smoothing=0.0,
+        policy_target_temperature=0.5,
         draw_halfmove_cap=80,
         draw_material_threshold=14,
         draw_min_plies=40,
@@ -300,6 +301,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
     assert written["training"]["ssl_weight"] == 0.0
     assert written["training"]["policy_label_smoothing"] == 0.0
     assert written["training"]["legal_policy_weight"] == 0.25
+    assert written["selfplay"]["policy_target_temperature"] == 0.5
     assert draw["enabled"] is True
     assert draw["halfmove_cap"] == 80
     assert draw["material_draw_threshold"] == 14

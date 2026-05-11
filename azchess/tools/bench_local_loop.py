@@ -623,6 +623,7 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
         ("temperature_start", "temperature_start", float),
         ("temperature_end", "temperature_end", float),
         ("temperature_moves", "temperature_moves", int),
+        ("policy_target_temperature", "policy_target_temperature", float),
         ("opening_random_plies", "opening_random_plies", int),
         ("low_visit_threshold", "low_visit_threshold", int),
         ("selection_jitter", "selection_jitter", float),
@@ -949,6 +950,7 @@ def main() -> None:
     parser.add_argument("--temperature-start", type=float, default=None)
     parser.add_argument("--temperature-end", type=float, default=None)
     parser.add_argument("--temperature-moves", type=int, default=None)
+    parser.add_argument("--policy-target-temperature", type=float, default=None, help="Target-only temperature for saved MCTS policy labels; does not affect move sampling.")
     parser.add_argument("--opening-random-plies", type=int, default=None)
     parser.add_argument("--low-visit-threshold", type=int, default=None)
     parser.add_argument("--inference-batch-size", type=int, default=8)

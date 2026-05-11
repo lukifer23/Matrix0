@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import chess
+import numpy as np
 import psutil
 import pytest
 
@@ -147,3 +148,23 @@ def test_capped_value_targets_can_be_disabled():
     assert targets == [0.0, -0.0]
     assert weight == 0.0
     assert bootstrapped is False
+
+
+def test_sharpen_policy_target_applies_target_temperature_only():
+    pi = np.array([0.5, 0.25, 0.25, 0.0], dtype=np.float32)
+
+    sharpened = sp_internal.sharpen_policy_target(pi, temperature=0.5)
+
+    expected = np.array([0.25, 0.0625, 0.0625, 0.0], dtype=np.float32)
+    expected /= expected.sum()
+    assert np.allclose(sharpened, expected)
+    assert sharpened.sum() == pytest.approx(1.0)
+    assert sharpened[0] > pi[0]
+
+
+def test_sharpen_policy_target_zero_temperature_is_argmax():
+    pi = np.array([0.2, 0.7, 0.1], dtype=np.float32)
+
+    sharpened = sp_internal.sharpen_policy_target(pi, temperature=0.0)
+
+    assert np.array_equal(sharpened, np.array([0.0, 1.0, 0.0], dtype=np.float32))
