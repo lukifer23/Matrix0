@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**Date**: May 10, 2026
+**Date**: May 11, 2026
 **Status**: Local-loop reliability work is active. Production 5-task SSL architecture is operational, but checkpoint promotion is gated on verified self-play label quality, legal-policy metrics, value stability, and candidate generator quality.
 **Priority**: HIGH - Reliable self-play/training signal before further model promotion
 
@@ -16,7 +16,9 @@
      - Current parent remains `checkpoints/bootstrap_006_capped_value.pt`
      - `bootstrap_006_anchor_only_nossl_s600` is not promoted; its 64-game generator check produced `64/64` capped games and weak policy labels
      - Tablebase probing is configured and working; capped candidate games are not reaching low enough material for Syzygy to decide them
-     - Next probe is `bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter_vloss`
+     - `bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix` confirmed target-only policy sharpening works, but outcome mix stayed weak (`31` capped, `1` terminal)
+     - `bootstrap_006_ptt050_vw0_anchor_retrain_s600` is not promoted; legal-policy CE and value MSE regressed on stable heldout data
+     - Next step is source-aware policy/value data selection instead of another retrain on the same ptt050 labels
 
 ### 2. Search/Data Diagnostics 🔎
    - **Priority**: High
@@ -26,6 +28,7 @@
      - New final-position metadata reports final FEN, piece count, halfmove clock, legal count, and draw-claim availability
      - New policy-target diagnostics bucket CE/top-1/rank by entropy, target top probability, and legal count
      - Batched MCTS virtual loss now applies in the actual leaf-collection path, reducing repeated same-edge collection before batched inference
+     - `azchess.tools.reweight_npz_values` can create policy-only copies of existing self-play shards by zeroing capped/unfinished value weights
 
 ### 3. SSL Performance Validation 📊
    - **Priority**: Medium
@@ -144,12 +147,12 @@
 - **Training Optimization**: Optimized training steps with enhanced memory management
 - **Training Stability**: No NaN/Inf crashes, consistent performance
 
-## 🎯 Current Action Plan (updated May 10, 2026)
+## 🎯 Current Action Plan (updated May 11, 2026)
 
 ### Priority 1: Local-Loop Reliability (ACTIVE)
 
 #### 1.1 Generator Quality
-- [ ] **Fixed-Jitter + Virtual-Loss Candidate Probe**: Rerun the 64-game anchor-only candidate generator now that `--selection-jitter 0.0` is exact and batched leaf collection uses virtual loss
+- [x] **Fixed-Jitter + Virtual-Loss Candidate Probe**: Rerun anchor-only candidate generation after exact zero jitter and batched virtual loss wiring
 - [ ] **Capped-Game Diagnosis**: Use final-position metadata to determine whether caps are material-heavy, fifty-move/draw-claim related, or search-quality related
 - [x] **Tablebase Wiring Check**: Confirm Syzygy WDL probing is configured and direct probes work; current caps are material-heavy rather than tablebase-missed
 - [ ] **Parent-vs-Candidate Generator Gate**: Do not promote a checkpoint unless it generates data at least as good as the parent
@@ -159,6 +162,8 @@
 - [x] **Fresh Shard Limiting**: Add `--train-fresh-max-files` and metadata pruning for mixed fresh/anchor training
 - [x] **True No-SSL Ablation**: Make `ssl_weight=0.0` skip SSL targets and SSL forward compute
 - [x] **Policy Diagnostics**: Add entropy/top-prob/legal-count bucket diagnostics for checkpoint comparisons
+- [x] **Manual Capped-Value Reweighting**: Add a reusable NPZ reweighting tool and verify a ptt050 policy-only copy
+- [ ] **Source-Aware Objective Filtering**: Separate policy-usable capped data from value-usable terminal/tablebase/draw data during training
 - [ ] **Promotion Criteria Enforcement**: Require heldout legal-policy stability, value stability, and candidate generator quality before promotion
 
 #### 1.3 Search Correctness

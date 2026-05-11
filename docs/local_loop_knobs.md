@@ -177,6 +177,23 @@ Weight for capped/unfinished games when using search values as weak bootstrap ta
 
 For capped-heavy datasets, value learning is weak even when policy labels are useful.
 
+### `azchess.tools.reweight_npz_values`
+
+Utility for creating a copied data directory with value weights changed for selected result sources. This is useful when existing capped self-play labels are policy-useful but should not contribute to value loss.
+
+Example:
+
+```bash
+.venv/bin/python -m azchess.tools.reweight_npz_values \
+  --input-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix/data \
+  --output-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_vw0/data \
+  --source capped \
+  --source unfinished \
+  --value-weight 0.0
+```
+
+This preserves policy targets and terminal/tablebase value labels while setting matching `value_weight`, `meta_value_weight`, and zero-valued bootstrap metadata in the copied shards.
+
 ## Training Knobs
 
 ### `--train-steps`

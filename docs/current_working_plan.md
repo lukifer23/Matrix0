@@ -1,6 +1,6 @@
 # Current Working Plan
 
-Last updated: 2026-05-10
+Last updated: 2026-05-11
 
 This is the living document for the active Matrix0 training/debugging loop. Keep it short, factual, and current. Historical project status belongs in `status.md` and `CURRENT_STATUS_SUMMARY.md`; this page tracks the immediate problem, current best checkpoint, active hypotheses, and promotion criteria.
 
@@ -52,6 +52,7 @@ The local-loop path now fails hard instead of silently producing bad data:
 - `--selection-jitter 0.0` is now truly deterministic; it no longer adds hidden random jitter
 - self-play shards now save final-position metadata: FEN, piece count, halfmove clock, legal count, and draw-claim availability
 - `azchess.tools.diagnose_policy_targets` now buckets checkpoint comparisons by target entropy, top probability, and legal count
+- `azchess.tools.reweight_npz_values` can copy existing NPZ data while changing value weights for selected result sources, so capped-policy experiments can be rerun without regenerating self-play
 
 ## Current Findings
 
@@ -156,6 +157,44 @@ By-ply diagnostics showed policy support nearly equal to legal move count. Inter
 
 `--policy-target-temperature` now exists to sharpen saved training labels without changing move sampling.
 
+### Target Sharpening Helped Label Shape, But Not Promotion Metrics
+
+The first `--policy-target-temperature 0.5` generator probe completed after the heartbeat/shutdown fixes:
+
+- `logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix`
+- `31` capped, `1` terminal, `0` tablebase
+- `policy_top_prob 0.287`
+- `policy_entropy 2.325`
+- `policy_support 26.6`
+
+This confirms target-only sharpening works, but it did not improve outcome mix. Training on this data plus the stable anchor was not promotable:
+
+- `logs/local_loop/bootstrap_006_ptt050_anchor_retrain_s600`
+- `policy_ce -0.7364`
+- `policy_legal_ce +0.0034`
+- `value_mse +0.0187`
+
+The first interpretation was that capped bootstrap values were too strong. We then reweighted the completed ptt050 data in-place into:
+
+```text
+logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_vw0/data
+```
+
+The reweighted copy set capped `value_weight` and `meta_value_weight` to `0.0` while preserving terminal value labels. Verification:
+
+- capped source value weight mean `0.0`
+- terminal source value weight mean `1.0`
+- policy target entropy/top-prob unchanged
+
+Retraining was still not promotable:
+
+- `logs/local_loop/bootstrap_006_ptt050_vw0_anchor_retrain_s600`
+- `policy_ce -0.7275`
+- `policy_legal_ce +0.0083`
+- `value_mse +0.0278`
+
+Interpretation: this is not just capped bootstrap value leakage from the new generated data. The current 32-game ptt050 target set is not a better legal-ranking signal, and the older anchor still contributes some capped value weight. Do not promote this branch of experiments.
+
 ## Active Hypotheses
 
 ### H1: Generator Quality Is The Blocker
@@ -185,6 +224,8 @@ Acceptance:
 - value MSE does not regress materially
 - candidate generator check does not worsen outcome mix or label quality
 
+Current status: the ptt050 policy-only reweight experiment failed this acceptance test. Next policy/value separation work should use source-aware filtering rather than broad anchor copying: train policy from fresh self-play, train value only from terminal/tablebase/draw-adjudication sources, and keep capped data out of value loss unless there is a stronger adjudication signal.
+
 ### H3: Outcome Mix Needs Search/Termination Work
 
 If the fixed-jitter plus virtual-loss generator remains mostly capped, the next fix is not more retraining. Investigate:
@@ -196,44 +237,24 @@ If the fixed-jitter plus virtual-loss generator remains mostly capped, the next 
 - temperature schedule and endgame determinism
 - resignation/adjudication thresholds
 
-## Current Probe Command
+## Current Next Step
 
-Run this next. It repeats the candidate generator check after the zero-jitter and batched virtual-loss fixes and records final-position diagnostics:
+Do not run another 600-step retrain on the same ptt050 data. The next code/data step is source-aware training data selection:
+
+- allow training/eval commands to include or exclude source prefixes/result sources per objective
+- keep capped shards usable for policy targets
+- exclude capped/unfinished shards from value loss unless explicitly requested
+- report source mix before training starts and fail if the recipe violates the intended policy/value split
+
+For a manual reweighting stopgap, this command creates a policy-only copy of an existing data directory:
 
 ```bash
-MATRIX0_MPS_TARGET_BATCH=4 \
-.venv/bin/python -m azchess.tools.bench_local_loop \
-  --config config.yaml \
-  --run-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_64g_fixed_jitter_vloss \
-  --games 64 \
-  --workers 2 \
-  --sims 50 \
-  --max-game-len 200 \
-  --batch-size 32 \
-  --eval-batch-size 64 \
-  --mps-target-batch 4 \
-  --capped-value-weight 0.25 \
-  --cpuct 1.6 \
-  --cpuct-start 1.8 \
-  --cpuct-end 1.2 \
-  --cpuct-plies 32 \
-  --dirichlet-frac 0.10 \
-  --dirichlet-plies 12 \
-  --temperature-start 0.8 \
-  --temperature-end 0.15 \
-  --temperature-moves 24 \
-  --opening-random-plies 8 \
-  --selection-jitter 0.0 \
-  --disable-entropy-noise \
-  --draw-halfmove-cap 100 \
-  --draw-material-threshold 0 \
-  --draw-min-plies 120 \
-  --draw-window 0 \
-  --draw-min-unique 0 \
-  --draw-claim-min-plies 120 \
-  --draw-disable-repetition-claims \
-  --init-checkpoint logs/local_loop/bootstrap_006_anchor_only_nossl_s600/checkpoints/local_loop_best.pt \
-  --skip-train
+.venv/bin/python -m azchess.tools.reweight_npz_values \
+  --input-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix/data \
+  --output-dir logs/local_loop/bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_vw0/data \
+  --source capped \
+  --source unfinished \
+  --value-weight 0.0
 ```
 
 ## Promotion Rules
