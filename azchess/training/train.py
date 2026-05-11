@@ -91,6 +91,26 @@ def _keep_frozen_norms_eval(model: nn.Module) -> None:
         if isinstance(module, nn.modules.batchnorm._BatchNorm) and not _is_trainable_for_scope(module_name, scope):
             module.eval()
 
+
+def has_trainable_gradients(model: nn.Module) -> bool:
+    for param in model.parameters():
+        if param.requires_grad and param.grad is not None:
+            return True
+    return False
+
+
+def select_checkpoint_model_state(state: dict) -> tuple[Optional[str], Optional[dict]]:
+    for key in ("model_ema", "model", "model_state_dict", "state_dict"):
+        value = state.get(key)
+        if isinstance(value, dict):
+            return key, value
+    model_keys = [key for key in state.keys() if "model" in key.lower() and "state" in key.lower()]
+    for key in model_keys:
+        value = state.get(key)
+        if isinstance(value, dict):
+            return key, value
+    return None, None
+
 class EMA:
     """Exponential Moving Average for model weights."""
     
@@ -1089,19 +1109,10 @@ def train_comprehensive(
             state = torch.load(chosen_ckpt, map_location=device, weights_only=False)
             
             # Handle different checkpoint formats robustly
-            missing = []
-            unexpected = []
-            if "model_ema" in state and state["model_ema"] is not None:
-                logger.info("Loading EMA model state (non-strict)")
-                r = model.load_state_dict(state["model_ema"], strict=False)
-                missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
-            elif "model" in state and state["model"] is not None:
-                logger.info("Loading model state (non-strict)")
-                r = model.load_state_dict(state["model"], strict=False)
-                missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
-            elif "model_state_dict" in state and state["model_state_dict"] is not None:
-                logger.info("Loading model_state_dict (non-strict)")
-                r = model.load_state_dict(state["model_state_dict"], strict=False)
+            state_key, model_state = select_checkpoint_model_state(state)
+            if model_state is not None:
+                logger.info("Loading %s model state (non-strict)", state_key)
+                r = model.load_state_dict(model_state, strict=False)
                 missing, unexpected = list(r.missing_keys), list(r.unexpected_keys)
             else:
                 missing, unexpected = [], []
@@ -1115,15 +1126,9 @@ def train_comprehensive(
                         logger.warning(f"Unexpected (first 10): {unexpected[:10]}")
                 except Exception:
                     pass
-            else:
-                # Try to find any key that looks like model weights
-                model_keys = [k for k in state.keys() if 'model' in k.lower() and 'state' in k.lower()]
-                if model_keys:
-                    logger.info(f"Found model key: {model_keys[0]}")
-                    model.load_state_dict(state[model_keys[0]])
-                else:
-                    logger.warning("No recognizable model state found in checkpoint, starting fresh")
-                    state = None
+            elif model_state is None:
+                logger.warning("No recognizable model state found in checkpoint, starting fresh")
+                state = None
             
             if state is not None and resume:
                 start_step = state.get("step", state.get("global_step", 0))
@@ -1445,6 +1450,7 @@ def train_comprehensive(
 
     accum_counter = 0  # micro-steps within an accumulation window
     updates_done = 0   # total optimizer updates completed
+    last_emergency_checkpoint_step = -1000000
 
     try:
         # Warn-once flag for curriculum fallback spam control
@@ -1615,9 +1621,15 @@ def train_comprehensive(
                     do_update = ((current_step + 1) % accum_steps == 0)
 
                     if do_update:
-                        if scaler_valid:
+                        has_grads = has_trainable_gradients(model)
+                        if not has_grads:
+                            optimizer.zero_grad(set_to_none=True)
+                            if current_step % 100 == 0:
+                                logger.info("Skipping optimizer update: no trainable gradients in accumulation window")
+                            last_progress_time = time.time()
+                        if has_grads and scaler_valid:
                             scaler.unscale_(optimizer)
-                        if grad_clip_norm > 0:
+                        if has_grads and grad_clip_norm > 0:
                             # CRITICAL: Ultra-aggressive gradient clipping to prevent NaN/Inf
                             total_norm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm, error_if_nonfinite=False)
                             
@@ -1651,10 +1663,10 @@ def train_comprehensive(
                                 total_norm = 0.01
 
                         # CRITICAL: Do optimizer step and scheduler step
-                        if scaler_valid:
+                        if has_grads and scaler_valid:
                             scaler.step(optimizer)
                             scaler.update()
-                        else:
+                        elif has_grads:
                             optimizer.step()
                             # Recreate scaler if it was corrupted
                             if device.startswith('mps'):
@@ -1663,16 +1675,17 @@ def train_comprehensive(
                                 scaler = torch.cuda.amp.GradScaler()
 
                         # CRITICAL: Step scheduler AFTER optimizer to avoid LR warning
-                        try:
-                            scheduler.step()
-                            lr_current = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else optimizer.param_groups[0]['lr']
-                            if current_step % 100 == 0:  # Log every 100 steps to avoid spam
-                                logger.debug(f"Scheduler stepped: step={current_step}, lr={lr_current:.2e}")
-                        except Exception as scheduler_error:
-                            logger.warning(f"Scheduler step failed: {scheduler_error}, continuing...")
-                        optimizer.zero_grad()
-                        ema.update(model)
-                        updates_done += 1
+                        if has_grads:
+                            try:
+                                scheduler.step()
+                                lr_current = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else optimizer.param_groups[0]['lr']
+                                if current_step % 100 == 0:  # Log every 100 steps to avoid spam
+                                    logger.debug(f"Scheduler stepped: step={current_step}, lr={lr_current:.2e}")
+                            except Exception as scheduler_error:
+                                logger.warning(f"Scheduler step failed: {scheduler_error}, continuing...")
+                            optimizer.zero_grad()
+                            ema.update(model)
+                            updates_done += 1
 
                     # PERFORMANCE PROFILING: Optimizer step complete
                     optimizer_time = time.time() - optimizer_start
@@ -1760,13 +1773,17 @@ def train_comprehensive(
                         logger.error(f"Failed to recover from optimization error: {recovery_error}")
                     
                     # Force a checkpoint and continue
-                    try:
-                        checkpoint_name = f"emergency_checkpoint_step_{current_step}.pt"
-                        checkpoint_path = Path(checkpoint_dir) / checkpoint_name
-                        save_checkpoint(model, ema, optimizer, scheduler, current_step, checkpoint_path)
-                        logger.info(f"Saved emergency checkpoint: {checkpoint_path}")
-                    except Exception as checkpoint_error:
-                        logger.error(f"Failed to save emergency checkpoint: {checkpoint_error}")
+                    if current_step - last_emergency_checkpoint_step >= 100:
+                        try:
+                            checkpoint_name = f"emergency_checkpoint_step_{current_step}.pt"
+                            checkpoint_path = Path(checkpoint_dir) / checkpoint_name
+                            save_checkpoint(model, ema, optimizer, scheduler, current_step, checkpoint_path)
+                            last_emergency_checkpoint_step = current_step
+                            logger.info(f"Saved emergency checkpoint: {checkpoint_path}")
+                        except Exception as checkpoint_error:
+                            logger.error(f"Failed to save emergency checkpoint: {checkpoint_error}")
+                    else:
+                        logger.warning("Suppressing emergency checkpoint; last emergency save was at step %d", last_emergency_checkpoint_step)
                     
                     last_progress_time = time.time()
                 
@@ -1775,26 +1792,33 @@ def train_comprehensive(
                     logger.error(f"Training appears to be hanging (no progress for {watchdog_timeout}s)")
                     logger.error(f"Current step: {current_step}, Loss: {running_loss:.4f}")
                     # Force a checkpoint and continue
-                    try:
-                        checkpoint_name = f"emergency_checkpoint_step_{current_step}.pt"
-                        checkpoint_path = Path(checkpoint_dir) / checkpoint_name
-                        save_checkpoint(model, ema, optimizer, scheduler, current_step, checkpoint_path)
-                        logger.info(f"Saved emergency checkpoint: {checkpoint_path}")
-                    except Exception as checkpoint_error:
-                        logger.error(f"Failed to save emergency checkpoint: {checkpoint_error}")
+                    if current_step - last_emergency_checkpoint_step >= 100:
+                        try:
+                            checkpoint_name = f"emergency_checkpoint_step_{current_step}.pt"
+                            checkpoint_path = Path(checkpoint_dir) / checkpoint_name
+                            save_checkpoint(model, ema, optimizer, scheduler, current_step, checkpoint_path)
+                            last_emergency_checkpoint_step = current_step
+                            logger.info(f"Saved emergency checkpoint: {checkpoint_path}")
+                        except Exception as checkpoint_error:
+                            logger.error(f"Failed to save emergency checkpoint: {checkpoint_error}")
+                    else:
+                        logger.warning("Suppressing emergency checkpoint; last emergency save was at step %d", last_emergency_checkpoint_step)
                     last_progress_time = time.time()
             
             pbar.update(1)
             current_step += 1
             
             if current_step % 10 == 0:
-                writer.add_scalar('Loss/total', running_loss, current_step)
-                writer.add_scalar('Loss/policy', running_policy_loss, current_step)
-                writer.add_scalar('Loss/value', running_value_loss, current_step)
-                writer.add_scalar('Loss/ssl', running_ssl_loss, current_step)
-                writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], current_step)
-                if cfg.model().get('wdl', False) and float(tr_cfg.get('wdl_weight', 0.0)) > 0.0:
-                    writer.add_scalar('Loss/wdl', running_wdl_loss, current_step)
+                try:
+                    writer.add_scalar('Loss/total', running_loss, current_step)
+                    writer.add_scalar('Loss/policy', running_policy_loss, current_step)
+                    writer.add_scalar('Loss/value', running_value_loss, current_step)
+                    writer.add_scalar('Loss/ssl', running_ssl_loss, current_step)
+                    writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], current_step)
+                    if cfg.model().get('wdl', False) and float(tr_cfg.get('wdl_weight', 0.0)) > 0.0:
+                        writer.add_scalar('Loss/wdl', running_wdl_loss, current_step)
+                except OSError as writer_error:
+                    logger.warning("TensorBoard write failed; continuing without scalar write: %s", writer_error)
             
             if current_step % 100 == 0:
                 elapsed_time = time.time() - start_time
@@ -1919,7 +1943,10 @@ def train_comprehensive(
         except Exception:
             pass
 
-        writer.close()
+        try:
+            writer.close()
+        except OSError as writer_error:
+            logger.warning("TensorBoard close failed: %s", writer_error)
 
 def save_checkpoint(model, ema, optimizer, scheduler, step, path):
     """Save a training checkpoint with robust error handling."""

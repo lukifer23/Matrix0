@@ -10,6 +10,7 @@ from azchess.training.train import (
     POLICY_SHAPE,
     apply_policy_mask,
     apply_trainable_scope,
+    select_checkpoint_model_state,
     legal_policy_ce_loss,
     legal_policy_mass_loss,
     train_step,
@@ -340,3 +341,16 @@ def test_train_step_skips_backward_for_noop_source_filtered_batch():
     assert policy_loss == 0.0
     assert value_loss == 0.0
     assert model.value_fc1.weight.grad is None
+
+
+def test_checkpoint_state_selection_prefers_ema_once():
+    state = {
+        "model": {"weight": torch.tensor([1.0])},
+        "model_ema": {"weight": torch.tensor([2.0])},
+        "model_state_dict": {"weight": torch.tensor([3.0])},
+    }
+
+    key, selected = select_checkpoint_model_state(state)
+
+    assert key == "model_ema"
+    assert selected["weight"].item() == 2.0
