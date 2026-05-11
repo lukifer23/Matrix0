@@ -83,6 +83,25 @@ def test_summarize_npz_shards_reports_policy_legal_and_ssl(tmp_path):
     assert np.isclose(metrics["source_metrics"]["capped"]["policy_top_prob"]["mean"], 0.7)
 
 
+def test_copy_anchor_shards_accepts_direct_npz_directory(tmp_path):
+    source = tmp_path / "teacher_scenario"
+    source.mkdir()
+    np.savez_compressed(
+        source / "teacher.npz",
+        s=np.zeros((2, 19, 8, 8), dtype=np.float32),
+        pi=np.full((2, 4672), 1.0 / 4672.0, dtype=np.float32),
+        z=np.zeros((2,), dtype=np.float32),
+        value_weight=np.ones((2,), dtype=np.float32),
+        meta_result_source=np.array(["teacher:test"]),
+    )
+    run_data = tmp_path / "run" / "data"
+
+    info = copy_anchor_shards([str(source)], run_data)
+
+    assert info["copied_files"] == 1
+    assert len(list((run_data / "replays").glob("*.npz"))) == 1
+
+
 def test_evaluate_checkpoint_reports_batch_metrics(tmp_path):
     cfg = Config({"model": _tiny_model_cfg()})
     dm = DataManager(base_dir=str(tmp_path))

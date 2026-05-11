@@ -55,6 +55,7 @@ def _npz_files(data_dir: Path) -> List[Path]:
         files.extend(sorted(root.glob("*.npz")))
     files.extend(sorted((data_dir / "teacher_games").rglob("*.npz")))
     files.extend(sorted((data_dir / "stockfish_games").rglob("*.npz")))
+    files.extend(sorted(data_dir.glob("*.npz")))
     return files
 
 
