@@ -144,6 +144,18 @@ def _archive_existing(path: Path, archive_dir: Path) -> str | None:
     return str(archived)
 
 
+def _prune_generated_artifacts(path: Path) -> dict[str, Any]:
+    patterns = ("*.pt", "events.out.tfevents*")
+    removed: list[str] = []
+    for pattern in patterns:
+        for artifact in sorted(path.rglob(pattern)):
+            if not artifact.is_file():
+                continue
+            removed.append(str(artifact))
+            artifact.unlink()
+    return {"files": removed, "count": len(removed)}
+
+
 def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any]:
     base_run_dir = Path(args.base_run_dir)
     base_run_dir.mkdir(parents=True, exist_ok=True)
@@ -206,11 +218,23 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
             _clone_or_copy2(candidate, best_checkpoint)
             current_parent = best_checkpoint
             promotion["promoted_checkpoint"] = str(best_checkpoint)
-        elif bool(args.stop_on_reject):
-            cycle_reports.append({"report": str(report_path), "promotion": promotion, "stdout_tail": proc.stdout[-4000:]})
+        prune: dict[str, Any] | None = None
+        if bool(args.prune_cycle_checkpoints):
+            prune = _prune_generated_artifacts(cycle_run_dir)
+
+        cycle_record = {
+            "report": str(report_path),
+            "promotion": promotion,
+            "stdout_tail": proc.stdout[-4000:],
+        }
+        if prune is not None:
+            cycle_record["pruned_artifacts"] = prune
+
+        if not gate["promote"] and bool(args.stop_on_reject):
+            cycle_reports.append(cycle_record)
             break
 
-        cycle_reports.append({"report": str(report_path), "promotion": promotion, "stdout_tail": proc.stdout[-4000:]})
+        cycle_reports.append(cycle_record)
 
     summary = {
         "type": "matrix0_local_loop_cycles",
@@ -238,6 +262,11 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     parser.add_argument("--seed-best-checkpoint", action="store_true", help="Copy the initial checkpoint to --best-checkpoint if missing.")
     parser.add_argument("--stop-on-reject", action="store_true", help="Stop immediately after the first rejected cycle.")
+    parser.add_argument(
+        "--prune-cycle-checkpoints",
+        action="store_true",
+        help="After each cycle, delete generated checkpoint/event files under that cycle run directory.",
+    )
     parser.add_argument("--max-value-mse-delta", type=float, default=-1.0e-12, help="Largest allowed value MSE delta; default requires a strict improvement.")
     parser.add_argument("--max-policy-ce-delta", type=float, default=0.001)
     parser.add_argument("--max-policy-legal-ce-delta", type=float, default=1.0e-5)

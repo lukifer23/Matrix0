@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from azchess.tools.local_loop_cycle import _replace_placeholders, evaluate_cycle_promotion
+from azchess.tools.local_loop_cycle import _prune_generated_artifacts, _replace_placeholders, evaluate_cycle_promotion
 
 
 def test_cycle_promotion_rejects_policy_drift():
@@ -129,3 +129,21 @@ def test_replace_placeholders():
         "cycle_0003",
         "logs/cycles/cycle_0003/x",
     ]
+
+
+def test_prune_generated_artifacts_removes_checkpoints_and_events(tmp_path):
+    keep = tmp_path / "local_loop_report.json"
+    checkpoint = tmp_path / "checkpoints" / "local_loop_selected.pt"
+    event = tmp_path / "logs" / "events.out.tfevents.fake"
+    keep.write_text("{}")
+    checkpoint.parent.mkdir()
+    checkpoint.write_text("checkpoint")
+    event.parent.mkdir()
+    event.write_text("event")
+
+    result = _prune_generated_artifacts(tmp_path)
+
+    assert result["count"] == 2
+    assert keep.exists()
+    assert not checkpoint.exists()
+    assert not event.exists()
