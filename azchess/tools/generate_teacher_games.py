@@ -249,7 +249,7 @@ def run(cfg: TeacherConfig):
     conf = Config.load("config.yaml")
     model_cfg = conf.model()
     policy_size = int(model_cfg.get('policy_size', 4672))
-    device = select_device(conf)
+    device = select_device(conf.get("device", "auto"))
 
     # Load model
     model = PolicyValueNet.from_config(model_cfg)
@@ -377,7 +377,9 @@ def run(cfg: TeacherConfig):
                     's': s, 'pi': pi, 'z': z, 'legal_mask': lm,
                     'value_weight': value_weight,
                     'meta': meta,
-                    'meta_keys': np.array(['entropy','cp_before','cp_best','cp_after','cp_swing','topk_hit'])
+                    'meta_keys': np.array(['entropy','cp_before','cp_best','cp_after','cp_swing','topk_hit']),
+                    'meta_result_source': np.array([f"teacher:{cfg.scenario}"]),
+                    'meta_value_weight': np.array([1.0], dtype=np.float32),
                 }
                 save_dict.update(ssl_data)
 

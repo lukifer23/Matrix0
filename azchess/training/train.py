@@ -142,8 +142,8 @@ def _source_filter_mask(sources, include_sources: Optional[list[str]], exclude_s
     for name in names:
         allowed = True
         if include:
-            allowed = name in include
-        if name in exclude:
+            allowed = any(name.startswith(prefix) for prefix in include)
+        if any(name.startswith(prefix) for prefix in exclude):
             allowed = False
         keep.append(allowed)
     return torch.as_tensor(keep, dtype=torch.bool)

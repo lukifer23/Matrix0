@@ -164,3 +164,33 @@ def test_train_step_can_exclude_result_sources_from_value_loss():
 
     assert unfiltered_value_loss > 40.0
     assert filtered_value_loss == 0.0
+
+
+def test_train_step_source_filters_match_prefixes():
+    model = SourceFilterModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.array([0.0, 10.0], dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["teacher:bootstrap_007", "capped"]),
+    }
+
+    _, _, value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        value_include_sources=["teacher:"],
+    )
+
+    assert value_loss == 0.0
