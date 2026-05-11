@@ -479,6 +479,31 @@ def _sample_eval_batch(data_dir: Path, batch_size: int, source_prefixes: Optiona
     return _sample_training_batch(data_dir, batch_size=batch_size)
 
 
+def _sample_eval_batches(
+    data_dir: Path,
+    *,
+    batch_size: int,
+    batches: int,
+    source_prefixes: Optional[List[str]] = None,
+    seed: Optional[int] = None,
+) -> List[Dict[str, np.ndarray]]:
+    if seed is None:
+        return [
+            _sample_eval_batch(data_dir, batch_size=batch_size, source_prefixes=source_prefixes)
+            for _ in range(max(1, int(batches)))
+        ]
+
+    state = np.random.get_state()
+    try:
+        np.random.seed(int(seed))
+        return [
+            _sample_eval_batch(data_dir, batch_size=batch_size, source_prefixes=source_prefixes)
+            for _ in range(max(1, int(batches)))
+        ]
+    finally:
+        np.random.set_state(state)
+
+
 def _summarize_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not records:
         raise ValueError("No metric records to summarize")
@@ -966,10 +991,14 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
     eval_data_dir = Path(args.eval_data_dir) if args.eval_data_dir else run_dir / "data"
     eval_prefixes = args.eval_source_prefix if args.eval_source_prefix else None
     eval_batch_size = min(args.eval_batch_size, args.batch_size)
-    eval_batches = [
-        _sample_eval_batch(eval_data_dir, batch_size=eval_batch_size, source_prefixes=eval_prefixes)
-        for _ in range(max(1, int(args.eval_batches)))
-    ]
+    eval_seed = getattr(args, "eval_seed", None)
+    eval_batches = _sample_eval_batches(
+        eval_data_dir,
+        batch_size=eval_batch_size,
+        batches=int(args.eval_batches),
+        source_prefixes=eval_prefixes,
+        seed=None if eval_seed is None else int(eval_seed),
+    )
     eval_before = evaluate_checkpoint_batches(
         initial_ckpt,
         loop_cfg,
@@ -1181,6 +1210,7 @@ def main() -> None:
     parser.add_argument("--eval-batches", type=int, default=1)
     parser.add_argument("--eval-data-dir", default=None, help="Optional stable data directory for before/after checkpoint eval.")
     parser.add_argument("--eval-source-prefix", action="append", default=[], help="Optional source prefix filter for eval data. Repeatable.")
+    parser.add_argument("--eval-seed", type=int, default=None, help="Optional deterministic seed for held-out eval batch sampling.")
     parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
     parser.add_argument("--eval-select-max-policy-ce-delta", type=float, default=0.001, help="Maximum allowed held-out policy CE regression for selected checkpoints.")

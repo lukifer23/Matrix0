@@ -15,6 +15,7 @@ from azchess.tools.bench_local_loop import (
     _eval_delta,
     _prepare_initial_checkpoint,
     _sample_eval_batch,
+    _sample_eval_batches,
     _selection_passes,
     copy_anchor_shards,
     evaluate_checkpoint_batches,
@@ -283,6 +284,35 @@ def test_sample_eval_batch_can_filter_by_source_prefix(tmp_path):
 
     assert batch["s"].shape[0] == 2
     assert np.all(batch["z"] == 1.0)
+
+
+def test_sample_eval_batches_seed_is_stable_and_restores_rng(tmp_path):
+    dm = DataManager(base_dir=str(tmp_path))
+    for shard_id in range(3):
+        states = np.full((4, 19, 8, 8), float(shard_id), dtype=np.float32)
+        pi = np.zeros((4, 4672), dtype=np.float32)
+        pi[:, shard_id] = 1.0
+        dm.add_training_data(
+            {
+                "s": states,
+                "pi": pi,
+                "z": np.full((4,), float(shard_id), dtype=np.float32),
+            },
+            shard_id=shard_id,
+            source="stockfish:holdout",
+        )
+    np.random.seed(99)
+    before = np.random.random()
+
+    first = _sample_eval_batches(tmp_path, batch_size=2, batches=2, seed=123)
+    after_seeded = np.random.random()
+    np.random.seed(99)
+    assert before == np.random.random()
+    assert after_seeded == np.random.random()
+
+    second = _sample_eval_batches(tmp_path, batch_size=2, batches=2, seed=123)
+
+    assert [batch["z"].tolist() for batch in first] == [batch["z"].tolist() for batch in second]
 
 
 def test_eval_delta_and_selection_policy_limits():
