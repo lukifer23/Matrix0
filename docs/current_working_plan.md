@@ -263,7 +263,24 @@ Recent accepted fresh-loop promotions:
 - `bootstrap_007_fresh8_len240_guard_cycle3_s60_lr5e8`: aggregate `value_mse -6.22e-7`, capped `-1.88e-6`, tablebase `+1.33e-7`, terminal `+4.79e-7`, fresh capped fraction `0.75`
 - `bootstrap_007_fresh12_len240_guard_cycle4_s60_lr3e8`: aggregate `value_mse -3.88e-7`, capped `-1.49e-6`, tablebase `+1.20e-7`, terminal `+1.22e-7`, fresh capped fraction `0.583`
 
-If the current run rejects or only barely clears the gate, stop the bootstrap phase and run a broader validation before starting unattended cycles.
+Latest rejected run:
+
+- `bootstrap_007_fresh12_len240_guard_cycle5_s60_lr3e8`: rejected because aggregate `value_mse -1.90e-7` did not clear the `-3e-7` gate; source guards stayed clean with capped `+2.79e-10`, tablebase `-3.47e-7`, terminal `+3.75e-7`, and fresh capped fraction `0.50`
+
+Terminal repair scouts:
+
+- `bootstrap_007_terminal_tablebase_repair_s40_lr2e8`: do not promote. Aggregate improved only `value_mse -1.61e-7`, while the selected chunk still regressed terminal by `+1.56e-7`.
+- `bootstrap_007_terminal_value_head_s30_lr1e8`: do not promote. Value-head-only terminal training produced real gradients, but every candidate regressed terminal value MSE; selection correctly fell back to the unchanged initial checkpoint with `eval_delta.value_mse 0.0`.
+
+Full-dataset broad validation against `checkpoints/bootstrap_007_tb_terminal_capped_best.pt`:
+
+- all sources: aggregate `value_mse -3.34e-6`
+- capped: `value_mse -1.11e-5`
+- tablebase: `value_mse +4.83e-7`, inside the `+5e-7` source guard but close
+- terminal: `value_mse +6.42e-7`, outside the `+5e-7` source guard
+- draw-adjudication: `value_mse +3.41e-7`
+
+The current guarded recipe is saturated. Stop the bootstrap phase here. The fresh-anchor checkpoint is useful on aggregate, but it is not clean enough for unattended self-play because terminal regresses over the source guard and direct terminal repair did not find a clean improving candidate. The next high-value path is to add better supervision/instrumentation before resuming looped self-play, starting with a moves-left auxiliary target/head scout.
 
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 

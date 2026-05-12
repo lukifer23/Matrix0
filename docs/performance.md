@@ -83,6 +83,17 @@ python -m azchess.tools.eval_checkpoints \
   --output logs/checkpoint_eval.json
 ```
 
+For NPZ replay data keyed by `meta_result_source`, use `--result-source` rather than `--source-prefix`:
+
+```bash
+python -m azchess.tools.eval_checkpoints \
+  --model-a checkpoints/candidate.pt \
+  --model-b checkpoints/best.pt \
+  --data-dir logs/local_loop/bootstrap_003_capped_value_48g/data \
+  --result-source tablebase \
+  --output logs/checkpoint_eval_tablebase.json
+```
+
 ## WebUI Linkage
 
 The WebUI tracks CLI runs via lightweight JSONL events written by the orchestrator to `logs/webui.jsonl`:

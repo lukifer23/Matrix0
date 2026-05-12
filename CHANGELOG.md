@@ -9,6 +9,7 @@
 - Made `--selection-jitter 0.0` exact in MCTS selection. The search no longer adds hidden random tie-breaking jitter during clean no-jitter ablations.
 - Prevented excluded fresh self-play shards from remaining train-visible through stale metadata after `--train-fresh-max-files`.
 - Made `ssl_weight=0.0` a true no-SSL training ablation by skipping SSL target creation and SSL forward compute.
+- Added result-source filtering and full-dataset mode to `azchess.tools.eval_checkpoints` so broad validation can compare `tablebase`, `terminal`, `capped`, and other `meta_result_source` slices directly without repeated-sampling noise.
 
 ### Added
 - Added `--policy-target-temperature` for target-only MCTS policy label sharpening during low-simulation self-play. This does not affect move sampling.
@@ -28,6 +29,8 @@
 - Updated the current working plan, local-loop knob guide, status docs, and README status pointer to reflect the active generator-quality blocker and promotion gate.
 - Documented the May 11 ptt050 value-reweighting experiment and the decision to move next toward source-aware policy/value objective filtering.
 - Documented the May 12 `bootstrap_007_fresh_anchor_best.pt` guarded fresh self-play workflow, including source guards, capped-fraction limits, checkpoint pruning, and teacher-data caution.
+- Documented the May 12 broad-validation result and failed terminal-repair scouts; the guarded fresh recipe is now treated as saturated rather than ready for unattended looped self-play.
+- Added LC0-inspired adoption notes covering moves-left, WDL, draw calibration, search presets, backend boundaries, and ideas to defer.
 
 ## v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates (September 2025)
 

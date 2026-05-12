@@ -7,6 +7,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - [Development Roadmap](roadmap.md)
 - [Configuration Guide](configuration.md)
 - [Local Loop Knob Guide](local_loop_knobs.md)
+- [Leela Adoption Opportunities](leela_adoption_opportunities.md)
 - [Web UI Guide](webui.md)
 - [Model V2 Design](model_v2.md)
 - [External Engine Integration](EXTERNAL_ENGINES.md)

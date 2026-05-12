@@ -8,6 +8,7 @@ from pathlib import Path
 from azchess.config import Config, select_device
 from azchess.tools.bench_local_loop import (
     _delta_source_metrics,
+    _full_npz_eval_batches,
     _sample_eval_batch,
     evaluate_checkpoint_batches,
     summarize_npz_shards,
@@ -24,6 +25,17 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--batches", type=int, default=1)
     parser.add_argument("--source-prefix", action="append", default=[])
+    parser.add_argument(
+        "--result-source",
+        action="append",
+        default=[],
+        help="Only sample NPZ shards whose meta_result_source has this prefix. Repeatable.",
+    )
+    parser.add_argument(
+        "--full-dataset",
+        action="store_true",
+        help="Evaluate every NPZ sample matching --result-source instead of sampled batches.",
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -31,10 +43,23 @@ def main() -> None:
     device = select_device(args.device if args.device else cfg.get("device", "auto"))
     data_dir = Path(args.data_dir)
     source_prefixes = args.source_prefix if args.source_prefix else None
-    fixed_batches = [
-        _sample_eval_batch(data_dir, batch_size=args.batch_size, source_prefixes=source_prefixes)
-        for _ in range(max(1, int(args.batches)))
-    ]
+    result_source_prefixes = args.result_source if args.result_source else None
+    if args.full_dataset:
+        fixed_batches = _full_npz_eval_batches(
+            data_dir,
+            batch_size=args.batch_size,
+            result_source_prefixes=result_source_prefixes,
+        )
+    else:
+        fixed_batches = [
+            _sample_eval_batch(
+                data_dir,
+                batch_size=args.batch_size,
+                source_prefixes=source_prefixes,
+                result_source_prefixes=result_source_prefixes,
+            )
+            for _ in range(max(1, int(args.batches)))
+        ]
     metrics_a = evaluate_checkpoint_batches(
         Path(args.model_a),
         cfg,
@@ -67,7 +92,9 @@ def main() -> None:
         "device": device,
         "batch_size": int(args.batch_size),
         "batches": int(len(fixed_batches)),
+        "full_dataset": bool(args.full_dataset),
         "source_prefix": source_prefixes,
+        "result_source": result_source_prefixes,
         "data": summarize_npz_shards(data_dir),
         "model_a": metrics_a,
         "model_b": metrics_b,

@@ -396,7 +396,7 @@ As of May 12, 2026, the active loop is:
 --value-include-source resignation
 ```
 
-This is a conservative bridge back toward looped self-play. It is not yet an unattended long run: continue one guarded cycle at a time until the next validation pass shows stable aggregate and source-sliced improvement.
+This was the conservative bridge back toward looped self-play. As of the May 12 broad validation and terminal-repair scouts, treat it as saturated rather than an unattended long-run recipe. Do not continue increasing cycle count or teacher volume until a new stabilizer, such as moves-left auxiliary supervision, has passed source-sliced validation.
 
 ## Evaluation Knobs
 
