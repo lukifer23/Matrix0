@@ -474,6 +474,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
         ssl_weight=0.0,
         policy_label_smoothing=0.0,
         policy_target_temperature=0.5,
+        seed=20260512,
         draw_halfmove_cap=80,
         draw_material_threshold=14,
         draw_min_plies=40,
@@ -488,6 +489,7 @@ def test_write_loop_config_applies_draw_overrides(tmp_path):
     written = Config.load(str(path)).to_dict()
 
     draw = written["selfplay"]["draw"]
+    assert written["seed"] == 20260512
     assert written["selfplay"]["min_resign_plies"] == 90
     assert written["selfplay"]["resign_threshold"] == -0.95
     assert written["selfplay"]["resign_consecutive_bad"] == 3

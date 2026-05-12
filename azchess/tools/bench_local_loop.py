@@ -940,6 +940,8 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
     checkpoint_dir = run_dir / "checkpoints"
     log_dir = run_dir / "logs"
     raw["data_dir"] = str(data_dir)
+    if getattr(args, "seed", None) is not None:
+        raw["seed"] = int(args.seed)
     raw.setdefault("selfplay", {})
     raw["selfplay"].update(
         {
@@ -1424,6 +1426,7 @@ def main() -> None:
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--seed", type=int, default=None, help="Override config.seed for self-play reproducibility/diversity.")
     parser.add_argument("--init-checkpoint", default=None, help="Optional checkpoint to seed self-play/training instead of fresh init.")
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--workers", type=int, default=1)
