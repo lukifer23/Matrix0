@@ -712,11 +712,15 @@ def _summarize_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 total_seconds = sum(float(record.get("seconds", 0.0)) for record in records)
                 summary[key] = float(total_positions / max(total_seconds, 1e-9))
                 summary[f"{key}_std"] = float(np.std(arr))
+            elif key == "value_weight_sum":
+                summary[key] = float(np.sum(arr))
+                summary[f"{key}_std"] = float(np.std(arr))
             elif key in {"batch_size", "seconds"}:
                 summary[key] = float(np.mean(arr))
                 summary[f"{key}_std"] = float(np.std(arr))
             else:
-                weights = np.asarray([float(record.get("batch_size", 1.0)) for record in records], dtype=np.float64)
+                weight_key = "value_weight_sum" if key == "value_weighted_mse" else "batch_size"
+                weights = np.asarray([float(record.get(weight_key, record.get("batch_size", 1.0))) for record in records], dtype=np.float64)
                 weight_sum = float(weights.sum())
                 if weight_sum > 0:
                     mean = float(np.average(arr, weights=weights))
@@ -748,7 +752,12 @@ def _summarize_source_metric_records(records: List[Dict[str, Any]]) -> Dict[str,
             for key, value in metrics.items():
                 if key == "samples" or not isinstance(value, (int, float)):
                     continue
-                weighted[key] = float(weighted.get(key, 0.0) + float(value) * samples)
+                if key == "value_weight_sum":
+                    weighted[key] = float(weighted.get(key, 0.0) + float(value))
+                    continue
+                metric_weight = float(metrics.get("value_weight_sum", samples)) if key == "value_weighted_mse" else float(samples)
+                weighted[key] = float(weighted.get(key, 0.0) + float(value) * metric_weight)
+                weighted[f"{key}__weight"] = float(weighted.get(f"{key}__weight", 0.0) + metric_weight)
 
     summary: Dict[str, Any] = {}
     for source, rec in sorted(by_source.items()):
@@ -757,7 +766,15 @@ def _summarize_source_metric_records(records: List[Dict[str, Any]]) -> Dict[str,
             continue
         source_summary: Dict[str, Any] = {"samples": samples}
         for key, weighted_value in sorted(rec["_weighted"].items()):
-            source_summary[key] = float(weighted_value / samples)
+            if key.endswith("__weight"):
+                continue
+            if key == "value_weight_sum":
+                source_summary[key] = float(weighted_value)
+                continue
+            metric_weight = float(rec["_weighted"].get(f"{key}__weight", samples))
+            if metric_weight <= 0.0:
+                continue
+            source_summary[key] = float(weighted_value / metric_weight)
         summary[source] = source_summary
     return summary
 
@@ -823,6 +840,7 @@ def _evaluate_loaded_model(
             value_weight = np.clip(value_weight, 0.0, None)
             weight_sum = float(np.sum(value_weight))
             rec["value_weight_mean"] = float(np.mean(value_weight))
+            rec["value_weight_sum"] = weight_sum
             if weight_sum > 0.0:
                 rec["value_weighted_mse"] = float(np.sum(value_error_sq * value_weight) / weight_sum)
             else:
@@ -882,6 +900,7 @@ def _evaluate_loaded_model(
                     source_errors = value_error_sq[mask]
                     source_weight_sum = float(np.sum(source_weights))
                     source_rec["value_weight_mean"] = float(np.mean(source_weights))
+                    source_rec["value_weight_sum"] = source_weight_sum
                     if source_weight_sum > 0.0:
                         source_rec["value_weighted_mse"] = float(np.sum(source_errors * source_weights) / source_weight_sum)
                     else:

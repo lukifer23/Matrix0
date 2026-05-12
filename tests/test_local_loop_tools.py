@@ -201,6 +201,18 @@ def test_summarize_metric_records_weights_metric_means_by_batch_size():
     assert np.isclose(metrics["positions_per_second"], 2.0)
 
 
+def test_summarize_metric_records_weights_value_weighted_mse_by_value_weight_sum():
+    metrics = _summarize_metric_records(
+        [
+            {"batch_size": 10, "value_weight_sum": 2.5, "value_weighted_mse": 8.0},
+            {"batch_size": 10, "value_weight_sum": 10.0, "value_weighted_mse": 2.0},
+        ]
+    )
+
+    assert np.isclose(metrics["value_weight_sum"], 12.5)
+    assert np.isclose(metrics["value_weighted_mse"], 3.2)
+
+
 def test_evaluate_checkpoint_batches_reports_source_metrics(tmp_path):
     cfg = Config({"model": _tiny_model_cfg()})
     states = np.zeros((4, 19, 8, 8), dtype=np.float32)
@@ -263,6 +275,7 @@ def test_evaluate_checkpoint_batches_reports_value_weighted_mse(tmp_path):
     before = metrics["value_mse"]
     weighted = metrics["value_weighted_mse"]
     assert "value_weight_mean" in metrics
+    assert "value_weight_sum" in metrics
     assert weighted != before
     assert "value_weighted_mse" in metrics["source_metrics"]["capped"]
 
