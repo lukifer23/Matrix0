@@ -2,8 +2,8 @@
 
 ## Executive Summary
 
-**Date**: May 11, 2026
-**Status**: Local-loop reliability work is active. Production 5-task SSL architecture is operational, but checkpoint promotion is gated on verified self-play label quality, legal-policy metrics, value stability, and candidate generator quality.
+**Date**: May 12, 2026
+**Status**: Guarded fresh self-play is active. Production 5-task SSL architecture is operational, and the current mainline checkpoint is improving through small source-guarded local-loop promotions.
 **Priority**: HIGH - Reliable self-play/training signal before further model promotion
 
 ## Current Development Priorities
@@ -13,13 +13,13 @@
    - **Benefit**: Prevents promotion of checkpoints that only improve artifact metrics or generate weaker self-play data
    - **Corresponding files/modules**: `azchess/mcts.py`, `azchess/selfplay/internal.py`, `azchess/tools/bench_local_loop.py`, `azchess/training/train.py`
    - **Status**: Active
-     - Current parent remains `checkpoints/bootstrap_006_capped_value.pt`
-     - `bootstrap_006_anchor_only_nossl_s600` is not promoted; its 64-game generator check produced `64/64` capped games and weak policy labels
-     - Tablebase probing is configured and working; capped candidate games are not reaching low enough material for Syzygy to decide them
-     - `bootstrap_006_anchor_only_nossl_candidate_generator_32g_ptt050_hbfix` confirmed target-only policy sharpening works, but outcome mix stayed weak (`31` capped, `1` terminal)
-     - `bootstrap_006_ptt050_vw0_anchor_retrain_s600` is not promoted; legal-policy CE and value MSE regressed on stable heldout data
-     - Source-aware value filtering is now implemented so capped self-play can train policy while terminal/tablebase/draw/resignation sources train value
-     - Promotion decisions now require a promotion-gate verdict with heldout eval, generator quality, and candidate-vs-parent match evidence
+     - Current parent is `checkpoints/bootstrap_007_fresh_anchor_best.pt`
+     - `bootstrap_006_anchor_only_nossl_s600`, ptt050, and broad reweighting runs remain historical diagnostics, not promotion parents
+     - `bootstrap_007` established a safer path: tablebase/terminal/capped anchor integration, then guarded fresh self-play with source-sliced heldout eval
+     - Current guarded fresh runs use `games=12`, `sims=50`, `max-game-len=240`, `train-steps=60`, LR `3e-8`, capped value weight `0.25`, parent policy distillation, and no direct policy CE
+     - Promotion requires aggregate heldout value improvement, per-source value regression no worse than `+5e-7`, policy drift inside bounds, and fresh capped fraction below the configured cap
+     - `--prune-cycle-checkpoints` is used by default for cycle runs; promotion archives are pruned after confirming the best checkpoint exists
+     - Teacher data under `data/teacher_games/bootstrap_007_teacher_parent/` is experimental and should not be scaled until the fresh self-play loop passes broader validation
 
 ### 2. Search/Data Diagnostics 🔎
    - **Priority**: High
@@ -31,6 +31,7 @@
      - Batched MCTS virtual loss now applies in the actual leaf-collection path, reducing repeated same-edge collection before batched inference
      - `azchess.tools.reweight_npz_values` can create policy-only copies of existing self-play shards by zeroing capped/unfinished value weights
      - `azchess.tools.promotion_gate` rejects candidates that pass artifact metrics but fail legal-policy/value/generator/match gates
+     - `azchess.tools.local_loop_cycle` now supports source value guards, fresh capped-fraction gates, copy-on-write checkpoint aliases, and pruning of generated checkpoint artifacts
 
 ### 3. SSL Performance Validation 📊
    - **Priority**: Medium

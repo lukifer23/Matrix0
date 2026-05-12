@@ -1,6 +1,6 @@
 # Current Working Plan
 
-Last updated: 2026-05-11
+Last updated: 2026-05-12
 
 This is the living document for the active Matrix0 training/debugging loop. Keep it short, factual, and current. Historical project status belongs in `status.md` and `CURRENT_STATUS_SUMMARY.md`; this page tracks the immediate problem, current best checkpoint, active hypotheses, and promotion criteria.
 
@@ -21,10 +21,10 @@ The current focus is not raw throughput. The priority is a trustworthy loop:
 Use this as the parent until a candidate beats it on stable heldout metrics and generator quality:
 
 ```text
-checkpoints/bootstrap_006_capped_value.pt
+checkpoints/bootstrap_007_fresh_anchor_best.pt
 ```
 
-Do not promote candidates from runs that are mostly capped, mostly early draw-adjudicated, only improve raw unmasked policy metrics while regressing legal policy/value, or generate weaker self-play labels than the parent.
+This checkpoint is the current mainline parent after the `bootstrap_007` tablebase, terminal, capped-anchor, and guarded fresh self-play sequence. Promote only through the source-guarded local-loop cycle path described below. Do not promote candidates from runs that are mostly capped, mostly early draw-adjudicated, only improve raw unmasked policy metrics while regressing legal policy/value, or generate weaker self-play labels than the parent.
 
 ## What We Fixed Recently
 
@@ -56,6 +56,9 @@ The local-loop path now fails hard instead of silently producing bad data:
 - training now supports source-aware value-loss filtering via `--value-include-source` and `--value-exclude-source`
 - training now supports source-aware policy-loss filtering via `--policy-include-source` and `--policy-exclude-source`
 - `azchess.tools.promotion_gate` now turns eval, generator, and match reports into an explicit promote/reject verdict
+- `azchess.tools.bench_local_loop` now supports source-aware eval selection through `--eval-select-max-source-value-mse-delta`
+- `azchess.tools.local_loop_cycle` now gates promotion on per-source heldout value deltas, fresh capped fraction, and optional checkpoint-artifact pruning
+- cycle runs now use copy-on-write checkpoint aliases and `--prune-cycle-checkpoints` to avoid filling the repo with rejected `.pt` files
 
 ## Current Findings
 
@@ -227,7 +230,7 @@ Acceptance:
 - value MSE does not regress materially
 - candidate generator check does not worsen outcome mix or label quality
 
-Current status: the ptt050 policy-only reweight experiment failed this acceptance test. Next policy/value separation work should use source-aware filtering rather than broad anchor copying: train policy from fresh self-play, train value only from terminal/tablebase/draw-adjudication sources, and keep capped data out of value loss unless there is a stronger adjudication signal.
+Current status: the ptt050 policy-only reweight experiment failed this acceptance test. The follow-up `bootstrap_007` sequence established the current safer recipe: train with stable tablebase/terminal/capped anchors, keep policy loss disabled except for parent policy distillation, allow capped value targets only at low weight, and promote only if aggregate heldout value improves while tablebase, terminal, and capped source slices stay inside the source guard.
 
 ### H3: Outcome Mix Needs Search/Termination Work
 
@@ -242,13 +245,27 @@ If the fixed-jitter plus virtual-loss generator remains mostly capped, the next 
 
 ## Current Next Step
 
-Do not run another 600-step retrain on the same ptt050 data without source-aware objective filtering and a promotion gate. The required path is now implemented:
+Continue the guarded fresh self-play loop from `checkpoints/bootstrap_007_fresh_anchor_best.pt` while gains remain clean. The current accepted recipe is:
 
-- keep capped shards usable for policy targets
-- include only terminal/tablebase/draw-adjudication/resignation sources in value loss for promotion-oriented runs
-- exclude `teacher:` from policy loss if teacher positions improve value but regress heldout legal ranking
-- run `promotion_gate` after eval/generator/match reports
-- reject candidates without a match report unless explicitly using diagnostic mode
+- generate small fresh batches (`8` to `12` games) at `50` sims and `max-game-len 240`
+- train for `60` steps with LR `3e-8` to `5e-8`
+- use `logs/local_loop/bootstrap_003_capped_value_48g/data` as stable anchor and heldout eval data
+- evaluate the full heldout anchor set for `tablebase`, `terminal`, and `capped`
+- require `--max-source-value-mse-delta 0.0000005`
+- require `--max-fresh-capped-fraction` between `0.67` and `0.75`
+- use `--policy-include-source __none__` and parent policy distillation to keep policy stable
+- use `--prune-cycle-checkpoints` and prune promotion archives after the run
+
+Recent accepted fresh-loop promotions:
+
+- `bootstrap_007_fresh8_len240_guard_cycle_s60_lr5e8`: aggregate `value_mse -7.71e-7`, capped `-2.52e-6`, tablebase `+3.76e-7`, terminal `+3.83e-7`, fresh capped fraction `0.625`
+- `bootstrap_007_fresh8_len240_guard_cycle2_s60_lr5e8`: aggregate `value_mse -8.46e-7`, capped `-1.89e-6`, tablebase `-4.97e-7`, terminal `+7.63e-8`, fresh capped fraction `0.375`
+- `bootstrap_007_fresh8_len240_guard_cycle3_s60_lr5e8`: aggregate `value_mse -6.22e-7`, capped `-1.88e-6`, tablebase `+1.33e-7`, terminal `+4.79e-7`, fresh capped fraction `0.75`
+- `bootstrap_007_fresh12_len240_guard_cycle4_s60_lr3e8`: aggregate `value_mse -3.88e-7`, capped `-1.49e-6`, tablebase `+1.20e-7`, terminal `+1.22e-7`, fresh capped fraction `0.583`
+
+If the current run rejects or only barely clears the gate, stop the bootstrap phase and run a broader validation before starting unattended cycles.
+
+Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 
 Source-aware value filtering example:
 
@@ -274,11 +291,12 @@ Promotion gate diagnostic example:
 Promote only after all of these are true:
 
 - generator data has acceptable outcome mix, or the training recipe explicitly compensates with anchor data
-- legal policy metrics improve on stable heldout data
-- value MSE does not regress materially on heldout data
+- policy drift stays inside the configured heldout CE bounds
+- aggregate value MSE improves on stable heldout data
+- tablebase, terminal, capped, and any other active source slices stay inside the configured source guard
 - post-training generator check does not degrade game outcomes or label quality
 - no strict-mode data/checkpoint failures occurred
-- candidate checkpoint beats the current parent as both evaluator and generator
+- candidate checkpoint beats the current parent as both evaluator and generator before any long unattended loop; short bootstrap cycles may use the source-guarded `local_loop_cycle` gate as the promotion gate
 
 ## Useful Reports
 

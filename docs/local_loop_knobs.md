@@ -12,7 +12,13 @@ Use the local loop to answer one narrow question at a time:
 - did training improve heldout metrics?
 - did a candidate generate better games than its parent?
 
-Do not use a full training cycle until the generator-only run passes basic data-quality checks.
+Do not use a full training cycle until the generator-only run passes basic data-quality checks. The current `bootstrap_007` path is a guarded fresh self-play loop: small fresh batches, stable anchor data, full heldout source-sliced eval, parent policy distillation, and promotion only when aggregate value improves without source-slice regression.
+
+Current mainline parent:
+
+```text
+checkpoints/bootstrap_007_fresh_anchor_best.pt
+```
 
 ## Generator Quality Metrics
 
@@ -37,6 +43,8 @@ Current rough targets:
 - low draw adjudication unless a draw-specific run is intentional
 - enough tablebase/terminal data for value learning, or explicit anchor data
 - capped games whose final-position metadata explains why they capped
+- fresh capped fraction below the active gate, currently `0.67` to `0.75`
+- heldout source value deltas no worse than `+5e-7` for `tablebase`, `terminal`, and `capped`
 
 ## Search Knobs
 
@@ -299,6 +307,96 @@ Example:
 --train-fresh-max-files 48
 --train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
 ```
+
+## Guarded Cycle Knobs
+
+### `azchess.tools.local_loop_cycle`
+
+Runs repeated `bench_local_loop` cycles and promotes candidates only if the configured gate passes. Current fresh-loop runs use one cycle at a time while the gains are small:
+
+```text
+.venv/bin/python -m azchess.tools.local_loop_cycle \
+  --cycles 1 \
+  --seed-best-checkpoint \
+  --stop-on-reject \
+  --prune-cycle-checkpoints
+```
+
+Use multi-cycle runs only after repeated single-cycle promotions are stable.
+
+### `--max-source-value-mse-delta`
+
+Promotion gate for per-source heldout value regression. The current guard is:
+
+```text
+--max-source-value-mse-delta 0.0000005
+```
+
+This rejects candidates that improve aggregate heldout value by overfitting one source while damaging another. The active heldout sources are:
+
+```text
+--eval-result-source tablebase
+--eval-result-source terminal
+--eval-result-source capped
+```
+
+### `--max-fresh-capped-fraction`
+
+Promotion gate on fresh self-play outcome mix. Capped games are still useful at low value weight, but an all-capped fresh batch has been a bad promotion signal. Current settings:
+
+```text
+--max-fresh-capped-fraction 0.67
+```
+
+Use `0.75` only for a scout or when the terminal/tablebase source guards are comfortably clean.
+
+### `--prune-cycle-checkpoints`
+
+Deletes generated cycle checkpoint files and TensorBoard event files after each cycle. Keep this on for local Apple Silicon work; otherwise each rejected or accepted cycle can leave multiple 600MB+ `.pt` files.
+
+Promotion archives are intentionally left for safety and should be pruned manually after confirming the promoted best checkpoint exists:
+
+```bash
+find logs/local_loop/<run>/archives -type f -name '*.pt' -delete
+```
+
+### `--eval-select-max-source-value-mse-delta`
+
+Selection-time source guard inside `bench_local_loop`. This prevents the selected training chunk from being chosen solely by aggregate value improvement when any heldout source slice regresses too much:
+
+```text
+--eval-select-max-source-value-mse-delta 0.0000005
+```
+
+Use this together with the cycle-level `--max-source-value-mse-delta`.
+
+## Current Fresh Self-Play Recipe
+
+As of May 12, 2026, the active loop is:
+
+```text
+--games 12
+--sims 50
+--max-game-len 240
+--train-steps 60
+--eval-select-interval 10
+--lr 3.0e-8
+--warmup-steps 10
+--capped-value-weight 0.25
+--policy-include-source __none__
+--policy-distill-checkpoint {parent}
+--policy-distill-weight 1.0
+--train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
+--train-anchor-source-prefix tablebase
+--train-anchor-source-prefix terminal
+--train-anchor-source-prefix capped
+--value-include-source tablebase
+--value-include-source terminal
+--value-include-source capped
+--value-include-source resignation
+```
+
+This is a conservative bridge back toward looped self-play. It is not yet an unattended long run: continue one guarded cycle at a time until the next validation pass shows stable aggregate and source-sliced improvement.
 
 ## Evaluation Knobs
 

@@ -15,6 +15,8 @@
 - Added `azchess.tools.reweight_npz_values` to copy NPZ data while overriding `value_weight` and `meta_value_weight` for selected result sources such as capped/unfinished games.
 - Added source-aware value-loss filtering through `--value-include-source` and `--value-exclude-source`, allowing capped self-play to train policy while terminal/tablebase/draw/teacher sources train value.
 - Added source-aware policy-loss filtering through `--policy-include-source` and `--policy-exclude-source`, allowing teacher data to train value without steering policy targets.
+- Added source-aware eval selection through `--eval-select-max-source-value-mse-delta`, preventing chunk selection from accepting aggregate value gains that regress a heldout source slice.
+- Added `azchess.tools.local_loop_cycle` for gated repeated local-loop runs with parent checkpoint substitution, best-checkpoint promotion, source value guards, fresh capped-fraction guards, copy-on-write checkpoint aliases, and optional generated-checkpoint pruning.
 - Added `azchess.tools.promotion_gate` to produce an explicit promote/reject verdict from heldout eval, generator quality, and candidate-vs-parent match reports.
 - Added `--legal-policy-weight` for legal-conditioned policy CE over masked logits and legal-renormalized targets.
 - Added final-position self-play metadata: final FEN, piece count, halfmove clock, legal count, and draw-claim availability.
@@ -25,6 +27,7 @@
 ### Documentation
 - Updated the current working plan, local-loop knob guide, status docs, and README status pointer to reflect the active generator-quality blocker and promotion gate.
 - Documented the May 11 ptt050 value-reweighting experiment and the decision to move next toward source-aware policy/value objective filtering.
+- Documented the May 12 `bootstrap_007_fresh_anchor_best.pt` guarded fresh self-play workflow, including source guards, capped-fraction limits, checkpoint pruning, and teacher-data caution.
 
 ## v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates (September 2025)
 
