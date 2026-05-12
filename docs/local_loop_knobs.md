@@ -256,6 +256,19 @@ Alternative:
 
 Use include mode for promotion-oriented runs because it fails closed when new/unknown result sources appear.
 
+### `--value-source-weight`
+
+Source-aware value-loss multipliers. Use this when a source is rare in the training mix but is a hard promotion guard. Matching uses the same result-source prefix style as include/exclude filters.
+
+Current `bootstrap_007` diagnosis: terminal positions are underrepresented in the anchor data, but terminal value MSE is repeatedly the source slice that blocks otherwise improving candidates. Prefer reweighting over duplicating shards:
+
+```bash
+--value-source-weight terminal=2.0 \
+--value-source-weight capped=0.5
+```
+
+Keep `tablebase` at the default `1.0` unless a run shows tablebase becoming the limiting guard. Do not combine high terminal weights with loose source gates; the point is to align training with the existing gate, not bypass it.
+
 ### `--policy-include-source`, `--policy-exclude-source`
 
 Source-aware policy-loss gates. These operate on shard `meta_result_source` values and affect the main policy CE plus legal-policy CE. Legal-mass regularization remains global.

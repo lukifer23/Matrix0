@@ -1051,6 +1051,7 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "legal_policy_weight": float(getattr(args, "legal_policy_weight", 0.0)),
             "value_include_sources": list(getattr(args, "value_include_source", []) or []),
             "value_exclude_sources": list(getattr(args, "value_exclude_source", []) or []),
+            "value_source_weights": list(getattr(args, "value_source_weight", []) or []),
             "policy_include_sources": list(getattr(args, "policy_include_source", []) or []),
             "policy_exclude_sources": list(getattr(args, "policy_exclude_source", []) or []),
             "trainable_scope": str(getattr(args, "trainable_scope", "all") or "all"),
@@ -1139,6 +1140,8 @@ def _build_train_cmd(
         train_cmd.extend(["--value-include-source", str(source)])
     for source in getattr(args, "value_exclude_source", []) or []:
         train_cmd.extend(["--value-exclude-source", str(source)])
+    for source_weight in getattr(args, "value_source_weight", []) or []:
+        train_cmd.extend(["--value-source-weight", str(source_weight)])
     for source in getattr(args, "policy_include_source", []) or []:
         train_cmd.extend(["--policy-include-source", str(source)])
     for source in getattr(args, "policy_exclude_source", []) or []:
@@ -1488,6 +1491,7 @@ def main() -> None:
     parser.add_argument("--legal-policy-weight", type=float, default=0.0, help="Optional extra CE term over logits/targets renormalized to legal moves.")
     parser.add_argument("--value-include-source", action="append", default=[], help="Only these result sources contribute to value loss. Repeatable.")
     parser.add_argument("--value-exclude-source", action="append", default=[], help="Exclude these result sources from value loss. Repeatable.")
+    parser.add_argument("--value-source-weight", action="append", default=[], help="Multiply value loss for result-source prefixes, formatted prefix=weight. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=[], help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=[], help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--trainable-scope", choices=["all", "value_head", "moves_left_head", "value_and_moves_left"], default="all", help="Restrict which model parameters are trainable during training.")

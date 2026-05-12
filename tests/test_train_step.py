@@ -13,6 +13,7 @@ from azchess.training.train import (
     select_checkpoint_model_state,
     legal_policy_ce_loss,
     legal_policy_mass_loss,
+    parse_source_weight_specs,
     policy_distillation_loss,
     train_step,
 )
@@ -287,6 +288,64 @@ def test_train_step_can_exclude_teacher_from_policy_loss_but_keep_value():
     assert filtered_policy_loss > unfiltered_policy_loss
     assert unfiltered_value_loss > 40.0
     assert filtered_value_loss == unfiltered_value_loss
+
+
+def test_train_step_applies_value_source_weights():
+    model = SourceFilterModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.array([1.0, 3.0], dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["capped", "terminal"]),
+    }
+
+    _, _, unweighted_value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+    )
+    optimizer.zero_grad()
+    _, _, weighted_value_loss, *_ = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+        value_source_weights={"terminal": 3.0},
+    )
+
+    assert unweighted_value_loss == 5.0
+    assert weighted_value_loss == 7.0
+
+
+def test_parse_source_weight_specs_validates_input():
+    assert parse_source_weight_specs(["terminal=2", "capped=0.5"]) == {
+        "terminal": 2.0,
+        "capped": 0.5,
+    }
+    with pytest.raises(ValueError):
+        parse_source_weight_specs(["terminal"])
+    with pytest.raises(ValueError):
+        parse_source_weight_specs(["terminal=-1"])
 
 
 def test_value_head_scope_freezes_non_value_params_and_norm_stats():

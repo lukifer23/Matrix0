@@ -287,14 +287,21 @@ Moves-left auxiliary supervision is implemented and usable, but the first guarde
 - `bootstrap_007_moves_left_fresh12_len240_guard_cycle_s40_lr2e8`: rejected by a narrow aggregate gate miss, `value_mse -2.93e-7` vs required `-3e-7`; policy drift, fresh capped fraction, and all source gates passed.
 - `bootstrap_007_moves_left_fresh12_len240_guard_cycle_s60_lr2e8`: rejected with weaker aggregate gain, `value_mse -2.11e-7`; policy drift and source gates still passed, but terminal was close to the source guard at `+4.38e-7`.
 
-Do not continue this exact moves-left run shape as mainline. Keep moves-left available as an auxiliary diagnostic, but return to the last clean non-moves-left guarded recipe for the next probe:
+Do not continue this exact moves-left run shape as mainline. Keep moves-left available as an auxiliary diagnostic.
 
-- `games=12`
-- `max-game-len=240`
-- `train-steps=60`
-- `lr=3e-8`
-- no `--moves-left-weight`
-- same full heldout source-sliced eval, source guards, capped-fraction guard, and parent policy distillation
+Root-cause diagnosis after the seeded fresh run and anchor-only scouts:
+
+- changing the self-play seed changed the fresh data mix, but still rejected, so repeated failures were not only a same-seed artifact
+- anchor-only training can improve aggregate heldout value, proving the parent is not completely plateaued
+- the limiting source is terminal: candidates improve capped/tablebase enough to help aggregate, but terminal is rare in the anchor set and repeatedly approaches or exceeds the source guard
+- training was sample-weighted by source frequency, while promotion is source-sliced; this mismatch lets capped/tablebase gains dominate training even when terminal is the blocker
+
+Next durable fix: use source-aware value-loss multipliers rather than another LR/step tweak. Start with:
+
+- `--value-source-weight terminal=2.0`
+- `--value-source-weight capped=0.5`
+- keep tablebase at default `1.0`
+- preserve the same source guards and parent policy distillation
 
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 

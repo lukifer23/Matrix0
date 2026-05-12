@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -273,6 +273,59 @@ def _source_filter_mask(sources, include_sources: Optional[list[str]], exclude_s
     return torch.as_tensor(keep, dtype=torch.bool)
 
 
+def parse_source_weight_specs(specs: Optional[list[str] | dict[str, float]]) -> Dict[str, float]:
+    """Parse source-prefix weight specs like ["terminal=2.0", "capped=0.5"]."""
+    if not specs:
+        return {}
+    if isinstance(specs, dict):
+        items = specs.items()
+    else:
+        parsed = []
+        for raw in specs:
+            text = str(raw).strip()
+            if not text:
+                continue
+            if "=" not in text:
+                raise ValueError(f"Invalid source weight '{text}'; expected prefix=weight")
+            prefix, weight_text = text.split("=", 1)
+            parsed.append((prefix.strip(), weight_text.strip()))
+        items = parsed
+
+    out: Dict[str, float] = {}
+    for prefix, weight_raw in items:
+        key = str(prefix).strip()
+        if not key:
+            raise ValueError("Source weight prefix cannot be empty")
+        try:
+            weight = float(weight_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid weight for source prefix '{key}': {weight_raw}") from exc
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(f"Source weight for prefix '{key}' must be finite and non-negative")
+        out[key] = weight
+    return out
+
+
+def _source_weight_vector(sources, source_weights: Optional[Dict[str, float]]) -> Optional[torch.Tensor]:
+    if sources is None or not source_weights:
+        return None
+    if torch.is_tensor(sources):
+        raw = sources.detach().cpu().numpy()
+    else:
+        raw = np.asarray(sources)
+    names = [str(x.decode("utf-8") if isinstance(x, bytes) else x) for x in raw.reshape(-1)]
+    weights = []
+    for name in names:
+        weight = 1.0
+        best_len = -1
+        for prefix, candidate in source_weights.items():
+            if name.startswith(prefix) and len(prefix) > best_len:
+                weight = float(candidate)
+                best_len = len(prefix)
+        weights.append(weight)
+    return torch.as_tensor(weights, dtype=torch.float32)
+
+
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
@@ -291,7 +344,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_distill_weight: float = 0.0,
                policy_distill_temperature: float = 1.0,
                moves_left_weight: float = 0.0,
-               moves_left_scale: float = 256.0):
+               moves_left_scale: float = 256.0,
+               value_source_weights: Optional[Dict[str, float]] = None):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -347,6 +401,14 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             )
         value_weight = value_weight.reshape(-1)
         value_weight = value_weight * source_value_mask.to(dtype=value_weight.dtype)
+    source_value_weights = _source_weight_vector(result_source_np, value_source_weights)
+    if source_value_weights is not None:
+        if source_value_weights.numel() != value_weight.reshape(-1).numel():
+            raise ValueError(
+                f"result_source length {source_value_weights.numel()} does not match value_weight length {value_weight.reshape(-1).numel()}"
+            )
+        value_weight = value_weight.reshape(-1)
+        value_weight = value_weight * source_value_weights.to(dtype=value_weight.dtype)
     source_policy_mask = _source_filter_mask(result_source_np, policy_include_sources, policy_exclude_sources)
     if source_policy_mask is not None and source_policy_mask.numel() != pi.shape[0]:
         raise ValueError(
@@ -812,7 +874,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             z = z.to(dtype=v.dtype)
         if value_weight.dtype != v.dtype:
             value_weight = value_weight.to(dtype=v.dtype)
-        value_weight = value_weight.reshape_as(z).clamp(0.0, 1.0)
+        value_weight = value_weight.reshape_as(z).clamp_min(0.0)
         if torch.isnan(v).any() or torch.isinf(v).any():
             total_bad = int(torch.isnan(v).sum().item() + torch.isinf(v).sum().item())
             raise RuntimeError(f"Value output contains NaN/Inf: total={total_bad}")
@@ -1127,6 +1189,7 @@ def train_comprehensive(
     prefetch_factor: Optional[int] = None,
     value_include_sources: Optional[list[str]] = None,
     value_exclude_sources: Optional[list[str]] = None,
+    value_source_weights: Optional[list[str] | dict[str, float]] = None,
     policy_include_sources: Optional[list[str]] = None,
     policy_exclude_sources: Optional[list[str]] = None,
     trainable_scope: str = "all",
@@ -1438,6 +1501,12 @@ def train_comprehensive(
             cfg_value_include_sources or None,
             cfg_value_exclude_sources or None,
         )
+    cfg_value_source_weights = value_source_weights
+    if cfg_value_source_weights is None:
+        cfg_value_source_weights = tr_cfg.get("value_source_weights", None)
+    cfg_value_source_weights = parse_source_weight_specs(cfg_value_source_weights)
+    if cfg_value_source_weights:
+        logger.info("Source-aware value weights: %s", cfg_value_source_weights)
     cfg_policy_include_sources = policy_include_sources
     if cfg_policy_include_sources is None:
         cfg_policy_include_sources = tr_cfg.get("policy_include_sources", None)
@@ -1675,6 +1744,7 @@ def train_comprehensive(
                 legal_policy_weight=float(tr_cfg.get('legal_policy_weight', 0.0)),
                 value_include_sources=cfg_value_include_sources,
                 value_exclude_sources=cfg_value_exclude_sources,
+                value_source_weights=cfg_value_source_weights,
                 policy_include_sources=cfg_policy_include_sources,
                 policy_exclude_sources=cfg_policy_exclude_sources,
                 policy_distill_model=policy_distill_model,
@@ -2170,6 +2240,7 @@ def main():
     parser.add_argument("--prefetch-factor", type=int, default=None, help="DataLoader prefetch factor")
     parser.add_argument("--value-include-source", action="append", default=None, help="Only these result sources contribute to value loss. Repeatable.")
     parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
+    parser.add_argument("--value-source-weight", action="append", default=None, help="Multiply value loss for result-source prefixes, formatted prefix=weight. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=None, help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=None, help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--trainable-scope", choices=["all", "value_head", "moves_left_head", "value_and_moves_left"], default="all", help="Restrict which model parameters are trainable.")
@@ -2206,6 +2277,7 @@ def main():
         prefetch_factor=args.prefetch_factor,
         value_include_sources=args.value_include_source,
         value_exclude_sources=args.value_exclude_source,
+        value_source_weights=args.value_source_weight,
         policy_include_sources=args.policy_include_source,
         policy_exclude_sources=args.policy_exclude_source,
         trainable_scope=args.trainable_scope,
