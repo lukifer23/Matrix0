@@ -751,6 +751,7 @@ def _evaluate_loaded_model(
     checkpoint_path: Path,
     device: str,
     batch: Dict[str, np.ndarray],
+    moves_left_scale: float = 256.0,
 ) -> Dict[str, Any]:
     x = torch.from_numpy(np.asarray(batch["s"], dtype=np.float32)).to(device)
     pi_target = np.asarray(batch["pi"], dtype=np.float32)
@@ -802,7 +803,7 @@ def _evaluate_loaded_model(
         moves_left_pred_t = model.compute_moves_left(feats)
         if moves_left_pred_t is not None:
             moves_left_pred = moves_left_pred_t.detach().cpu().numpy().reshape(-1)
-            scale = np.float32(256.0)
+            scale = np.float32(max(1.0, float(moves_left_scale)))
             moves_left_norm = np.log1p(np.clip(moves_left_target, 0.0, None)) / np.log1p(scale)
             moves_left_norm = np.clip(moves_left_norm, 0.0, 1.0)
             moves_left_mse = (moves_left_pred - moves_left_norm) ** 2
@@ -906,13 +907,14 @@ def evaluate_checkpoint_batches(
 ) -> Dict[str, Any]:
     count = max(1, int(batches))
     model = _load_eval_model(checkpoint_path, cfg, device)
+    moves_left_scale = float(cfg.training().get("moves_left_scale", 256.0) or 256.0)
     records: List[Dict[str, Any]] = []
     for idx in range(count):
         if fixed_batches is not None:
             batch = fixed_batches[idx]
         else:
             batch = _sample_eval_batch(data_dir, batch_size=batch_size, source_prefixes=source_prefixes)
-        records.append(_evaluate_loaded_model(model, checkpoint_path, device, batch))
+        records.append(_evaluate_loaded_model(model, checkpoint_path, device, batch, moves_left_scale=moves_left_scale))
     return _summarize_metric_records(records)
 
 
@@ -928,7 +930,8 @@ def evaluate_checkpoint(
     if batch is None:
         batch = _sample_training_batch(data_dir, batch_size=batch_size)
     model = _load_eval_model(checkpoint_path, cfg, device)
-    return _evaluate_loaded_model(model, checkpoint_path, device, batch)
+    moves_left_scale = float(cfg.training().get("moves_left_scale", 256.0) or 256.0)
+    return _evaluate_loaded_model(model, checkpoint_path, device, batch, moves_left_scale=moves_left_scale)
 
 
 def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace) -> Path:

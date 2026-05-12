@@ -1716,9 +1716,9 @@ def train_comprehensive(
                         # Fallback: assume not finite if unknown type
                         return False
 
-                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss) and _finite(ssrl_loss) and _finite(moves_left_loss)):
+                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss) and _finite(ssrl_loss) and _finite(wdl_loss) and _finite(moves_left_loss)):
                     logger.warning(
-                        f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}, ssrl={ssrl_loss}, moves_left={moves_left_loss}"
+                        f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}, ssrl={ssrl_loss}, wdl={wdl_loss}, moves_left={moves_left_loss}"
                     )
                     # Skip this batch and continue training
                     continue
