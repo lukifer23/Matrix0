@@ -280,14 +280,21 @@ Full-dataset broad validation against `checkpoints/bootstrap_007_tb_terminal_cap
 - terminal: `value_mse +6.42e-7`, outside the `+5e-7` source guard
 - draw-adjudication: `value_mse +3.41e-7`
 
-The current guarded recipe is saturated. Stop the bootstrap phase here. The fresh-anchor checkpoint is useful on aggregate, but it is not clean enough for unattended self-play because terminal regresses over the source guard and direct terminal repair did not find a clean improving candidate. The next high-value path is to add better supervision/instrumentation before resuming looped self-play, starting with a moves-left auxiliary target/head scout.
+The current guarded recipe is close to saturated but not abandoned. Stop increasing cycle count blindly. The fresh-anchor checkpoint is useful on aggregate, but it is not clean enough for unattended self-play because terminal regresses over the source guard and direct terminal repair did not find a clean improving candidate.
 
-Moves-left auxiliary supervision is now the next scout path:
+Moves-left auxiliary supervision is implemented and usable, but the first guarded fresh scouts did not clear promotion:
 
-- enable `model.moves_left` for the scout checkpoint
-- use a small `--moves-left-weight` while preserving parent policy via distillation
-- treat `moves_left_mse` as diagnostic, not as a promotion metric
-- promote only if aggregate value, source-sliced value, and policy drift gates remain clean
+- `bootstrap_007_moves_left_fresh12_len240_guard_cycle_s40_lr2e8`: rejected by a narrow aggregate gate miss, `value_mse -2.93e-7` vs required `-3e-7`; policy drift, fresh capped fraction, and all source gates passed.
+- `bootstrap_007_moves_left_fresh12_len240_guard_cycle_s60_lr2e8`: rejected with weaker aggregate gain, `value_mse -2.11e-7`; policy drift and source gates still passed, but terminal was close to the source guard at `+4.38e-7`.
+
+Do not continue this exact moves-left run shape as mainline. Keep moves-left available as an auxiliary diagnostic, but return to the last clean non-moves-left guarded recipe for the next probe:
+
+- `games=12`
+- `max-game-len=240`
+- `train-steps=60`
+- `lr=3e-8`
+- no `--moves-left-weight`
+- same full heldout source-sliced eval, source guards, capped-fraction guard, and parent policy distillation
 
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 

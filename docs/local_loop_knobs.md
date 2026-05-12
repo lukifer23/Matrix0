@@ -402,7 +402,7 @@ This was the conservative bridge back toward looped self-play. As of the May 12 
 
 Moves-left supervision is wired as an optional auxiliary objective. It is disabled unless `model.moves_left` is true and `training.moves_left_weight` or `--moves-left-weight` is positive. Self-play shards save per-position `moves_left`; older single-game shards derive the target from `meta_moves`.
 
-Suggested first scout:
+Scout shape:
 
 ```text
 --moves-left-weight 0.05
@@ -414,6 +414,8 @@ Suggested first scout:
 ```
 
 Promotion still depends on aggregate/source value gates and policy-drift gates. `moves_left_mse` is diagnostic; do not promote a checkpoint only because the auxiliary loss improves.
+
+Latest status: the first guarded fresh moves-left scouts were clean but non-promoting. The `s40 lr2e-8` run narrowly missed aggregate value promotion (`-2.93e-7` vs `-3e-7`), and the `s60 lr2e-8` run was weaker (`-2.11e-7`). Do not continue this exact moves-left shape as mainline; return to the stable non-moves-left guarded recipe unless a later scout shows a clear aggregate/source-gated value gain.
 
 ## Evaluation Knobs
 
