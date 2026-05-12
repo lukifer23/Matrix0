@@ -34,6 +34,15 @@ logger = setup_logging(level=logging.INFO)
 OPENING_BOOK: List[chess.Board] = []
 
 
+def _allows_missing_moves_left_head(model: PolicyValueNet, missing: List[str], unexpected: List[str]) -> bool:
+    """Allow older checkpoints to seed a newly enabled moves-left head."""
+    if unexpected or not missing:
+        return False
+    if getattr(model, "moves_left_head", None) is None:
+        return False
+    return all(str(key).startswith("moves_left_head.") for key in missing)
+
+
 def build_value_targets(
     result_source: str,
     z: float,
@@ -237,11 +246,14 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
                     logger.warning(f"Worker {proc_id}: Unexpected keys during load (ignored): {len(unexpected)} keys")
                     logger.warning(f"Worker {proc_id}: Unexpected keys: {sorted(list(unexpected))}")
                 allow_partial = bool(cfg_dict.get("selfplay", {}).get("allow_partial_checkpoint_load", False))
-                if (missing or unexpected) and not allow_partial:
+                allow_moves_left_migration = _allows_missing_moves_left_head(model, list(missing), list(unexpected))
+                if (missing or unexpected) and not allow_partial and not allow_moves_left_migration:
                     raise RuntimeError(
                         "Checkpoint did not match model exactly. "
                         "Set selfplay.allow_partial_checkpoint_load=true only for an intentional migration."
                     )
+                if allow_moves_left_migration:
+                    logger.info("Initialized missing moves-left head while loading an older checkpoint")
                 logger.info(f"Loaded checkpoint from {ckpt_path}")
             except Exception as e:
                 raise RuntimeError(f"Failed to load checkpoint {ckpt_path}: {e}") from e
