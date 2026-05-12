@@ -1187,6 +1187,7 @@ def train_comprehensive(
     data_mode: Optional[str] = None,
     dataloader_workers: Optional[int] = None,
     prefetch_factor: Optional[int] = None,
+    train_result_source_mix: Optional[list[str] | dict[str, float]] = None,
     value_include_sources: Optional[list[str]] = None,
     value_exclude_sources: Optional[list[str]] = None,
     value_source_weights: Optional[list[str] | dict[str, float]] = None,
@@ -1463,6 +1464,14 @@ def train_comprehensive(
         mode = data_mode
     else:
         mode = 'mixed' if external_stats['external_total'] > 0 else 'replay'
+    tr_cfg = cfg.training()  # Get training config
+    cfg_train_result_source_mix = train_result_source_mix
+    if cfg_train_result_source_mix is None:
+        cfg_train_result_source_mix = tr_cfg.get("train_result_source_mix", None)
+    cfg_train_result_source_mix = parse_source_weight_specs(cfg_train_result_source_mix)
+    if cfg_train_result_source_mix:
+        logger.info("Result-source batch mix: %s", cfg_train_result_source_mix)
+
     logger.info(f"Using DataLoader mode='{mode}' (workers={dl_workers}, prefetch={dl_prefetch})")
     dataloader = build_training_dataloader(
         data_manager,
@@ -1472,6 +1481,7 @@ def train_comprehensive(
         num_workers=dl_workers,
         prefetch_factor=dl_prefetch,
         persistent_workers=True,
+        result_source_mix=cfg_train_result_source_mix,
     )
     loader_iter = iter(dataloader) if dataloader is not None else None
     batch_generator = None
@@ -1486,7 +1496,6 @@ def train_comprehensive(
     writer = SummaryWriter(log_dir)
 
     # Get training config (needed for all device types)
-    tr_cfg = cfg.training()  # Get training config
     cfg_value_include_sources = value_include_sources
     if cfg_value_include_sources is None:
         cfg_value_include_sources = tr_cfg.get("value_include_sources", None)
@@ -1675,6 +1684,7 @@ def train_comprehensive(
                         num_workers=dl_workers,
                         prefetch_factor=dl_prefetch,
                         persistent_workers=True,
+                        result_source_mix=cfg_train_result_source_mix,
                     )
                     loader_iter = iter(dataloader)
             
@@ -2238,6 +2248,7 @@ def main():
     parser.add_argument("--data-mode", type=str, default=None, help="Data mode: replay|mixed|phase:<name>")
     parser.add_argument("--dataloader-workers", type=int, default=None, help="DataLoader workers")
     parser.add_argument("--prefetch-factor", type=int, default=None, help="DataLoader prefetch factor")
+    parser.add_argument("--train-result-source-mix", action="append", default=None, help="Per-batch result-source mix, formatted prefix=fraction. Repeatable.")
     parser.add_argument("--value-include-source", action="append", default=None, help="Only these result sources contribute to value loss. Repeatable.")
     parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
     parser.add_argument("--value-source-weight", action="append", default=None, help="Multiply value loss for result-source prefixes, formatted prefix=weight. Repeatable.")
@@ -2275,6 +2286,7 @@ def main():
         data_mode=args.data_mode,
         dataloader_workers=args.dataloader_workers,
         prefetch_factor=args.prefetch_factor,
+        train_result_source_mix=args.train_result_source_mix,
         value_include_sources=args.value_include_source,
         value_exclude_sources=args.value_exclude_source,
         value_source_weights=args.value_source_weight,

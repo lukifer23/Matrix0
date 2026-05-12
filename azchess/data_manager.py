@@ -1766,6 +1766,148 @@ class DataManager:
                 continue
         return valid
 
+    def _get_valid_shard_paths_by_result_source_prefixes(self, prefixes: List[str]) -> List[str]:
+        """Get valid shard paths whose NPZ meta_result_source starts with any prefix."""
+        if not prefixes:
+            return self._get_valid_shard_paths()
+        valid = []
+        for shard in self._get_all_shards():
+            if shard.corrupted:
+                continue
+            path = Path(shard.path)
+            if not path.exists():
+                self._mark_shard_corrupted(shard.path)
+                continue
+            try:
+                result_source = shard.source or ""
+                with np.load(path, mmap_mode="r") as data:
+                    if "meta_result_source" in data:
+                        raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)
+                        if raw_sources.size:
+                            result_source = str(raw_sources[0])
+                if any(result_source.startswith(pref) for pref in prefixes):
+                    valid.append(str(path))
+            except Exception:
+                if os.environ.get("MATRIX0_STRICT_DATA") == "1":
+                    raise
+                self._mark_shard_corrupted(shard.path)
+                continue
+        return valid
+
+    @staticmethod
+    def _source_mix_allocations(batch_size: int, source_mix: Dict[str, float]) -> Dict[str, int]:
+        positive = {str(k): float(v) for k, v in source_mix.items() if str(k) and float(v) > 0.0}
+        if not positive:
+            raise ValueError("Result-source mix must contain at least one positive fraction")
+        total = sum(positive.values())
+        raw = {k: (v / total) * int(batch_size) for k, v in positive.items()}
+        alloc = {k: int(np.floor(v)) for k, v in raw.items()}
+        if int(batch_size) >= len(alloc):
+            for key in alloc:
+                if alloc[key] == 0:
+                    alloc[key] = 1
+        while sum(alloc.values()) > int(batch_size):
+            key = max(alloc, key=lambda k: (alloc[k] - raw[k], alloc[k]))
+            if alloc[key] <= 0:
+                break
+            alloc[key] -= 1
+        while sum(alloc.values()) < int(batch_size):
+            key = max(alloc, key=lambda k: raw[k] - alloc[k])
+            alloc[key] += 1
+        return {k: v for k, v in alloc.items() if v > 0}
+
+    def _sample_training_batch_from_paths(self, shard_paths: List[str], batch_size: int) -> Dict[str, np.ndarray]:
+        if not shard_paths:
+            raise RuntimeError("No valid training data available for requested result source")
+        strict_data = os.environ.get("MATRIX0_STRICT_DATA") == "1"
+        parts: Dict[str, List[np.ndarray]] = {"s": [], "pi": [], "z": []}
+        legal_parts: List[np.ndarray] = []
+        value_weight_parts: List[np.ndarray] = []
+        source_parts: List[np.ndarray] = []
+        moves_left_parts: List[np.ndarray] = []
+        attempts = 0
+        while sum(part.shape[0] for part in parts["z"]) < int(batch_size):
+            attempts += 1
+            if attempts > max(16, len(shard_paths) * 4):
+                raise RuntimeError("Could not assemble result-source training batch")
+            shard_path = str(np.random.choice(shard_paths))
+            try:
+                with np.load(shard_path, mmap_mode="r") as data:
+                    states, policies, values, legal_mask_all, ssl_targets_all = self._extract_training_arrays(data)
+                    if values.ndim == 2 and values.shape[1] == 1:
+                        values = values.reshape(values.shape[0])
+                    if not self._validate_shapes(states, policies, values, self.expected_planes, shard_path):
+                        raise ValueError(f"Invalid shapes in shard {shard_path}")
+                    if not self._validate_dtypes_and_ranges(states, policies, values, shard_path):
+                        raise ValueError(f"Invalid dtypes/ranges in shard {shard_path}")
+                    remaining = int(batch_size) - sum(part.shape[0] for part in parts["z"])
+                    take = min(remaining, int(values.shape[0]))
+                    if take <= 0:
+                        continue
+                    idx = np.random.choice(int(values.shape[0]), size=take, replace=int(values.shape[0]) < take)
+                    parts["s"].append(np.ascontiguousarray(np.asarray(states[idx], dtype=np.float32)))
+                    parts["pi"].append(np.ascontiguousarray(np.asarray(policies[idx], dtype=np.float32)))
+                    parts["z"].append(np.ascontiguousarray(np.asarray(values[idx], dtype=np.float32).reshape(-1)))
+                    if legal_mask_all is not None:
+                        legal = np.asarray(legal_mask_all[idx])
+                        if legal.ndim > 2:
+                            legal = legal.reshape(legal.shape[0], -1)
+                        legal_parts.append(np.ascontiguousarray(legal, dtype=np.uint8))
+                    elif strict_data:
+                        raise ValueError(f"Shard missing legal_mask in strict mode: {shard_path}")
+                    if "value_weight" in data:
+                        weights = np.asarray(data["value_weight"][idx], dtype=np.float32).reshape(-1)
+                        value_weight_parts.append(np.ascontiguousarray(weights, dtype=np.float32))
+                    result_source = "unknown"
+                    if "meta_result_source" in data:
+                        raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)
+                        if raw_sources.size:
+                            result_source = str(raw_sources[0])
+                    source_parts.append(np.asarray([result_source] * take))
+                    if "moves_left" in ssl_targets_all:
+                        moves_left_parts.append(np.ascontiguousarray(np.asarray(ssl_targets_all["moves_left"][idx], dtype=np.float32).reshape(-1)))
+            except Exception:
+                if strict_data:
+                    raise
+                self._mark_shard_corrupted(shard_path)
+                continue
+
+        out: Dict[str, np.ndarray] = {
+            "s": np.concatenate(parts["s"], axis=0),
+            "pi": np.concatenate(parts["pi"], axis=0),
+            "z": np.concatenate(parts["z"], axis=0),
+            "result_source": np.concatenate(source_parts, axis=0),
+        }
+        if legal_parts and sum(part.shape[0] for part in legal_parts) == out["z"].shape[0]:
+            out["legal_mask"] = np.concatenate(legal_parts, axis=0)
+        if value_weight_parts and sum(part.shape[0] for part in value_weight_parts) == out["z"].shape[0]:
+            out["value_weight"] = np.concatenate(value_weight_parts, axis=0)
+        if moves_left_parts and sum(part.shape[0] for part in moves_left_parts) == out["z"].shape[0]:
+            out["moves_left"] = np.concatenate(moves_left_parts, axis=0)
+        return out
+
+    def get_training_batch_by_result_source_mix(self, batch_size: int, source_mix: Dict[str, float]) -> Iterator[Dict[str, np.ndarray]]:
+        """Yield batches with an explicit per-batch result-source prefix mix."""
+        allocations = self._source_mix_allocations(batch_size, source_mix)
+        shard_paths = {
+            prefix: self._get_valid_shard_paths_by_result_source_prefixes([prefix])
+            for prefix in allocations
+        }
+        missing = [prefix for prefix, paths in shard_paths.items() if not paths]
+        if missing:
+            raise RuntimeError(f"No valid training data available for result-source mix prefixes: {missing}")
+        while True:
+            parts = [self._sample_training_batch_from_paths(shard_paths[prefix], take) for prefix, take in allocations.items()]
+            keys = set().union(*(part.keys() for part in parts))
+            out: Dict[str, np.ndarray] = {}
+            for key in keys:
+                if all(key in part for part in parts):
+                    out[key] = np.concatenate([part[key] for part in parts], axis=0)
+            indices = np.random.permutation(out["z"].shape[0])
+            for key, value in list(out.items()):
+                out[key] = value[indices]
+            yield out
+
     def get_training_batch_by_source_prefixes(self, batch_size: int, prefixes: List[str]) -> Iterator[Dict[str, np.ndarray]]:
         """Yield training batches constrained to shards whose source matches any prefix.
 

@@ -470,6 +470,22 @@ For cycle promotion:
 
 Keep the policy drift gates unchanged. Weighted value gates are not a substitute for policy quality checks.
 
+### `--train-result-source-mix`
+
+Force each training batch to contain an explicit mix of result-source prefixes.
+
+Use this when a rare source has a hard promotion gate. Loss multipliers alone increase gradient size after a rare source appears; this knob ensures the source appears every step.
+
+Current terminal-balance scout:
+
+```bash
+--train-result-source-mix terminal=0.25 \
+--train-result-source-mix tablebase=0.50 \
+--train-result-source-mix capped=0.25
+```
+
+This is a training sampler only. Keep `--value-source-weight`, value include filters, policy distillation, and the same heldout source gates so the training objective and promotion criteria stay aligned.
+
 ## Strictness
 
 The local loop sets strict mode for subprocesses:

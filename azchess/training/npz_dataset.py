@@ -30,12 +30,14 @@ class NPZBatchIterableDataset(IterableDataset):
         batch_size: int,
         device: str = "cpu",
         mode: str = "mixed",
+        result_source_mix: Optional[Dict[str, float]] = None,
     ) -> None:
         super().__init__()
         self.dm = data_manager
         self.batch_size = int(batch_size)
         self.device = device
         self.mode = str(mode)
+        self.result_source_mix = dict(result_source_mix or {})
         self._batches_seen = 0
 
     def _log_batch_sanity(self, batch: Dict[str, np.ndarray]) -> None:
@@ -76,6 +78,12 @@ class NPZBatchIterableDataset(IterableDataset):
             raise RuntimeError(f"Batch sanity metrics failed for mode={self.mode}: {exc}") from exc
 
     def __iter__(self) -> Iterator[Union[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]], Dict[str, np.ndarray]]]:
+        if self.result_source_mix:
+            for batch in self.dm.get_training_batch_by_result_source_mix(self.batch_size, self.result_source_mix):
+                self._log_batch_sanity(batch)
+                yield batch
+            return
+
         # Replay mode: stream shards via DataManager iterator
         if self.mode == "replay":
             for batch in self.dm.get_training_batch(self.batch_size, self.device):
@@ -132,11 +140,12 @@ def build_training_dataloader(
     num_workers: int = 2,
     prefetch_factor: int = 2,
     persistent_workers: bool = True,
+    result_source_mix: Optional[Dict[str, float]] = None,
 ):
     """Construct a DataLoader for NPZ batches with MPS-friendly defaults."""
     from torch.utils.data import DataLoader
 
-    ds = NPZBatchIterableDataset(data_manager, batch_size, device=device, mode=mode)
+    ds = NPZBatchIterableDataset(data_manager, batch_size, device=device, mode=mode, result_source_mix=result_source_mix)
 
     # pin_memory has negligible benefit on MPS; keep False.
     dl = DataLoader(

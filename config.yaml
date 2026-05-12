@@ -61,6 +61,7 @@ training:
   moves_left_weight: 0.0           # Auxiliary normalized plies-to-game-end loss
   moves_left_scale: 256.0          # log1p normalization scale for moves_left targets
   value_source_weights: []         # Optional result-source value-loss multipliers, e.g. ["terminal=2.0"]
+  train_result_source_mix: []      # Optional per-batch result-source mix, e.g. ["terminal=0.25", "tablebase=0.50", "capped=0.25"]
   # CRITICAL FIX: Force external data usage
   data_mode: "mixed"               # Use mixed mode to access external data
   dataloader_workers: 6            # Increase worker threads for faster data loading

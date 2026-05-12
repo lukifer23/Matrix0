@@ -1104,6 +1104,7 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "checkpoint_save_freq": max(int(args.train_steps) + 1, 2),
             "use_curriculum": False,
             "dataloader_workers": int(args.dataloader_workers),
+            "train_result_source_mix": list(getattr(args, "train_result_source_mix", []) or []),
             "legal_mass_weight": float(args.legal_mass_weight),
             "legal_policy_weight": float(getattr(args, "legal_policy_weight", 0.0)),
             "value_include_sources": list(getattr(args, "value_include_source", []) or []),
@@ -1200,6 +1201,8 @@ def _build_train_cmd(
         train_cmd.extend(["--value-exclude-source", str(source)])
     for source_weight in getattr(args, "value_source_weight", []) or []:
         train_cmd.extend(["--value-source-weight", str(source_weight)])
+    for source_mix in getattr(args, "train_result_source_mix", []) or []:
+        train_cmd.extend(["--train-result-source-mix", str(source_mix)])
     for source in getattr(args, "policy_include_source", []) or []:
         train_cmd.extend(["--policy-include-source", str(source)])
     for source in getattr(args, "policy_exclude_source", []) or []:
@@ -1551,6 +1554,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=4e-4)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--dataloader-workers", type=int, default=0)
+    parser.add_argument("--train-result-source-mix", action="append", default=[], help="Per-batch result-source mix for training, formatted prefix=fraction. Repeatable.")
     parser.add_argument("--legal-mass-weight", type=float, default=0.05)
     parser.add_argument("--legal-policy-weight", type=float, default=0.0, help="Optional extra CE term over logits/targets renormalized to legal moves.")
     parser.add_argument("--value-include-source", action="append", default=[], help="Only these result sources contribute to value loss. Repeatable.")

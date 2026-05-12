@@ -60,6 +60,7 @@ The local-loop path now fails hard instead of silently producing bad data:
 - `azchess.tools.local_loop_cycle` now gates promotion on per-source heldout value deltas, fresh capped fraction, and optional checkpoint-artifact pruning
 - cycle runs now use copy-on-write checkpoint aliases and `--prune-cycle-checkpoints` to avoid filling the repo with rejected `.pt` files
 - heldout eval now reports `value_weighted_mse` when batches include `value_weight`, weights top-level full-dataset metric means by sample count instead of treating every shard/batch equally, and can select/gate on weighted value metrics
+- training now supports explicit per-batch result-source sampling through `--train-result-source-mix prefix=fraction`
 
 ## Current Findings
 
@@ -316,6 +317,20 @@ Interpretation: terminal underweighting was real but not the only mismatch. The 
 - `--source-value-gate-metric value_weighted_mse`
 
 If weighted value passes while raw value misses, keep the candidate as a diagnostic success but validate raw source behavior before using it for unattended fresh self-play.
+
+The corrected weighted-value scout did not pass:
+
+- `bootstrap_007_anchor_weighted_valuegate2_s60_lr3e8_t2_c05`: `value_weighted_mse -7.63e-8`, capped `-2.87e-7`, tablebase `-1.04e-7`, terminal `+3.60e-7`.
+
+Interpretation: the weighted gate is not too strict; the candidate is still mostly finding capped/tablebase movement while terminal remains weak. The next mainline scout should use explicit source-balanced batches:
+
+- `--train-result-source-mix terminal=0.25`
+- `--train-result-source-mix tablebase=0.50`
+- `--train-result-source-mix capped=0.25`
+- keep `--value-source-weight terminal=2.0`
+- keep `--value-source-weight capped=0.5`
+
+Do not continue increasing steps on the old unbalanced sampler. Later chunks improved capped but worsened terminal.
 
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 
