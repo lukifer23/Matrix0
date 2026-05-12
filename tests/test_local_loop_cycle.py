@@ -112,6 +112,38 @@ def test_cycle_promotion_allows_source_value_within_cap():
     assert gate["promote"] is True
 
 
+def test_cycle_promotion_can_use_weighted_value_metric():
+    report = {
+        "eval": {
+            "delta": {
+                "value_mse": -0.0000001,
+                "value_weighted_mse": -0.000001,
+                "policy_ce": 0.0005,
+                "policy_legal_ce": 0.000002,
+            },
+            "source_delta": {
+                "capped": {"value_weighted_mse": -0.000001},
+                "terminal": {"value_weighted_mse": 0.0000001},
+            },
+        },
+        "fresh_data": {"game_outcomes": {"capped": 0, "terminal": 1}},
+    }
+
+    gate = evaluate_cycle_promotion(
+        report,
+        max_value_mse_delta=-0.0000003,
+        max_policy_ce_delta=0.001,
+        max_policy_legal_ce_delta=1.0e-5,
+        max_fresh_capped_fraction=1.0,
+        max_source_value_mse_delta=0.0000005,
+        value_gate_metric="value_weighted_mse",
+        source_value_gate_metric="value_weighted_mse",
+    )
+
+    assert gate["promote"] is True
+    assert any(check["name"] == "heldout_value_weighted_mse" for check in gate["checks"])
+
+
 def test_replace_placeholders():
     values = ["--policy-distill-checkpoint", "{parent}", "--run-name", "cycle_{cycle}", "{cycle_run_dir}/x"]
 

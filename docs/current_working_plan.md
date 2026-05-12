@@ -59,6 +59,7 @@ The local-loop path now fails hard instead of silently producing bad data:
 - `azchess.tools.bench_local_loop` now supports source-aware eval selection through `--eval-select-max-source-value-mse-delta`
 - `azchess.tools.local_loop_cycle` now gates promotion on per-source heldout value deltas, fresh capped fraction, and optional checkpoint-artifact pruning
 - cycle runs now use copy-on-write checkpoint aliases and `--prune-cycle-checkpoints` to avoid filling the repo with rejected `.pt` files
+- heldout eval now reports `value_weighted_mse` when batches include `value_weight`, weights top-level full-dataset metric means by sample count instead of treating every shard/batch equally, and can select/gate on weighted value metrics
 
 ## Current Findings
 
@@ -302,6 +303,19 @@ Next durable fix: use source-aware value-loss multipliers rather than another LR
 - `--value-source-weight capped=0.5`
 - keep tablebase at default `1.0`
 - preserve the same source guards and parent policy distillation
+
+The first weighted anchor-only cycle improved the terminal blocker but still missed the raw aggregate gate:
+
+- `bootstrap_007_anchor_weighted_cycle_s60_lr3e8_t2_c05`: raw aggregate `value_mse -2.39e-7`, capped `-5.81e-7`, tablebase `-5.60e-8`, terminal `+3.28e-7`; source gates passed, aggregate raw value did not.
+
+Interpretation: terminal underweighting was real but not the only mismatch. The next diagnostic/fix is value-weight-aware evaluation because training downweights capped bootstrap targets while raw promotion treats them as full-strength heldout positions. Prefer the same source-weighted recipe with:
+
+- `--eval-select-metric value_weighted_mse`
+- `--eval-select-source-metric value_weighted_mse`
+- `--value-gate-metric value_weighted_mse`
+- `--source-value-gate-metric value_weighted_mse`
+
+If weighted value passes while raw value misses, keep the candidate as a diagnostic success but validate raw source behavior before using it for unattended fresh self-play.
 
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 

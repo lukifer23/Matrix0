@@ -56,15 +56,18 @@ def evaluate_cycle_promotion(
     max_policy_legal_ce_delta: float,
     max_fresh_capped_fraction: float,
     max_source_value_mse_delta: float | None = None,
+    value_gate_metric: str = "value_mse",
+    source_value_gate_metric: str = "value_mse",
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
     def add(name: str, passed: bool, **detail: Any) -> None:
         checks.append({"name": name, "passed": bool(passed), **detail})
 
-    value_mse = _delta(report, "value_mse")
+    value_metric = str(value_gate_metric or "value_mse")
+    value_mse = _delta(report, value_metric)
     add(
-        "heldout_value_mse",
+        f"heldout_{value_metric}",
         value_mse is not None and value_mse <= max_value_mse_delta,
         value=value_mse,
         max=max_value_mse_delta,
@@ -96,9 +99,18 @@ def evaluate_cycle_promotion(
         )
 
     if max_source_value_mse_delta is not None:
-        for source, source_value_mse in _source_deltas(report, "value_mse"):
+        source_metric = str(source_value_gate_metric or value_metric)
+        source_values = _source_deltas(report, source_metric)
+        if not source_values:
             add(
-                f"heldout_source_value_mse:{source}",
+                f"heldout_source_{source_metric}",
+                False,
+                value=None,
+                max=max_source_value_mse_delta,
+            )
+        for source, source_value_mse in source_values:
+            add(
+                f"heldout_source_{source_metric}:{source}",
                 source_value_mse <= max_source_value_mse_delta,
                 value=source_value_mse,
                 max=max_source_value_mse_delta,
@@ -202,6 +214,8 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
             max_source_value_mse_delta=(
                 None if args.max_source_value_mse_delta is None else float(args.max_source_value_mse_delta)
             ),
+            value_gate_metric=str(args.value_gate_metric),
+            source_value_gate_metric=str(args.source_value_gate_metric or args.value_gate_metric),
         )
         candidate = Path(report["checkpoints"]["final"])
         promotion: dict[str, Any] = {
@@ -277,6 +291,8 @@ def main() -> None:
         default=None,
         help="Optional largest allowed per-source held-out value MSE delta for every eval.source_delta entry.",
     )
+    parser.add_argument("--value-gate-metric", default="value_mse", help="Held-out value metric used by the cycle promotion gate.")
+    parser.add_argument("--source-value-gate-metric", default=None, help="Per-source value metric used by --max-source-value-mse-delta. Defaults to --value-gate-metric.")
     raw_args = sys.argv[1:]
     if "-h" in raw_args or "--help" in raw_args:
         parser.parse_args(raw_args)

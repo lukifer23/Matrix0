@@ -18,6 +18,7 @@ from azchess.tools.bench_local_loop import (
     _sample_eval_batch,
     _sample_eval_batches,
     _selection_passes,
+    _summarize_metric_records,
     copy_anchor_shards,
     evaluate_checkpoint_batches,
     evaluate_checkpoint,
@@ -186,6 +187,20 @@ def test_evaluate_checkpoint_batches_reports_mean_and_std(tmp_path):
     assert "policy_legal_ce" in metrics
 
 
+def test_summarize_metric_records_weights_metric_means_by_batch_size():
+    metrics = _summarize_metric_records(
+        [
+            {"batch_size": 1, "seconds": 1.0, "positions_per_second": 1.0, "value_mse": 10.0},
+            {"batch_size": 3, "seconds": 1.0, "positions_per_second": 3.0, "value_mse": 2.0},
+        ]
+    )
+
+    assert metrics["batches"] == 2
+    assert np.isclose(metrics["batch_size"], 2.0)
+    assert np.isclose(metrics["value_mse"], 4.0)
+    assert np.isclose(metrics["positions_per_second"], 2.0)
+
+
 def test_evaluate_checkpoint_batches_reports_source_metrics(tmp_path):
     cfg = Config({"model": _tiny_model_cfg()})
     states = np.zeros((4, 19, 8, 8), dtype=np.float32)
@@ -217,6 +232,39 @@ def test_evaluate_checkpoint_batches_reports_source_metrics(tmp_path):
     assert metrics["source_metrics"]["capped"]["samples"] == 2
     assert metrics["source_metrics"]["tablebase"]["samples"] == 2
     assert "value_mse" in metrics["source_metrics"]["capped"]
+
+
+def test_evaluate_checkpoint_batches_reports_value_weighted_mse(tmp_path):
+    cfg = Config({"model": _tiny_model_cfg()})
+    states = np.zeros((2, 19, 8, 8), dtype=np.float32)
+    pi = np.zeros((2, 4672), dtype=np.float32)
+    pi[:, 0] = 1.0
+    batch = {
+        "s": states,
+        "pi": pi,
+        "z": np.array([1.0, 3.0], dtype=np.float32),
+        "value_weight": np.array([1.0, 3.0], dtype=np.float32),
+        "result_source": np.asarray(["capped", "terminal"]),
+    }
+    model = PolicyValueNet.from_config(cfg.model())
+    ckpt = tmp_path / "model.pt"
+    torch.save({"model": model.state_dict()}, ckpt)
+
+    metrics = evaluate_checkpoint_batches(
+        ckpt,
+        cfg,
+        tmp_path,
+        "cpu",
+        batch_size=2,
+        batches=1,
+        fixed_batches=[batch],
+    )
+
+    before = metrics["value_mse"]
+    weighted = metrics["value_weighted_mse"]
+    assert "value_weight_mean" in metrics
+    assert weighted != before
+    assert "value_weighted_mse" in metrics["source_metrics"]["capped"]
 
 
 def test_copy_anchor_shards_imports_prior_data_into_replays(tmp_path):
@@ -425,6 +473,29 @@ def test_selection_can_reject_source_value_regression():
 
     source_delta["terminal"]["value_mse"] = 0.0000001
     assert _selection_passes(delta, args, source_delta)
+
+
+def test_selection_can_use_custom_source_metric():
+    delta = {
+        "policy_ce": 0.0005,
+        "policy_legal_ce": 0.000002,
+        "value_weighted_mse": -0.01,
+    }
+    source_delta = {
+        "capped": {"value_weighted_mse": -0.02},
+        "terminal": {"value_weighted_mse": 0.0000001},
+    }
+    args = Namespace(
+        eval_select_max_policy_ce_delta=0.001,
+        eval_select_max_policy_legal_ce_delta=1.0e-5,
+        eval_select_max_source_value_mse_delta=0.0000005,
+        eval_select_source_metric="value_weighted_mse",
+    )
+
+    assert _selection_passes(delta, args, source_delta)
+
+    source_delta["terminal"]["value_weighted_mse"] = 0.00001
+    assert not _selection_passes(delta, args, source_delta)
 
 
 def test_prepare_initial_checkpoint_copies_and_validates_provided_checkpoint(tmp_path):

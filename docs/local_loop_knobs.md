@@ -448,6 +448,28 @@ Use more than one batch for less noisy comparisons.
 
 Filter eval data by source prefix when using mixed replay directories.
 
+### `value_weighted_mse`
+
+Evaluation reports both raw `value_mse` and `value_weighted_mse` when eval batches include `value_weight`.
+
+Use raw `value_mse` when the promotion question is "did the candidate fit every heldout position equally?" Use `value_weighted_mse` when the promotion question should match the training objective, especially with capped bootstrap positions at lower value weight.
+
+For local-loop selection:
+
+```bash
+--eval-select-metric value_weighted_mse \
+--eval-select-source-metric value_weighted_mse
+```
+
+For cycle promotion:
+
+```bash
+--value-gate-metric value_weighted_mse \
+--source-value-gate-metric value_weighted_mse
+```
+
+Keep the policy drift gates unchanged. Weighted value gates are not a substitute for policy quality checks.
+
 ## Strictness
 
 The local loop sets strict mode for subprocesses:

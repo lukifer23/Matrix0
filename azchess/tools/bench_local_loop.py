@@ -707,8 +707,25 @@ def _summarize_metric_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         values = [record[key] for record in records if isinstance(record.get(key), (int, float))]
         if len(values) == len(records):
             arr = np.asarray(values, dtype=np.float64)
-            summary[key] = float(np.mean(arr))
-            summary[f"{key}_std"] = float(np.std(arr))
+            if key == "positions_per_second":
+                total_positions = sum(float(record.get("batch_size", 0.0)) for record in records)
+                total_seconds = sum(float(record.get("seconds", 0.0)) for record in records)
+                summary[key] = float(total_positions / max(total_seconds, 1e-9))
+                summary[f"{key}_std"] = float(np.std(arr))
+            elif key in {"batch_size", "seconds"}:
+                summary[key] = float(np.mean(arr))
+                summary[f"{key}_std"] = float(np.std(arr))
+            else:
+                weights = np.asarray([float(record.get("batch_size", 1.0)) for record in records], dtype=np.float64)
+                weight_sum = float(weights.sum())
+                if weight_sum > 0:
+                    mean = float(np.average(arr, weights=weights))
+                    var = float(np.average((arr - mean) ** 2, weights=weights))
+                    summary[key] = mean
+                    summary[f"{key}_std"] = float(np.sqrt(max(0.0, var)))
+                else:
+                    summary[key] = float(np.mean(arr))
+                    summary[f"{key}_std"] = float(np.std(arr))
     for key in ("checkpoint",):
         if key in records[0]:
             summary[key] = records[0][key]
@@ -771,6 +788,7 @@ def _evaluate_loaded_model(
     log_probs = torch.log_softmax(policy_logits, dim=1).detach().cpu().numpy()
     probs = np.exp(log_probs)
     value = value_pred.detach().cpu().numpy().reshape(-1)
+    value_error_sq = (value - z_target) ** 2
     ce = -np.sum(pi_target * log_probs, axis=1)
     target_entropy = _entropy(pi_target)
     top1_match = np.argmax(probs, axis=1) == np.argmax(pi_target, axis=1)
@@ -784,7 +802,7 @@ def _evaluate_loaded_model(
         "policy_top1_match": float(np.mean(top1_match)),
         "target_entropy": float(np.mean(target_entropy)),
         "pred_entropy": float(np.mean(_entropy(probs))),
-        "value_mse": float(np.mean((value - z_target) ** 2)),
+        "value_mse": float(np.mean(value_error_sq)),
         "value_pred_mean": float(np.mean(value)),
         "value_target_mean": float(np.mean(z_target)),
     }
@@ -794,10 +812,21 @@ def _evaluate_loaded_model(
         "policy_top1_match": top1_match.astype(np.float32),
         "target_entropy": target_entropy,
         "pred_entropy": _entropy(probs),
-        "value_mse": (value - z_target) ** 2,
+        "value_mse": value_error_sq,
         "value_pred_mean": value,
         "value_target_mean": z_target,
     }
+    value_weight = None
+    if "value_weight" in batch:
+        value_weight = np.asarray(batch["value_weight"], dtype=np.float32).reshape(-1)
+        if value_weight.shape[0] == value_error_sq.shape[0]:
+            value_weight = np.clip(value_weight, 0.0, None)
+            weight_sum = float(np.sum(value_weight))
+            rec["value_weight_mean"] = float(np.mean(value_weight))
+            if weight_sum > 0.0:
+                rec["value_weighted_mse"] = float(np.sum(value_error_sq * value_weight) / weight_sum)
+            else:
+                rec["value_weighted_mse"] = 0.0
     if "moves_left" in batch and feats is not None and hasattr(model, "compute_moves_left"):
         moves_left_target = np.asarray(batch["moves_left"], dtype=np.float32).reshape(-1)
         moves_left_pred_t = model.compute_moves_left(feats)
@@ -848,6 +877,15 @@ def _evaluate_loaded_model(
                 source_rec: Dict[str, Any] = {"samples": int(np.sum(mask))}
                 for key, values in per_sample.items():
                     source_rec[key] = float(np.mean(values[mask]))
+                if value_weight is not None and value_weight.shape[0] == mask.shape[0]:
+                    source_weights = value_weight[mask]
+                    source_errors = value_error_sq[mask]
+                    source_weight_sum = float(np.sum(source_weights))
+                    source_rec["value_weight_mean"] = float(np.mean(source_weights))
+                    if source_weight_sum > 0.0:
+                        source_rec["value_weighted_mse"] = float(np.sum(source_errors * source_weights) / source_weight_sum)
+                    else:
+                        source_rec["value_weighted_mse"] = 0.0
                 source_metrics[source] = source_rec
             rec["source_metrics"] = source_metrics
     return rec
@@ -1095,6 +1133,7 @@ def _eval_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, floa
             "policy_legal_ce",
             "policy_legal_kl",
             "value_mse",
+            "value_weighted_mse",
             "moves_left_mse",
             "legal_policy_mass",
         )
@@ -1175,12 +1214,17 @@ def _selection_passes(
         if not source_delta:
             return False
         cap = float(max_source_value_mse)
+        saw_metric = False
         for metrics in source_delta.values():
             if not isinstance(metrics, dict):
                 continue
-            value = metrics.get("value_mse")
+            value = metrics.get(str(getattr(args, "eval_select_source_metric", "value_mse") or "value_mse"))
             if value is not None and float(value) > cap:
                 return False
+            if value is not None:
+                saw_metric = True
+        if not saw_metric:
+            return False
     return True
 
 
@@ -1481,6 +1525,7 @@ def main() -> None:
     parser.add_argument("--eval-seed", type=int, default=None, help="Optional deterministic seed for held-out eval batch sampling.")
     parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
+    parser.add_argument("--eval-select-source-metric", default="value_mse", help="Per-source held-out delta metric used with --eval-select-max-source-value-mse-delta.")
     parser.add_argument("--eval-select-max-policy-ce-delta", type=float, default=0.001, help="Maximum allowed held-out policy CE regression for selected checkpoints.")
     parser.add_argument("--eval-select-max-policy-legal-ce-delta", type=float, default=1.0e-5, help="Maximum allowed held-out legal-policy CE regression for selected checkpoints.")
     parser.add_argument("--eval-select-max-source-value-mse-delta", type=float, default=None, help="Optional maximum allowed value MSE delta for every held-out source slice during eval selection.")
