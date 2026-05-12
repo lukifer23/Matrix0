@@ -179,9 +179,9 @@ class TestTrainingIntegration:
         )
         
         assert result is not None, "Training step returned None"
-        assert len(result) == 6, "Training step returned wrong number of values"
+        assert len(result) == 7, "Training step returned wrong number of values"
         
-        loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss = result
+        loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss, moves_left_loss = result
         
         assert isinstance(loss, float), "Loss is not float"
         assert loss >= 0, f"Loss is negative: {loss}"
@@ -266,7 +266,13 @@ class TestDataPipelineIntegration:
         
         assert batch is not None, "Could not load batch"
         
-        states, policies, values, legal_mask = batch
+        if isinstance(batch, dict):
+            states = batch["s"]
+            policies = batch["pi"]
+            values = batch["z"]
+            legal_mask = batch.get("legal_mask")
+        else:
+            states, policies, values, legal_mask = batch[:4]
         
         assert states.shape[0] == 8, f"Wrong batch size: {states.shape[0]}"
         assert states.shape[1:] == (19, 8, 8), f"Wrong state shape: {states.shape}"
@@ -307,4 +313,3 @@ class TestDataPipelineIntegration:
                 assert key in data, f"SSL target {key} missing"
                 assert data[key].shape[0] == sample_ssl_batch_data["s"].shape[0], \
                     f"SSL target {key} wrong batch size"
-

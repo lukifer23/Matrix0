@@ -94,6 +94,8 @@ python -m azchess.tools.eval_checkpoints \
   --output logs/checkpoint_eval_tablebase.json
 ```
 
+When the checkpoint/config enables `model.moves_left` and the eval shards contain or can derive `moves_left`, checkpoint eval also reports `moves_left_mse`, `moves_left_pred_mean`, and `moves_left_target_mean`.
+
 ## WebUI Linkage
 
 The WebUI tracks CLI runs via lightweight JSONL events written by the orchestrator to `logs/webui.jsonl`:

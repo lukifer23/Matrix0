@@ -437,15 +437,22 @@ class DataManager:
             source_entries = None
             if all(len(sample) >= 6 and sample[5] is not None for sample in combined):
                 source_entries = np.asarray([sample[5] for sample in combined])
+            moves_left = None
+            if all(len(sample) >= 7 and sample[6] is not None for sample in combined):
+                moves_left = np.ascontiguousarray(
+                    np.array([sample[6] for sample in combined], dtype=np.float32).reshape(-1),
+                    dtype=np.float32,
+                )
 
-            if source_entries is not None:
+            if source_entries is not None or moves_left is not None:
                 yield {
                     "s": states,
                     "pi": policies,
                     "z": values,
                     **({"legal_mask": legal_mask} if legal_mask is not None else {}),
                     **({"value_weight": value_weight} if value_weight is not None else {}),
-                    "result_source": source_entries,
+                    **({"result_source": source_entries} if source_entries is not None else {}),
+                    **({"moves_left": moves_left} if moves_left is not None else {}),
                 }
             elif legal_mask is not None and value_weight is not None:
                 yield (states, policies, values, legal_mask, value_weight)
@@ -550,7 +557,10 @@ class DataManager:
                                 weight_entry = None
                                 if value_weight_batches is not None:
                                     weight_entry = value_weight_batches[idx]
-                                yield (states[idx], policies[idx], values[idx], legal_entry, weight_entry, result_source)
+                                moves_left_entry = None
+                                if "moves_left" in ssl_targets:
+                                    moves_left_entry = ssl_targets["moves_left"][idx]
+                                yield (states[idx], policies[idx], values[idx], legal_entry, weight_entry, result_source, moves_left_entry)
                     except Exception as e:
                         logger.error(f"Error loading shard {shard_path}: {e}", exc_info=True)
                         if strict_data:
@@ -1664,7 +1674,11 @@ class DataManager:
         policies = self._resolve_field(data, 'pi')
         values = self._resolve_field(data, 'z')
         legal_mask = data.get('legal_mask', None)
-        ssl_targets = {key: data[key] for key in data.files if key.startswith('ssl_')}
+        ssl_targets = {key: data[key] for key in data.files if key.startswith('ssl_') or key == "moves_left"}
+        if "moves_left" not in ssl_targets and "meta_moves" in data:
+            total_moves = int(np.asarray(data["meta_moves"]).reshape(-1)[0])
+            sample_count = int(states.shape[0])
+            ssl_targets["moves_left"] = np.arange(total_moves, total_moves - sample_count, -1, dtype=np.float32).clip(min=0.0)
         return states, policies, values, legal_mask, ssl_targets
 
     def import_stockfish_tree(self, root_dir: str, move_files: bool = False) -> int:

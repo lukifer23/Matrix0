@@ -398,6 +398,23 @@ As of May 12, 2026, the active loop is:
 
 This was the conservative bridge back toward looped self-play. As of the May 12 broad validation and terminal-repair scouts, treat it as saturated rather than an unattended long-run recipe. Do not continue increasing cycle count or teacher volume until a new stabilizer, such as moves-left auxiliary supervision, has passed source-sliced validation.
 
+### Moves-left auxiliary scout
+
+Moves-left supervision is wired as an optional auxiliary objective. It is disabled unless `model.moves_left` is true and `training.moves_left_weight` or `--moves-left-weight` is positive. Self-play shards save per-position `moves_left`; older single-game shards derive the target from `meta_moves`.
+
+Suggested first scout:
+
+```text
+--moves-left-weight 0.05
+--moves-left-scale 256
+--trainable-scope all
+--policy-include-source __none__
+--policy-distill-checkpoint {parent}
+--policy-distill-weight 1.0
+```
+
+Promotion still depends on aggregate/source value gates and policy-drift gates. `moves_left_mse` is diagnostic; do not promote a checkpoint only because the auxiliary loss improves.
+
 ## Evaluation Knobs
 
 ### `--eval-data-dir`

@@ -84,6 +84,18 @@ def _npz_result_source(path: Path) -> str:
     return "unknown"
 
 
+def _npz_moves_left(data: np.lib.npyio.NpzFile, idx: np.ndarray) -> Optional[np.ndarray]:
+    if "moves_left" in data:
+        return np.asarray(data["moves_left"][idx], dtype=np.float32).reshape(-1)
+    if "meta_moves" not in data:
+        return None
+    total_moves = int(np.asarray(data["meta_moves"]).reshape(-1)[0])
+    total_samples = int(np.asarray(data["z"]).reshape(-1).shape[0])
+    all_moves_left = np.arange(total_moves, total_moves - total_samples, -1, dtype=np.float32)
+    all_moves_left = np.clip(all_moves_left, 0.0, None)
+    return np.asarray(all_moves_left[idx], dtype=np.float32).reshape(-1)
+
+
 def _source_matches(source: str, prefixes: Iterable[str]) -> bool:
     prefix_list = [str(prefix) for prefix in prefixes if str(prefix)]
     return not prefix_list or any(str(source).startswith(prefix) for prefix in prefix_list)
@@ -251,6 +263,7 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
     meta_final_legal_count: List[float] = []
     meta_final_can_claim_draw: List[float] = []
     value_weights: List[np.ndarray] = []
+    moves_left_values: List[np.ndarray] = []
     result_sources: Dict[str, int] = {}
     source_metrics: Dict[str, Dict[str, Any]] = {}
 
@@ -288,6 +301,7 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
                     "policy_support": [],
                     "value": [],
                     "value_weight": [],
+                    "moves_left": [],
                     "legal_count": [],
                     "legal_policy_mass": [],
                     "moves": [],
@@ -366,6 +380,10 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
                 vw_arr = np.asarray(data["value_weight"], dtype=np.float32)
                 value_weights.append(vw_arr)
                 source_rec["value_weight"].append(vw_arr)
+            moves_left_arr = _npz_moves_left(data, np.arange(z.shape[0], dtype=np.int64))
+            if moves_left_arr is not None:
+                moves_left_values.append(moves_left_arr)
+                source_rec["moves_left"].append(moves_left_arr)
 
     def stats(arrays: Iterable[np.ndarray]) -> Optional[Dict[str, float]]:
         joined = [np.asarray(a, dtype=np.float64).reshape(-1) for a in arrays]
@@ -388,6 +406,7 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
         "policy_top_prob": stats(policy_top_prob),
         "policy_support": stats(policy_support),
         "value": stats(values),
+        "moves_left": stats(moves_left_values),
         "legal_count": stats(legal_counts),
         "legal_policy_mass": stats(legal_policy_mass),
         "ssl_ranges": {
@@ -426,6 +445,7 @@ def summarize_npz_shards(data_dir: Path, max_files: int = 0) -> Dict[str, Any]:
                 "policy_support": stats(rec["policy_support"]),
                 "value": stats(rec["value"]),
                 "value_weight": stats(rec["value_weight"]),
+                "moves_left": stats(rec["moves_left"]),
                 "legal_count": stats(rec["legal_count"]),
                 "legal_policy_mass": stats(rec["legal_policy_mass"]),
                 "moves": stats([np.asarray(rec["moves"], dtype=np.float32)]) if rec["moves"] else None,
@@ -500,6 +520,8 @@ def _sample_training_batch(data_dir: Path, batch_size: int) -> Dict[str, np.ndar
             out["legal_mask"] = legal
         if len(batch) >= 6 and batch[5] is not None:
             out["result_source"] = np.asarray(batch[5])
+        if len(batch) >= 7 and batch[6] is not None:
+            out["moves_left"] = np.asarray(batch[6], dtype=np.float32).reshape(-1)
         return out
     if len(batch) == 4:
         s, pi, z, legal = batch
@@ -536,6 +558,7 @@ def _sample_npz_eval_batch_by_result_source(
     values: List[np.ndarray] = []
     legal_masks: List[np.ndarray] = []
     value_weights: List[float] = []
+    moves_left_parts: List[np.ndarray] = []
     sources: List[str] = []
 
     for file_idx, (path, _count) in enumerate(valid):
@@ -557,6 +580,9 @@ def _sample_npz_eval_batch_by_result_source(
             if "value_weight" in data:
                 weights = np.asarray(data["value_weight"][idx], dtype=np.float32).reshape(-1)
                 value_weights.extend(float(weight) for weight in weights)
+            moves_left = _npz_moves_left(data, idx)
+            if moves_left is not None:
+                moves_left_parts.append(moves_left)
             source = _npz_result_source(path)
             sources.extend([source] * len(idx))
 
@@ -570,6 +596,8 @@ def _sample_npz_eval_batch_by_result_source(
         out["legal_mask"] = np.ascontiguousarray(np.concatenate(legal_masks, axis=0), dtype=np.uint8)
     if value_weights and len(value_weights) == out["s"].shape[0]:
         out["value_weight"] = np.asarray(value_weights, dtype=np.float32)
+    if moves_left_parts and sum(part.shape[0] for part in moves_left_parts) == out["s"].shape[0]:
+        out["moves_left"] = np.ascontiguousarray(np.concatenate(moves_left_parts, axis=0), dtype=np.float32)
     return out
 
 
@@ -658,6 +686,12 @@ def _full_npz_eval_batches(
                     out["value_weight"] = np.ascontiguousarray(
                         np.asarray(data["value_weight"][start:end], dtype=np.float32).reshape(-1)
                     )
+                moves_left = _npz_moves_left(data, np.arange(start, end, dtype=np.int64))
+                if moves_left is not None:
+                    out["moves_left"] = np.ascontiguousarray(
+                        moves_left,
+                        dtype=np.float32,
+                    )
                 batches.append(out)
     if not batches:
         raise RuntimeError(f"No full eval batches found in {data_dir}")
@@ -725,7 +759,11 @@ def _evaluate_loaded_model(
     z_target = np.asarray(batch["z"], dtype=np.float32).reshape(-1)
 
     start = time.perf_counter()
-    policy_logits, value_pred = model(x, return_ssl=False)
+    feats = None
+    if hasattr(model, "forward_with_features"):
+        policy_logits, value_pred, _, feats = model.forward_with_features(x, return_ssl=False)
+    else:
+        policy_logits, value_pred = model(x, return_ssl=False)
     _sync_device(device)
     seconds = time.perf_counter() - start
 
@@ -759,6 +797,21 @@ def _evaluate_loaded_model(
         "value_pred_mean": value,
         "value_target_mean": z_target,
     }
+    if "moves_left" in batch and feats is not None and hasattr(model, "compute_moves_left"):
+        moves_left_target = np.asarray(batch["moves_left"], dtype=np.float32).reshape(-1)
+        moves_left_pred_t = model.compute_moves_left(feats)
+        if moves_left_pred_t is not None:
+            moves_left_pred = moves_left_pred_t.detach().cpu().numpy().reshape(-1)
+            scale = np.float32(256.0)
+            moves_left_norm = np.log1p(np.clip(moves_left_target, 0.0, None)) / np.log1p(scale)
+            moves_left_norm = np.clip(moves_left_norm, 0.0, 1.0)
+            moves_left_mse = (moves_left_pred - moves_left_norm) ** 2
+            rec["moves_left_mse"] = float(np.mean(moves_left_mse))
+            rec["moves_left_pred_mean"] = float(np.mean(moves_left_pred))
+            rec["moves_left_target_mean"] = float(np.mean(moves_left_target))
+            per_sample["moves_left_mse"] = moves_left_mse
+            per_sample["moves_left_pred_mean"] = moves_left_pred
+            per_sample["moves_left_target_mean"] = moves_left_target
     if "legal_mask" in batch:
         legal = np.asarray(batch["legal_mask"], dtype=np.float32)
         if legal.shape == probs.shape:
@@ -820,15 +873,21 @@ def _delta_source_metrics(before: Dict[str, Any], after: Dict[str, Any]) -> Dict
 
 
 def _load_eval_model(checkpoint_path: Path, cfg: Config, device: str) -> torch.nn.Module:
-    model = PolicyValueNet.from_config(cfg.model()).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    result = model.load_state_dict(_state_dict_from_checkpoint(checkpoint, checkpoint_path), strict=False)
+    state_dict = _state_dict_from_checkpoint(checkpoint, checkpoint_path)
+    model_cfg = dict(cfg.model())
+    if any(str(key).startswith("moves_left_head.") for key in state_dict):
+        model_cfg["moves_left"] = True
+    model = PolicyValueNet.from_config(model_cfg).to(device)
+    result = model.load_state_dict(state_dict, strict=False)
     missing = list(getattr(result, "missing_keys", []))
     unexpected = list(getattr(result, "unexpected_keys", []))
-    if (missing or unexpected) and os.environ.get("MATRIX0_STRICT_CHECKPOINT") == "1":
+    allowed_missing = [key for key in missing if str(key).startswith("moves_left_head.")]
+    disallowed_missing = [key for key in missing if key not in allowed_missing]
+    if (disallowed_missing or unexpected) and os.environ.get("MATRIX0_STRICT_CHECKPOINT") == "1":
         raise RuntimeError(
             f"Checkpoint did not match model exactly for eval: {checkpoint_path} "
-            f"(missing={len(missing)}, unexpected={len(unexpected)})"
+            f"(missing={len(disallowed_missing)}, unexpected={len(unexpected)})"
         )
     model.eval()
     return model
@@ -993,8 +1052,13 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "policy_distill_checkpoint": str(getattr(args, "policy_distill_checkpoint", "") or ""),
             "policy_distill_weight": float(getattr(args, "policy_distill_weight", 0.0) or 0.0),
             "policy_distill_temperature": float(getattr(args, "policy_distill_temperature", 1.0) or 1.0),
+            "moves_left_weight": float(getattr(args, "moves_left_weight", 0.0) or 0.0),
+            "moves_left_scale": float(getattr(args, "moves_left_scale", 256.0) or 256.0),
         }
     )
+    raw.setdefault("model", {})
+    if float(getattr(args, "moves_left_weight", 0.0) or 0.0) > 0.0:
+        raw["model"]["moves_left"] = True
     if args.ssl_weight is not None:
         raw["training"]["ssl_weight"] = float(args.ssl_weight)
     if args.policy_label_smoothing is not None:
@@ -1025,6 +1089,7 @@ def _eval_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, floa
             "policy_legal_ce",
             "policy_legal_kl",
             "value_mse",
+            "moves_left_mse",
             "legal_policy_mass",
         )
         if key in before and key in after
@@ -1074,6 +1139,9 @@ def _build_train_cmd(
     for source in getattr(args, "policy_exclude_source", []) or []:
         train_cmd.extend(["--policy-exclude-source", str(source)])
     train_cmd.extend(["--trainable-scope", str(getattr(args, "trainable_scope", "all") or "all")])
+    if float(getattr(args, "moves_left_weight", 0.0) or 0.0) > 0.0:
+        train_cmd.extend(["--moves-left-weight", str(float(getattr(args, "moves_left_weight", 0.0) or 0.0))])
+        train_cmd.extend(["--moves-left-scale", str(float(getattr(args, "moves_left_scale", 256.0) or 256.0))])
     if getattr(args, "policy_distill_checkpoint", None):
         train_cmd.extend(["--policy-distill-checkpoint", str(args.policy_distill_checkpoint)])
         train_cmd.extend(["--policy-distill-weight", str(float(getattr(args, "policy_distill_weight", 0.0) or 0.0))])
@@ -1416,10 +1484,12 @@ def main() -> None:
     parser.add_argument("--value-exclude-source", action="append", default=[], help="Exclude these result sources from value loss. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=[], help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=[], help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
-    parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable during training.")
+    parser.add_argument("--trainable-scope", choices=["all", "value_head", "moves_left_head", "value_and_moves_left"], default="all", help="Restrict which model parameters are trainable during training.")
     parser.add_argument("--policy-distill-checkpoint", default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
     parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
     parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
+    parser.add_argument("--moves-left-weight", type=float, default=0.0, help="Auxiliary normalized moves-left loss weight.")
+    parser.add_argument("--moves-left-scale", type=float, default=256.0, help="Log normalization scale for moves-left targets.")
     parser.add_argument("--ssl-weight", type=float, default=None)
     parser.add_argument("--policy-label-smoothing", type=float, default=None)
     parser.add_argument("--no-amp", action="store_true")

@@ -17,6 +17,7 @@ model:
   policy_factor_rank: 160          # Trim dense policy head cost
   infer_attention_stride: 2        # Inference-only: run every other attention block
   infer_amp_tower: true            # Inference-only: AMP for tower on MPS
+  moves_left: false                # Enable only for auxiliary moves-left scouts/checkpoints
   aux_policy_from_square: true
   aux_policy_move_type: true
   ssl_curriculum: true
@@ -57,6 +58,8 @@ training:
   ssl_every_n: 1                   # Compute SSL every step for consistent learning
   ssl_chunk_size: 64               # Reduced for MPS memory stability
   ssl_target_weight: 1.0           # Normalize SSL magnitude
+  moves_left_weight: 0.0           # Auxiliary normalized plies-to-game-end loss
+  moves_left_scale: 256.0          # log1p normalization scale for moves_left targets
   # CRITICAL FIX: Force external data usage
   data_mode: "mixed"               # Use mixed mode to access external data
   dataloader_workers: 6            # Increase worker threads for faster data loading

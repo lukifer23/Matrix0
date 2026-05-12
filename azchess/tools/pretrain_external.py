@@ -431,7 +431,7 @@ def main():
                 )
                 if loss_values is None:
                     continue
-                loss, policy_loss, value_loss, ssl_loss, _, _ = loss_values
+                loss, policy_loss, value_loss, ssl_loss, *_ = loss_values
 
                 # Optimizer step + scheduler
                 if scaler is not None:
@@ -522,7 +522,7 @@ def main():
             )
             if loss_values is None:
                 continue
-            loss, policy_loss, value_loss, ssl_loss, _, _ = loss_values
+            loss, policy_loss, value_loss, ssl_loss, *_ = loss_values
 
             if scaler is not None:
                 try:

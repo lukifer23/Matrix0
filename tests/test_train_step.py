@@ -63,6 +63,23 @@ class ScopedTrainModel(nn.Module):
         return p, v, ssl
 
 
+class MovesLeftModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.moves_left_head = nn.Linear(1, 1)
+
+    def forward_with_features(self, x, return_ssl=True):
+        batch = x.size(0)
+        feats = torch.ones((batch, 1), dtype=torch.float32, device=x.device)
+        p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
+        v = torch.zeros(batch, dtype=torch.float32, device=x.device)
+        ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
+        return p, v, ssl, feats
+
+    def compute_moves_left(self, feats):
+        return torch.sigmoid(self.moves_left_head(feats)).reshape(-1)
+
+
 def test_train_step_illegal_policy_shape(caplog):
     model = DummyModel()
     optimizer = optim.SGD(model.parameters(), lr=0.1)
@@ -342,6 +359,39 @@ def test_train_step_skips_backward_for_noop_source_filtered_batch():
     assert policy_loss == 0.0
     assert value_loss == 0.0
     assert model.value_fc1.weight.grad is None
+
+
+def test_train_step_uses_moves_left_auxiliary_loss():
+    model = MovesLeftModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.zeros((2,), dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "moves_left": np.array([10.0, 1.0], dtype=np.float32),
+    }
+
+    *_, moves_left_loss = train_step(
+        model,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+        moves_left_weight=1.0,
+        moves_left_scale=32.0,
+    )
+
+    assert moves_left_loss > 0.0
+    assert model.moves_left_head.weight.grad is not None
 
 
 def test_checkpoint_state_selection_prefers_ema_once():

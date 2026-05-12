@@ -22,6 +22,7 @@
 - Added `--legal-policy-weight` for legal-conditioned policy CE over masked logits and legal-renormalized targets.
 - Added final-position self-play metadata: final FEN, piece count, halfmove clock, legal count, and draw-claim availability.
 - Added final-position summaries to local-loop reports under `final_position` and per-source `source_metrics`.
+- Added optional moves-left auxiliary supervision: self-play now writes per-position `moves_left` targets, old per-game shards can derive them from `meta_moves`, `PolicyValueNet` can enable a `moves_left` head, training can use `--moves-left-weight`, and checkpoint eval reports `moves_left_mse` when targets are present.
 - Added `azchess.tools.diagnose_policy_targets` for target-entropy, top-probability, and legal-count bucket diagnostics.
 - Added tests covering legal-policy loss, fresh-shard metadata pruning, exact zero-jitter selection, batched virtual-loss leaf collection, self-play worker shutdown, and current-search MCTS policy targets.
 

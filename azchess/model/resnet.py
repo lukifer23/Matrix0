@@ -261,6 +261,7 @@ class NetConfig:
     self_supervised: bool = True  # Enable self-supervised learning
     piece_square_tables: bool = True  # Enable piece-square table features
     wdl: bool = False  # Optional WDL auxiliary head
+    moves_left: bool = False  # Optional auxiliary head for normalized plies-to-game-end prediction
     # V2 toggles (safe defaults keep legacy behavior)
     policy_factor_rank: int = 0
     norm: str = "batch"  # batch|group
@@ -519,6 +520,17 @@ class PolicyValueNet(nn.Module):
             )
         else:
             self.wdl_head = None
+
+        if cfg.moves_left:
+            self.moves_left_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(C, max(32, C // 2)),
+                activation,
+                nn.Linear(max(32, C // 2), 1),
+            )
+        else:
+            self.moves_left_head = None
             
         # SSRL tasks if enabled
         ssrl_tasks = getattr(cfg, 'ssrl_tasks', [])
@@ -646,6 +658,12 @@ class PolicyValueNet(nn.Module):
                     nn.init.xavier_uniform_(m.weight, gain=1.0)
                     nn.init.constant_(m.bias, 0.0)
 
+        if self.moves_left_head is not None:
+            for m in self.moves_left_head.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight, gain=1.0)
+                    nn.init.constant_(m.bias, 0.0)
+
         if getattr(self, 'ssrl_heads', None):
             for head in self.ssrl_heads.values():
                 for m in head.modules():
@@ -767,6 +785,11 @@ class PolicyValueNet(nn.Module):
         if self.wdl_head is None:
             return None
         return self.wdl_head(feats)
+
+    def compute_moves_left(self, feats: torch.Tensor) -> Optional[torch.Tensor]:
+        if self.moves_left_head is None:
+            return None
+        return torch.sigmoid(self.moves_left_head(feats)).squeeze(-1).contiguous()
 
     @staticmethod
     def from_config(d: dict) -> "PolicyValueNet":

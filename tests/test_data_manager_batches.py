@@ -47,3 +47,28 @@ def test_openings_batch_handles_small_file(tmp_path):
     assert batch['pi'].shape == (3, POLICY_SIZE)
     assert batch['z'].shape == (3,)
     assert batch['legal_mask'].shape == (3, POLICY_SIZE)
+
+
+def test_replay_batch_derives_moves_left_from_meta_moves(tmp_path):
+    manager = DataManager(base_dir=str(tmp_path))
+    board = chess.Board()
+    positions = np.stack([encode_board(board) for _ in range(3)], axis=0)
+    policy_targets = np.full((3, POLICY_SIZE), 1.0 / POLICY_SIZE, dtype=np.float32)
+    value_targets = np.zeros((3,), dtype=np.float32)
+    manager.add_selfplay_data(
+        {
+            "s": positions,
+            "pi": policy_targets,
+            "z": value_targets,
+            "legal_mask": np.ones((3, POLICY_SIZE), dtype=np.uint8),
+            "meta_moves": np.array([3], dtype=np.int32),
+            "meta_result_source": np.array(["terminal"]),
+        },
+        worker_id=0,
+        game_id=0,
+    )
+
+    batch = next(manager.get_training_batch(batch_size=3))
+
+    assert isinstance(batch, dict)
+    assert sorted(batch["moves_left"].tolist()) == [1.0, 2.0, 3.0]

@@ -685,10 +685,12 @@ def selfplay_worker(proc_id: int, cfg_dict: dict, ckpt_path: str | None, games: 
     
             filepath = None
             if len(states) > 0:
+                moves_left = np.arange(len(states), 0, -1, dtype=np.float32)
                 game_data = {
                     "s": np.array(states, dtype=np.float32),
                     "pi": np.array(pis, dtype=np.float32),
                     "z": np.array(value_target, dtype=np.float32),
+                    "moves_left": moves_left,
                     "value_weight": np.full((len(states),), value_weight, dtype=np.float32),
                     # Per-game metadata arrays
                     "meta_moves": np.array([len(states)], dtype=np.int32),

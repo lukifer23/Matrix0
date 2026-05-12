@@ -45,6 +45,7 @@ logger = setup_logging(level=logging.INFO)
 
 
 VALUE_HEAD_PARAM_PREFIXES = ("value_head", "value_fc1", "value_fc2", "value_fc3", "value_gate")
+MOVES_LEFT_HEAD_PARAM_PREFIXES = ("moves_left_head",)
 
 
 def _is_trainable_for_scope(name: str, scope: str) -> bool:
@@ -53,6 +54,11 @@ def _is_trainable_for_scope(name: str, scope: str) -> bool:
         return True
     if scope == "value_head":
         return name.startswith(VALUE_HEAD_PARAM_PREFIXES) or any(f".{prefix}" in name for prefix in VALUE_HEAD_PARAM_PREFIXES)
+    if scope == "moves_left_head":
+        return name.startswith(MOVES_LEFT_HEAD_PARAM_PREFIXES) or any(f".{prefix}" in name for prefix in MOVES_LEFT_HEAD_PARAM_PREFIXES)
+    if scope == "value_and_moves_left":
+        prefixes = VALUE_HEAD_PARAM_PREFIXES + MOVES_LEFT_HEAD_PARAM_PREFIXES
+        return name.startswith(prefixes) or any(f".{prefix}" in name for prefix in prefixes)
     raise ValueError(f"Unknown trainable scope: {scope}")
 
 
@@ -283,7 +289,9 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_exclude_sources: Optional[list[str]] = None,
                policy_distill_model: Optional[nn.Module] = None,
                policy_distill_weight: float = 0.0,
-               policy_distill_temperature: float = 1.0):
+               policy_distill_temperature: float = 1.0,
+               moves_left_weight: float = 0.0,
+               moves_left_scale: float = 256.0):
     """Single training step with augmentation, mixed precision, and self-supervised learning."""
     import time
 
@@ -296,6 +304,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     legal_mask_np = None
     value_weight_np = None
     result_source_np = None
+    moves_left_np = None
     if isinstance(batch, dict):
         s = batch['s']
         pi = batch['pi']
@@ -303,6 +312,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         legal_mask_np = batch.get('legal_mask', None)
         value_weight_np = batch.get('value_weight', None)
         result_source_np = batch.get('result_source', None)
+        moves_left_np = batch.get('moves_left', None)
     else:
         if len(batch) >= 6:
             s, pi, z, legal_mask_np, value_weight_np, result_source_np = batch[:6]
@@ -321,6 +331,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     s = s if torch.is_tensor(s) else torch.from_numpy(s)
     pi = pi if torch.is_tensor(pi) else torch.from_numpy(pi)
     z = z if torch.is_tensor(z) else torch.from_numpy(z)
+    moves_left_target = None
+    if moves_left_np is not None:
+        moves_left_target = moves_left_np if torch.is_tensor(moves_left_np) else torch.from_numpy(np.asarray(moves_left_np, dtype=np.float32))
+        moves_left_target = moves_left_target.to(dtype=torch.float32).reshape(-1)
     if value_weight_np is not None:
         value_weight = value_weight_np if torch.is_tensor(value_weight_np) else torch.from_numpy(np.asarray(value_weight_np, dtype=np.float32))
     else:
@@ -475,6 +489,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
     pi = pi.to(device).contiguous().clone()
     z = z.to(device).contiguous()
     value_weight = value_weight.to(device).contiguous().to(dtype=torch.float32)
+    if moves_left_target is not None:
+        if moves_left_target.shape[0] != s.shape[0]:
+            raise ValueError(f"moves_left length {moves_left_target.shape[0]} does not match batch length {s.shape[0]}")
+        moves_left_target = moves_left_target.to(device).contiguous().to(dtype=torch.float32)
     if source_policy_mask is not None:
         source_policy_mask = source_policy_mask.to(device).contiguous().to(dtype=torch.float32)
     if legal_mask_t is not None:
@@ -615,7 +633,14 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             p, v, ssl_out, feats = model.forward_with_features(s_forward, return_ssl=bool(enable_ssl))
         else:
             feats = None
-            p, v, ssl_out = model(s_forward, return_ssl=bool(enable_ssl))
+            model_out = model(s_forward, return_ssl=bool(enable_ssl))
+            if isinstance(model_out, (tuple, list)) and len(model_out) == 3:
+                p, v, ssl_out = model_out
+            elif isinstance(model_out, (tuple, list)) and len(model_out) == 2:
+                p, v = model_out
+                ssl_out = None
+            else:
+                raise ValueError("Model forward must return (policy, value) or (policy, value, ssl_output)")
 
     # Do not restore dtypes on MPS; keeping consistent param dtype avoids mixed-type ops
 
@@ -950,6 +975,29 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                     loss = loss + (float(wdl_weight) * wdl_loss)
             except Exception:
                 pass
+
+        moves_left_loss = torch.tensor(0.0, device=device, dtype=target_dtype)
+        if moves_left_weight > 0.0 and moves_left_target is not None and feats is not None and hasattr(model, 'compute_moves_left'):
+            moves_left_pred = model.compute_moves_left(feats)
+            if moves_left_pred is not None:
+                scale = torch.tensor(float(max(1.0, moves_left_scale)), device=device, dtype=moves_left_target.dtype)
+                moves_left_target_norm = torch.log1p(moves_left_target.clamp_min(0.0)) / torch.log1p(scale)
+                moves_left_target_norm = moves_left_target_norm.clamp(0.0, 1.0).to(dtype=moves_left_pred.dtype)
+                ml_weight = value_weight.reshape_as(moves_left_target_norm).to(dtype=moves_left_pred.dtype).clamp(0.0, 1.0)
+                moves_left_per_sample = nn.functional.smooth_l1_loss(
+                    moves_left_pred.reshape_as(moves_left_target_norm),
+                    moves_left_target_norm,
+                    beta=0.05,
+                    reduction='none',
+                )
+                ml_weight_sum = ml_weight.sum()
+                if ml_weight_sum > 0:
+                    moves_left_loss = (moves_left_per_sample * ml_weight).sum() / ml_weight_sum
+                else:
+                    moves_left_loss = torch.zeros((), device=device, dtype=moves_left_pred.dtype)
+                if moves_left_loss.dtype != loss.dtype:
+                    moves_left_loss = moves_left_loss.to(dtype=loss.dtype)
+                loss = loss + (float(moves_left_weight) * moves_left_loss)
     
     # PERFORMANCE PROFILING: Start backward pass
     backward_start = time.time()
@@ -1038,6 +1086,7 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         ssl_loss_return,
         ssrl_loss_return,
         (wdl_loss.item() if (use_wdl and wdl_weight > 0.0) else 0.0),
+        (moves_left_loss.item() if (moves_left_weight > 0.0 and moves_left_target is not None) else 0.0),
     )
 
 def get_lr_scheduler(optimizer, total_steps: int, warmup_steps: int):
@@ -1084,6 +1133,8 @@ def train_comprehensive(
     policy_distill_checkpoint: Optional[str] = None,
     policy_distill_weight: float = 0.0,
     policy_distill_temperature: float = 1.0,
+    moves_left_weight: Optional[float] = None,
+    moves_left_scale: Optional[float] = None,
 ):
     """Train the model with comprehensive features and memory optimizations."""
 
@@ -1514,6 +1565,7 @@ def train_comprehensive(
     running_value_loss = 0.0
     running_ssl_loss = 0.0
     running_wdl_loss = 0.0
+    running_moves_left_loss = 0.0
 
     # Watchdog for detecting training hangs
     last_progress_time = time.time()
@@ -1628,6 +1680,8 @@ def train_comprehensive(
                 policy_distill_model=policy_distill_model,
                 policy_distill_weight=cfg_policy_distill_weight,
                 policy_distill_temperature=cfg_policy_distill_temperature,
+                moves_left_weight=float(tr_cfg.get('moves_left_weight', 0.0) if moves_left_weight is None else moves_left_weight),
+                moves_left_scale=float(tr_cfg.get('moves_left_scale', 256.0) if moves_left_scale is None else moves_left_scale),
                 )
                 
                 if loss_values is None:
@@ -1638,7 +1692,11 @@ def train_comprehensive(
                 if current_step % 10 == 0 and logger.isEnabledFor(logging.DEBUG):
                     logger.info(f"PERF: train_step call: {train_step_time:.3f}s")
 
-                loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss = loss_values
+                if len(loss_values) == 6:
+                    loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss = loss_values
+                    moves_left_loss = 0.0
+                else:
+                    loss, policy_loss, value_loss, ssl_loss, ssrl_loss, wdl_loss, moves_left_loss = loss_values
 
                 # PERFORMANCE PROFILING: Start post-processing
                 post_proc_start = time.time()
@@ -1658,9 +1716,9 @@ def train_comprehensive(
                         # Fallback: assume not finite if unknown type
                         return False
 
-                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss) and _finite(ssrl_loss)):
+                if not (_finite(loss) and _finite(policy_loss) and _finite(value_loss) and _finite(ssl_loss) and _finite(ssrl_loss) and _finite(moves_left_loss)):
                     logger.warning(
-                        f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}, ssrl={ssrl_loss}"
+                        f"Non-finite loss detected: loss={loss}, policy={policy_loss}, value={value_loss}, ssl={ssl_loss}, ssrl={ssrl_loss}, moves_left={moves_left_loss}"
                     )
                     # Skip this batch and continue training
                     continue
@@ -1680,6 +1738,7 @@ def train_comprehensive(
             running_value_loss = 0.98 * running_value_loss + 0.02 * max(0.0, float(value_loss))
             running_ssl_loss = 0.98 * running_ssl_loss + 0.02 * max(0.0, float(ssl_loss))
             running_wdl_loss = 0.98 * running_wdl_loss + 0.02 * max(0.0, float(wdl_loss))
+            running_moves_left_loss = 0.98 * running_moves_left_loss + 0.02 * max(0.0, float(moves_left_loss))
             
             # CRITICAL: Update SSL curriculum difficulty during training
             if hasattr(model, 'update_ssl_curriculum') and cfg.model().get('ssl_curriculum', False):
@@ -1826,6 +1885,7 @@ def train_comprehensive(
                             f"Policy(EMA): {running_policy_loss:.4f} | "
                             f"Value(EMA): {running_value_loss:.4f} | "
                             f"SSL(EMA): {running_ssl_loss:.4f} | "
+                            f"MovesLeft(EMA): {running_moves_left_loss:.4f} | "
                             f"LR: {lr_current:.6f} | "
                             f"Memory: {memory_usage}GB{memory_info} | "
                             f"Device: {device}"
@@ -1898,6 +1958,8 @@ def train_comprehensive(
                     writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], current_step)
                     if cfg.model().get('wdl', False) and float(tr_cfg.get('wdl_weight', 0.0)) > 0.0:
                         writer.add_scalar('Loss/wdl', running_wdl_loss, current_step)
+                    if cfg.model().get('moves_left', False) and float(tr_cfg.get('moves_left_weight', 0.0)) > 0.0:
+                        writer.add_scalar('Loss/moves_left', running_moves_left_loss, current_step)
                 except OSError as writer_error:
                     logger.warning("TensorBoard write failed; continuing without scalar write: %s", writer_error)
             
@@ -2110,10 +2172,12 @@ def main():
     parser.add_argument("--value-exclude-source", action="append", default=None, help="Exclude these result sources from value loss. Repeatable.")
     parser.add_argument("--policy-include-source", action="append", default=None, help="Only these result sources contribute to policy CE/legal-policy CE. Repeatable.")
     parser.add_argument("--policy-exclude-source", action="append", default=None, help="Exclude these result sources from policy CE/legal-policy CE. Repeatable.")
-    parser.add_argument("--trainable-scope", choices=["all", "value_head"], default="all", help="Restrict which model parameters are trainable.")
+    parser.add_argument("--trainable-scope", choices=["all", "value_head", "moves_left_head", "value_and_moves_left"], default="all", help="Restrict which model parameters are trainable.")
     parser.add_argument("--policy-distill-checkpoint", type=str, default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
     parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
     parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
+    parser.add_argument("--moves-left-weight", type=float, default=None, help="Auxiliary normalized moves-left loss weight.")
+    parser.add_argument("--moves-left-scale", type=float, default=None, help="Log normalization scale for moves-left targets.")
     
     args = parser.parse_args()
     
@@ -2148,6 +2212,8 @@ def main():
         policy_distill_checkpoint=args.policy_distill_checkpoint,
         policy_distill_weight=args.policy_distill_weight,
         policy_distill_temperature=args.policy_distill_temperature,
+        moves_left_weight=args.moves_left_weight,
+        moves_left_scale=args.moves_left_scale,
     )
 
 def train_from_config(config_path: str = "config.yaml"):

@@ -282,6 +282,13 @@ Full-dataset broad validation against `checkpoints/bootstrap_007_tb_terminal_cap
 
 The current guarded recipe is saturated. Stop the bootstrap phase here. The fresh-anchor checkpoint is useful on aggregate, but it is not clean enough for unattended self-play because terminal regresses over the source guard and direct terminal repair did not find a clean improving candidate. The next high-value path is to add better supervision/instrumentation before resuming looped self-play, starting with a moves-left auxiliary target/head scout.
 
+Moves-left auxiliary supervision is now the next scout path:
+
+- enable `model.moves_left` for the scout checkpoint
+- use a small `--moves-left-weight` while preserving parent policy via distillation
+- treat `moves_left_mse` as diagnostic, not as a promotion metric
+- promote only if aggregate value, source-sliced value, and policy drift gates remain clean
+
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 
 Source-aware value filtering example:

@@ -38,10 +38,12 @@ Matrix0 fit:
 
 Suggested scout:
 
-- add optional `moves_left` head behind config, disabled by default
-- train it only when a shard has a reliable target:
+- enable `model.moves_left: true`
+- train with `--moves-left-weight` and `--moves-left-scale`
+- self-play shards write exact per-position `moves_left`; older per-game shards derive the same target from `meta_moves`
+- start with exact sources first:
   - terminal/tablebase: exact remaining plies from sampled position to game end
-  - capped: either exclude or train as censored/low-weight target
+  - capped: use only under source guards because capped positions are horizon-censored by the game cap
 - evaluate whether it improves capped/terminal source value without hurting tablebase
 
 Acceptance:
@@ -49,7 +51,7 @@ Acceptance:
 - aggregate heldout value improves
 - tablebase, terminal, capped source deltas stay inside `+5e-7`
 - no policy CE drift beyond current bounds
-- moves-left loss decreases on exact terminal/tablebase positions
+- `moves_left_mse` decreases on exact terminal/tablebase positions
 
 Do not:
 
