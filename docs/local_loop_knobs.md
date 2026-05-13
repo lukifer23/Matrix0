@@ -470,6 +470,12 @@ For cycle promotion:
 
 Keep the policy drift gates unchanged. Weighted value gates are not a substitute for policy quality checks.
 
+### `--checkpoint-state`
+
+Local-loop scouts now default to `--checkpoint-state model` for heldout eval and exported candidates. The initial parent is normalized from `--initial-checkpoint-state model_ema` by default, then each short candidate chunk is normalized to the raw trained `model` state before the next chunk, final eval, and promotion.
+
+This avoids a short-run EMA trap: with `ema_decay=0.999`, a 40-60 step scout's `model_ema` can contain only a small fraction of the raw candidate update, making real value movement look like stagnation. Long offline training and match tooling can still prefer EMA, but the local-loop gate must evaluate the same state that downstream self-play will load after promotion.
+
 ### `--train-result-source-mix`
 
 Force each training batch to contain an explicit mix of result-source prefixes.
@@ -485,6 +491,8 @@ Current terminal-balance scout:
 ```
 
 This is a training sampler only. Keep `--value-source-weight`, value include filters, policy distillation, and the same heldout source gates so the training objective and promotion criteria stay aligned.
+
+Within each requested result-source bucket, shards are sampled by recorded sample count. This matters when fresh self-play shards and anchor shards coexist; otherwise small fresh shards can be overrepresented relative to larger anchor shards.
 
 ## Strictness
 

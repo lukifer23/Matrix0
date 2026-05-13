@@ -75,3 +75,25 @@ def test_training_batch_by_result_source_mix_balances_prefixes(tmp_path):
     assert dict(zip(sources.tolist(), counts.tolist())) == {"capped": 3, "tablebase": 6, "terminal": 3}
     assert batch["s"].shape[0] == 12
     assert batch["value_weight"].shape[0] == 12
+
+
+def test_result_source_mix_uses_sample_count_shard_weights(tmp_path, monkeypatch):
+    manager = DataManager(base_dir=str(tmp_path))
+    manager.add_training_data(_make_sourced_shard_data(4, "terminal", 1.0, fill_value=0.25), shard_id=0, source="replay")
+    manager.add_training_data(_make_sourced_shard_data(40, "terminal", 1.0, fill_value=0.75), shard_id=1, source="replay")
+
+    original_choice = np.random.choice
+    observed_probabilities = []
+
+    def recording_choice(a, size=None, replace=True, p=None):
+        if p is not None and np.asarray(a).dtype.kind in {"U", "S", "O"}:
+            observed_probabilities.append(np.asarray(p, dtype=np.float64))
+        return original_choice(a, size=size, replace=replace, p=p)
+
+    monkeypatch.setattr(np.random, "choice", recording_choice)
+
+    batch = next(manager.get_training_batch_by_result_source_mix(8, {"terminal": 1.0}))
+
+    assert batch["s"].shape[0] == 8
+    assert observed_probabilities
+    np.testing.assert_allclose(observed_probabilities[0], np.array([4.0 / 44.0, 40.0 / 44.0]))

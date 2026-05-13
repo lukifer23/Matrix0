@@ -476,7 +476,48 @@ def _save_initial_checkpoint(cfg: Config, path: Path, device: str) -> None:
     )
 
 
-def _prepare_initial_checkpoint(cfg: Config, path: Path, device: str, init_checkpoint: Optional[str]) -> Dict[str, Any]:
+def _state_dict_for_preference(
+    checkpoint: Dict[str, Any],
+    path: Path,
+    preference: str = "model_ema",
+) -> tuple[str, Dict[str, torch.Tensor]]:
+    pref = str(preference or "model_ema")
+    if pref == "model":
+        order = ("model", "model_state_dict", "state_dict", "model_ema")
+    elif pref == "model_ema":
+        order = ("model_ema", "model", "model_state_dict", "state_dict")
+    else:
+        raise ValueError(f"Unknown checkpoint state preference: {preference}")
+    for key in order:
+        state = checkpoint.get(key)
+        if isinstance(state, dict):
+            return key, state
+    if all(torch.is_tensor(v) for v in checkpoint.values()):
+        return "state_dict", checkpoint
+    raise ValueError(f"No model state dict found in checkpoint: {path}")
+
+
+def _normalize_checkpoint_state(path: Path, preference: str) -> Dict[str, Any]:
+    """Rewrite model entries so legacy loaders use the same state the loop evaluated."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    state_key, state_dict = _state_dict_for_preference(checkpoint, path, preference)
+    normalized = dict(checkpoint)
+    normalized["model"] = state_dict
+    normalized["model_state_dict"] = state_dict
+    normalized["model_ema"] = state_dict
+    normalized["matrix0_state_preference"] = str(preference)
+    normalized["matrix0_state_preference_source"] = state_key
+    torch.save(normalized, path)
+    return {"path": str(path), "preference": str(preference), "source_key": state_key}
+
+
+def _prepare_initial_checkpoint(
+    cfg: Config,
+    path: Path,
+    device: str,
+    init_checkpoint: Optional[str],
+    state_preference: str = "model_ema",
+) -> Dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     if init_checkpoint:
         source = Path(init_checkpoint)
@@ -485,19 +526,19 @@ def _prepare_initial_checkpoint(cfg: Config, path: Path, device: str, init_check
         checkpoint = torch.load(source, map_location="cpu", weights_only=False)
         _state_dict_from_checkpoint(checkpoint, source)
         _clone_or_copy2(source, path)
-        return {"mode": "provided", "source": str(source), "path": str(path)}
+        normalized = _normalize_checkpoint_state(path, state_preference)
+        return {"mode": "provided", "source": str(source), "path": str(path), "normalized": normalized}
     _save_initial_checkpoint(cfg, path, device)
-    return {"mode": "fresh", "source": None, "path": str(path)}
+    normalized = _normalize_checkpoint_state(path, state_preference)
+    return {"mode": "fresh", "source": None, "path": str(path), "normalized": normalized}
 
 
-def _state_dict_from_checkpoint(checkpoint: Dict[str, Any], path: Path) -> Dict[str, torch.Tensor]:
-    for key in ("model_ema", "model", "model_state_dict", "state_dict"):
-        state = checkpoint.get(key)
-        if isinstance(state, dict):
-            return state
-    if all(torch.is_tensor(v) for v in checkpoint.values()):
-        return checkpoint
-    raise ValueError(f"No model state dict found in checkpoint: {path}")
+def _state_dict_from_checkpoint(
+    checkpoint: Dict[str, Any],
+    path: Path,
+    preference: str = "model_ema",
+) -> Dict[str, torch.Tensor]:
+    return _state_dict_for_preference(checkpoint, path, preference)[1]
 
 
 def _sample_training_batch(data_dir: Path, batch_size: int) -> Dict[str, np.ndarray]:
@@ -930,9 +971,14 @@ def _delta_source_metrics(before: Dict[str, Any], after: Dict[str, Any]) -> Dict
     return out
 
 
-def _load_eval_model(checkpoint_path: Path, cfg: Config, device: str) -> torch.nn.Module:
+def _load_eval_model(
+    checkpoint_path: Path,
+    cfg: Config,
+    device: str,
+    state_preference: str = "model",
+) -> torch.nn.Module:
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = _state_dict_from_checkpoint(checkpoint, checkpoint_path)
+    state_dict = _state_dict_from_checkpoint(checkpoint, checkpoint_path, state_preference)
     model_cfg = dict(cfg.model())
     if any(str(key).startswith("moves_left_head.") for key in state_dict):
         model_cfg["moves_left"] = True
@@ -961,9 +1007,10 @@ def evaluate_checkpoint_batches(
     batches: int,
     source_prefixes: Optional[List[str]] = None,
     fixed_batches: Optional[List[Dict[str, np.ndarray]]] = None,
+    checkpoint_state: str = "model",
 ) -> Dict[str, Any]:
     count = max(1, int(batches))
-    model = _load_eval_model(checkpoint_path, cfg, device)
+    model = _load_eval_model(checkpoint_path, cfg, device, checkpoint_state)
     moves_left_scale = float(cfg.training().get("moves_left_scale", 256.0) or 256.0)
     records: List[Dict[str, Any]] = []
     for idx in range(count):
@@ -1269,7 +1316,14 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         env["MATRIX0_MPS_TARGET_BATCH"] = str(args.mps_target_batch)
 
     initial_ckpt = run_dir / "checkpoints" / "local_loop_init.pt"
-    initial_checkpoint_info = _prepare_initial_checkpoint(loop_cfg, initial_ckpt, device, args.init_checkpoint)
+    initial_checkpoint_info = _prepare_initial_checkpoint(
+        loop_cfg,
+        initial_ckpt,
+        device,
+        args.init_checkpoint,
+        str(getattr(args, "initial_checkpoint_state", "model_ema") or "model_ema"),
+    )
+    checkpoint_state = str(getattr(args, "checkpoint_state", "model") or "model")
 
     stages: List[Dict[str, Any]] = []
     selfplay_cmd = [
@@ -1335,6 +1389,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         eval_batch_size,
         batches=len(eval_batches),
         fixed_batches=eval_batches,
+        checkpoint_state=checkpoint_state,
     )
 
     if args.skip_train:
@@ -1374,6 +1429,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 trained_ckpt = latest_checkpoint(run_dir / "checkpoints")
                 chunk_ckpt = run_dir / "checkpoints" / f"eval_select_chunk_{chunk_idx:03d}.pt"
                 _clone_or_copy2(trained_ckpt, chunk_ckpt)
+                _normalize_checkpoint_state(chunk_ckpt, checkpoint_state)
                 current_init = chunk_ckpt
                 chunk_eval = evaluate_checkpoint_batches(
                     chunk_ckpt,
@@ -1383,6 +1439,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                     eval_batch_size,
                     batches=len(eval_batches),
                     fixed_batches=eval_batches,
+                    checkpoint_state=checkpoint_state,
                 )
                 delta = _eval_delta(eval_before, chunk_eval)
                 source_delta = _delta_source_metrics(eval_before, chunk_eval)
@@ -1407,6 +1464,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 remaining -= chunk_steps
             selected_ckpt = run_dir / "checkpoints" / "local_loop_selected.pt"
             _clone_or_copy2(best_ckpt, selected_ckpt)
+            _normalize_checkpoint_state(selected_ckpt, checkpoint_state)
             final_ckpt = selected_ckpt
             eval_after = best_eval
             eval_selection = {
@@ -1432,6 +1490,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
             stages.append(stage)
             train_seconds_total = float(stage["seconds"])
             final_ckpt = latest_checkpoint(run_dir / "checkpoints")
+            _normalize_checkpoint_state(final_ckpt, checkpoint_state)
             eval_after = evaluate_checkpoint_batches(
                 final_ckpt,
                 loop_cfg,
@@ -1440,6 +1499,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 eval_batch_size,
                 batches=len(eval_batches),
                 fixed_batches=eval_batches,
+                checkpoint_state=checkpoint_state,
             )
             eval_selection = {"enabled": False}
         data_metrics_after = summarize_npz_shards(run_dir / "data")
@@ -1545,6 +1605,8 @@ def main() -> None:
     parser.add_argument("--eval-result-source", action="append", default=[], help="Only sample eval batches from NPZ shards whose meta_result_source has this prefix. Repeatable.")
     parser.add_argument("--eval-full-dataset", action="store_true", help="Evaluate every NPZ sample matching --eval-result-source instead of sampled eval batches.")
     parser.add_argument("--eval-seed", type=int, default=None, help="Optional deterministic seed for held-out eval batch sampling.")
+    parser.add_argument("--checkpoint-state", choices=["model", "model_ema"], default="model", help="Checkpoint state used for held-out eval and exported local-loop candidates.")
+    parser.add_argument("--initial-checkpoint-state", choices=["model", "model_ema"], default="model_ema", help="State copied from --init-checkpoint before local-loop training starts.")
     parser.add_argument("--eval-select-interval", type=int, default=0, help="Train in fixed-step chunks and keep the best held-out checkpoint; 0 disables.")
     parser.add_argument("--eval-select-metric", default="value_mse", help="Held-out delta metric to minimize when eval selection is enabled.")
     parser.add_argument("--eval-select-source-metric", default="value_mse", help="Per-source held-out delta metric used with --eval-select-max-source-value-mse-delta.")

@@ -332,6 +332,22 @@ Interpretation: the weighted gate is not too strict; the candidate is still most
 
 Do not continue increasing steps on the old unbalanced sampler. Later chunks improved capped but worsened terminal.
 
+Deep-pass update: local-loop evaluation was also reading `model_ema` first. With `ema_decay=0.999`, these 40-60 step scouts evaluate a heavily lagged state; the raw model from the same selected anchor diagnostic had much larger movement than the EMA state. `bench_local_loop` now normalizes the initial parent from EMA once, then evaluates/exports short-loop candidates with the raw `model` state by default so promotion and subsequent self-play use the same weights the gate measured.
+
+Promotion update: the first fresh cycle using raw-state evaluation plus sample-count-weighted result-source batches promoted successfully:
+
+- `bootstrap_007_fresh12_balanced_sampleweighted_rawstate_valuegate_cycle_s60_lr3e8_cap25`
+- promoted checkpoint: `checkpoints/bootstrap_007_fresh_anchor_best.pt`
+- archived previous best: `logs/local_loop/bootstrap_007_fresh12_balanced_sampleweighted_rawstate_valuegate_cycle_s60_lr3e8_cap25/archives/bootstrap_007_fresh_anchor_best_20260513_084129.pt`
+- heldout `value_weighted_mse`: `-1.2916e-5`
+- heldout raw `value_mse`: `-3.3311e-5`
+- policy CE drift: `+1.2415e-4`
+- legal-policy CE drift: `+4.9913e-7`
+- source weighted value deltas: capped `-8.0084e-5`, tablebase `-1.1886e-6`, terminal `-3.4045e-6`
+- fresh capped fraction: `0.5`
+
+The important fixes were not just hyperparameters: source-balanced batches must sample shards by sample count inside each source, and short local-loop gates must evaluate/export raw candidate weights rather than the 0.999 EMA state.
+
 Teacher data is not part of the mainline loop yet. `data/teacher_games/bootstrap_007_teacher_parent/` is experimental. Do not increase teacher-game volume until the fresh self-play loop is validated; if teacher data is tested, use a tiny scout and exclude teacher sources from policy CE unless heldout legal-policy metrics prove it is safe.
 
 Source-aware value filtering example:

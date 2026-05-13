@@ -14,6 +14,7 @@ from argparse import Namespace
 from azchess.tools.bench_local_loop import (
     _eval_delta,
     _full_npz_eval_batches,
+    _normalize_checkpoint_state,
     _prepare_initial_checkpoint,
     _sample_eval_batch,
     _sample_eval_batches,
@@ -185,6 +186,68 @@ def test_evaluate_checkpoint_batches_reports_mean_and_std(tmp_path):
     assert "policy_ce" in metrics
     assert "policy_ce_std" in metrics
     assert "policy_legal_ce" in metrics
+
+
+def test_evaluate_checkpoint_batches_uses_requested_checkpoint_state(tmp_path):
+    cfg = Config({"model": _tiny_model_cfg()})
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.eye(4672, dtype=np.float32)[:2],
+        "z": np.zeros((2,), dtype=np.float32),
+    }
+    model_a = PolicyValueNet.from_config(cfg.model())
+    model_b = PolicyValueNet.from_config(cfg.model())
+    with torch.no_grad():
+        for param in model_a.parameters():
+            param.zero_()
+        for param in model_b.parameters():
+            param.fill_(0.01)
+    ckpt = tmp_path / "dual.pt"
+    torch.save({"model_ema": model_a.state_dict(), "model": model_b.state_dict()}, ckpt)
+
+    ema_metrics = evaluate_checkpoint_batches(
+        ckpt,
+        cfg,
+        tmp_path,
+        "cpu",
+        batch_size=2,
+        batches=1,
+        fixed_batches=[batch],
+        checkpoint_state="model_ema",
+    )
+    raw_metrics = evaluate_checkpoint_batches(
+        ckpt,
+        cfg,
+        tmp_path,
+        "cpu",
+        batch_size=2,
+        batches=1,
+        fixed_batches=[batch],
+        checkpoint_state="model",
+    )
+
+    assert raw_metrics["policy_ce"] != ema_metrics["policy_ce"]
+
+
+def test_normalize_checkpoint_state_rewrites_legacy_loader_entries(tmp_path):
+    cfg = Config({"model": _tiny_model_cfg()})
+    model_a = PolicyValueNet.from_config(cfg.model())
+    model_b = PolicyValueNet.from_config(cfg.model())
+    with torch.no_grad():
+        for param in model_a.parameters():
+            param.zero_()
+        for param in model_b.parameters():
+            param.fill_(0.02)
+    ckpt = tmp_path / "dual.pt"
+    torch.save({"model_ema": model_a.state_dict(), "model": model_b.state_dict()}, ckpt)
+
+    info = _normalize_checkpoint_state(ckpt, "model")
+    saved = torch.load(ckpt, map_location="cpu", weights_only=False)
+
+    key = next(iter(model_b.state_dict()))
+    assert info["source_key"] == "model"
+    assert torch.equal(saved["model_ema"][key], model_b.state_dict()[key])
+    assert torch.equal(saved["model_state_dict"][key], model_b.state_dict()[key])
 
 
 def test_summarize_metric_records_weights_metric_means_by_batch_size():

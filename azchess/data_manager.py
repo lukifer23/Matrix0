@@ -1768,8 +1768,12 @@ class DataManager:
 
     def _get_valid_shard_paths_by_result_source_prefixes(self, prefixes: List[str]) -> List[str]:
         """Get valid shard paths whose NPZ meta_result_source starts with any prefix."""
+        return [shard.path for shard in self._get_valid_shards_by_result_source_prefixes(prefixes)]
+
+    def _get_valid_shards_by_result_source_prefixes(self, prefixes: List[str]) -> List[DataShard]:
+        """Get valid shards whose NPZ meta_result_source starts with any prefix."""
         if not prefixes:
-            return self._get_valid_shard_paths()
+            return [shard for shard in self._get_all_shards() if not shard.corrupted]
         valid = []
         for shard in self._get_all_shards():
             if shard.corrupted:
@@ -1786,7 +1790,7 @@ class DataManager:
                         if raw_sources.size:
                             result_source = str(raw_sources[0])
                 if any(result_source.startswith(pref) for pref in prefixes):
-                    valid.append(str(path))
+                    valid.append(shard)
             except Exception:
                 if os.environ.get("MATRIX0_STRICT_DATA") == "1":
                     raise
@@ -1816,9 +1820,28 @@ class DataManager:
             alloc[key] += 1
         return {k: v for k, v in alloc.items() if v > 0}
 
-    def _sample_training_batch_from_paths(self, shard_paths: List[str], batch_size: int) -> Dict[str, np.ndarray]:
+    @staticmethod
+    def _normalise_shard_weights(shard_weights: Optional[List[float]], shard_count: int) -> Optional[np.ndarray]:
+        if shard_weights is None:
+            return None
+        weights = np.asarray(shard_weights, dtype=np.float64).reshape(-1)
+        if weights.shape[0] != int(shard_count):
+            raise ValueError("Shard weight count does not match shard path count")
+        weights = np.clip(weights, 0.0, None)
+        total = float(weights.sum())
+        if total <= 0.0:
+            return None
+        return weights / total
+
+    def _sample_training_batch_from_paths(
+        self,
+        shard_paths: List[str],
+        batch_size: int,
+        shard_weights: Optional[List[float]] = None,
+    ) -> Dict[str, np.ndarray]:
         if not shard_paths:
             raise RuntimeError("No valid training data available for requested result source")
+        shard_probabilities = self._normalise_shard_weights(shard_weights, len(shard_paths))
         strict_data = os.environ.get("MATRIX0_STRICT_DATA") == "1"
         parts: Dict[str, List[np.ndarray]] = {"s": [], "pi": [], "z": []}
         legal_parts: List[np.ndarray] = []
@@ -1830,7 +1853,7 @@ class DataManager:
             attempts += 1
             if attempts > max(16, len(shard_paths) * 4):
                 raise RuntimeError("Could not assemble result-source training batch")
-            shard_path = str(np.random.choice(shard_paths))
+            shard_path = str(np.random.choice(shard_paths, p=shard_probabilities))
             try:
                 with np.load(shard_path, mmap_mode="r") as data:
                     states, policies, values, legal_mask_all, ssl_targets_all = self._extract_training_arrays(data)
@@ -1889,15 +1912,30 @@ class DataManager:
     def get_training_batch_by_result_source_mix(self, batch_size: int, source_mix: Dict[str, float]) -> Iterator[Dict[str, np.ndarray]]:
         """Yield batches with an explicit per-batch result-source prefix mix."""
         allocations = self._source_mix_allocations(batch_size, source_mix)
-        shard_paths = {
-            prefix: self._get_valid_shard_paths_by_result_source_prefixes([prefix])
+        shards_by_prefix = {
+            prefix: self._get_valid_shards_by_result_source_prefixes([prefix])
             for prefix in allocations
         }
-        missing = [prefix for prefix, paths in shard_paths.items() if not paths]
+        missing = [prefix for prefix, shards in shards_by_prefix.items() if not shards]
         if missing:
             raise RuntimeError(f"No valid training data available for result-source mix prefixes: {missing}")
+        shard_paths = {
+            prefix: [shard.path for shard in shards]
+            for prefix, shards in shards_by_prefix.items()
+        }
+        shard_weights = {
+            prefix: [max(1.0, float(shard.sample_count)) for shard in shards]
+            for prefix, shards in shards_by_prefix.items()
+        }
         while True:
-            parts = [self._sample_training_batch_from_paths(shard_paths[prefix], take) for prefix, take in allocations.items()]
+            parts = [
+                self._sample_training_batch_from_paths(
+                    shard_paths[prefix],
+                    take,
+                    shard_weights=shard_weights[prefix],
+                )
+                for prefix, take in allocations.items()
+            ]
             keys = set().union(*(part.keys() for part in parts))
             out: Dict[str, np.ndarray] = {}
             for key in keys:
