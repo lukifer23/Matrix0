@@ -13,12 +13,15 @@ from argparse import Namespace
 
 from azchess.tools.bench_local_loop import (
     _eval_delta,
+    _fresh_quality_gate,
     _full_npz_eval_batches,
     _normalize_checkpoint_state,
     _prepare_initial_checkpoint,
     _sample_eval_batch,
     _sample_eval_batches,
     _selection_passes,
+    _source_configuration_diagnostics,
+    _source_pressure_diagnostics,
     _summarize_metric_records,
     copy_anchor_shards,
     evaluate_checkpoint_batches,
@@ -87,6 +90,45 @@ def test_summarize_npz_shards_reports_policy_legal_and_ssl(tmp_path):
     assert metrics["source_metrics"]["capped"]["samples"] == 4
     assert metrics["source_metrics"]["capped"]["final_piece_count"]["mean"] == 18.0
     assert np.isclose(metrics["source_metrics"]["capped"]["policy_top_prob"]["mean"], 0.7)
+
+
+def test_fresh_quality_gate_rejects_high_capped_fraction():
+    metrics = {
+        "game_outcomes": {
+            "capped": 18,
+            "tablebase": 6,
+            "terminal": 0,
+            "adjudicated_draw": 0,
+        }
+    }
+
+    gate = _fresh_quality_gate(metrics, 0.67)
+
+    assert gate["verdict"] == "reject"
+    assert gate["checks"][0]["name"] == "fresh_capped_fraction"
+    assert np.isclose(gate["checks"][0]["value"], 0.75)
+
+
+def test_source_pressure_diagnostics_reports_reuse_factor():
+    metrics = {
+        "source_metrics": {
+            "terminal": {"samples": 100, "shards": 2},
+            "tablebase": {"samples": 1000, "shards": 10},
+            "capped": {"samples": 500, "shards": 5},
+        }
+    }
+
+    diag = _source_pressure_diagnostics(
+        metrics,
+        source_mix_specs=["terminal=0.25", "tablebase=0.50", "capped=0.25"],
+        batch_size=128,
+        train_steps=60,
+    )
+
+    assert diag["enabled"] is True
+    assert diag["sources"]["terminal"]["batch_allocation"] == 32
+    assert diag["sources"]["terminal"]["expected_draws"] == 1920
+    assert np.isclose(diag["sources"]["terminal"]["expected_reuse_factor"], 19.2)
 
 
 def test_copy_anchor_shards_accepts_direct_npz_directory(tmp_path):
@@ -341,6 +383,57 @@ def test_evaluate_checkpoint_batches_reports_value_weighted_mse(tmp_path):
     assert "value_weight_sum" in metrics
     assert weighted != before
     assert "value_weighted_mse" in metrics["source_metrics"]["capped"]
+
+
+def test_evaluate_checkpoint_batches_omits_weighted_mse_when_all_value_weights_zero(tmp_path):
+    cfg = Config({"model": _tiny_model_cfg()})
+    states = np.zeros((2, 19, 8, 8), dtype=np.float32)
+    pi = np.zeros((2, 4672), dtype=np.float32)
+    pi[:, 0] = 1.0
+    batch = {
+        "s": states,
+        "pi": pi,
+        "z": np.array([1.0, 3.0], dtype=np.float32),
+        "value_weight": np.zeros((2,), dtype=np.float32),
+        "result_source": np.asarray(["capped", "capped"]),
+    }
+    model = PolicyValueNet.from_config(cfg.model())
+    ckpt = tmp_path / "model.pt"
+    torch.save({"model": model.state_dict()}, ckpt)
+
+    metrics = evaluate_checkpoint_batches(
+        ckpt,
+        cfg,
+        tmp_path,
+        "cpu",
+        batch_size=2,
+        batches=1,
+        fixed_batches=[batch],
+    )
+
+    assert metrics["value_weight_sum"] == 0.0
+    assert "value_weighted_mse" not in metrics
+    assert "value_weighted_mse" not in metrics["source_metrics"]["capped"]
+
+
+def test_source_configuration_diagnostics_warns_when_eval_source_not_trained():
+    metrics = {
+        "source_metrics": {
+            "tablebase": {"samples": 10, "shards": 1},
+            "capped": {"samples": 10, "shards": 1},
+        }
+    }
+    args = Namespace(
+        train_anchor_source_prefix=["tablebase", "capped"],
+        eval_result_source=["tablebase", "draw_adjudication"],
+        value_include_source=["tablebase", "capped"],
+        train_result_source_mix=["tablebase=0.8", "capped=0.2"],
+    )
+
+    diag = _source_configuration_diagnostics(metrics, args)
+
+    assert diag["missing_eval_sources_from_train"] == ["draw_adjudication"]
+    assert diag["warnings"]
 
 
 def test_copy_anchor_shards_imports_prior_data_into_replays(tmp_path):

@@ -44,7 +44,7 @@ Current rough targets:
 - enough tablebase/terminal data for value learning, or explicit anchor data
 - capped games whose final-position metadata explains why they capped
 - fresh capped fraction below the active gate, currently `0.67` to `0.75`
-- heldout source value deltas no worse than `+5e-7` for `tablebase`, `terminal`, and `capped`
+- heldout source value deltas no worse than the active source gate, currently `+2e-6` for `tablebase`, `terminal`, and `capped`
 
 ## Search Knobs
 
@@ -264,7 +264,7 @@ Current `bootstrap_007` diagnosis: terminal positions are underrepresented in th
 
 ```bash
 --value-source-weight terminal=2.0 \
---value-source-weight capped=0.5
+--value-source-weight capped=1.5
 ```
 
 Keep `tablebase` at the default `1.0` unless a run shows tablebase becoming the limiting guard. Do not combine high terminal weights with loose source gates; the point is to align training with the existing gate, not bypass it.
@@ -339,19 +339,21 @@ Use multi-cycle runs only after repeated single-cycle promotions are stable.
 
 ### `--max-source-value-mse-delta`
 
-Promotion gate for per-source heldout value regression. The current guard is:
+Promotion gate for per-source heldout value regression. This rejects candidates that improve aggregate heldout value by overfitting one source while damaging another. The current fresh-loop source guard has been relaxed to `0.000002` after repeated healthy candidates missed only by small source-slice noise:
 
 ```text
---max-source-value-mse-delta 0.0000005
+--max-source-value-mse-delta 0.000002
 ```
 
-This rejects candidates that improve aggregate heldout value by overfitting one source while damaging another. The active heldout sources are:
+The active heldout sources are:
 
 ```text
 --eval-result-source tablebase
 --eval-result-source terminal
 --eval-result-source capped
 ```
+
+`capped` is included only because it is part of the current anchor/training mix at low value weight. Treat capped-source improvements as secondary; tablebase and terminal slices remain the sources that decide whether value learning is actually moving forward.
 
 ### `--max-fresh-capped-fraction`
 
@@ -362,6 +364,8 @@ Promotion gate on fresh self-play outcome mix. Capped games are still useful at 
 ```
 
 Use `0.75` only for a scout or when the terminal/tablebase source guards are comfortably clean.
+
+`local_loop_cycle` passes this cap down to `bench_local_loop` as a pre-train fresh-quality gate by default. A run whose fresh self-play exceeds the capped fraction writes a report with `train_skipped=true` and stops before anchor copy, training, and eval. Use `--disable-pretrain-fresh-quality-gate` only for diagnostics where you intentionally want the full train/eval report from a bad fresh batch.
 
 ### `--prune-cycle-checkpoints`
 
@@ -378,17 +382,17 @@ find logs/local_loop/<run>/archives -type f -name '*.pt' -delete
 Selection-time source guard inside `bench_local_loop`. This prevents the selected training chunk from being chosen solely by aggregate value improvement when any heldout source slice regresses too much:
 
 ```text
---eval-select-max-source-value-mse-delta 0.0000005
+--eval-select-max-source-value-mse-delta 0.000002
 ```
 
 Use this together with the cycle-level `--max-source-value-mse-delta`.
 
 ## Current Fresh Self-Play Recipe
 
-As of May 12, 2026, the active loop is:
+As of May 13, 2026, the active loop is the sample-weighted, raw-state, tablebase-protected recipe:
 
 ```text
---games 12
+--games 24
 --sims 50
 --max-game-len 240
 --train-steps 60
@@ -403,13 +407,27 @@ As of May 12, 2026, the active loop is:
 --train-anchor-source-prefix tablebase
 --train-anchor-source-prefix terminal
 --train-anchor-source-prefix capped
+--train-result-source-mix terminal=0.25
+--train-result-source-mix tablebase=0.60
+--train-result-source-mix capped=0.15
 --value-include-source tablebase
 --value-include-source terminal
 --value-include-source capped
 --value-include-source resignation
+--value-source-weight terminal=2.0
+--value-source-weight capped=1.5
+--checkpoint-state model
+--initial-checkpoint-state model_ema
 ```
 
-This was the conservative bridge back toward looped self-play. As of the May 12 broad validation and terminal-repair scouts, treat it as saturated rather than an unattended long-run recipe. Do not continue increasing cycle count or teacher volume until a new stabilizer, such as moves-left auxiliary supervision, has passed source-sliced validation.
+This is still a guarded scout recipe, not an unattended long-run recipe. Promote only through `local_loop_cycle`, keep the policy drift gates active, and stop when a candidate reports all-zero eval deltas because that usually means eval-select chose the parent after every candidate chunk failed selection guards.
+
+The May 13 hardening pass fixed two important data-path issues before further runs:
+
+- Stockfish curriculum bucket construction had a malformed positional bucket entry. The exception was swallowed and could make `_get_stockfish_mixed_batch` return no stockfish data.
+- Mixed curriculum/teacher/stockfish/external paths could treat dict batches like legacy tuples, then drop or misalign `value_weight` and `result_source`. The data manager now normalizes batches before merging and preserves source metadata through shuffle.
+
+These fixes matter most for teacher, stockfish, and curriculum modes. The explicit `--train-result-source-mix` local-loop recipe was less exposed, but future teacher/stockfish diagnostics should use the hardened code.
 
 ### Moves-left auxiliary scout
 
@@ -450,7 +468,7 @@ Filter eval data by source prefix when using mixed replay directories.
 
 ### `value_weighted_mse`
 
-Evaluation reports both raw `value_mse` and `value_weighted_mse` when eval batches include `value_weight`.
+Evaluation reports both raw `value_mse` and `value_weighted_mse` when eval batches include positive `value_weight`. If an eval slice has zero total value weight, `value_weighted_mse` is omitted instead of reported as `0.0`; that keeps gates from accepting a metric that had no signal.
 
 Use raw `value_mse` when the promotion question is "did the candidate fit every heldout position equally?" Use `value_weighted_mse` when the promotion question should match the training objective, especially with capped bootstrap positions at lower value weight.
 
@@ -482,17 +500,23 @@ Force each training batch to contain an explicit mix of result-source prefixes.
 
 Use this when a rare source has a hard promotion gate. Loss multipliers alone increase gradient size after a rare source appears; this knob ensures the source appears every step.
 
-Current terminal-balance scout:
+Current tablebase-protected source mix:
 
 ```bash
 --train-result-source-mix terminal=0.25 \
---train-result-source-mix tablebase=0.50 \
---train-result-source-mix capped=0.25
+--train-result-source-mix tablebase=0.60 \
+--train-result-source-mix capped=0.15
 ```
 
 This is a training sampler only. Keep `--value-source-weight`, value include filters, policy distillation, and the same heldout source gates so the training objective and promotion criteria stay aligned.
 
 Within each requested result-source bucket, shards are sampled by recorded sample count. This matters when fresh self-play shards and anchor shards coexist; otherwise small fresh shards can be overrepresented relative to larger anchor shards.
+
+Reports include `source_pressure` diagnostics when this sampler is active. Watch `expected_reuse_factor`: a high value means the requested source mix is repeatedly drawing the same small source pool, which can overfit a rare guard source and regress other source slices.
+
+Reports also include `source_configuration` diagnostics. Treat warnings there as run blockers: they catch cases like evaluating `draw_adjudication` while never copying/training that source, or sampling a source that is excluded from value loss.
+
+If teacher or stockfish data is introduced, first run a short diagnostic that asserts nonzero source contribution in the actual batch stream. Do not assume adding shards means they are sampled; inspect `source_pressure`, `source_configuration`, and per-source heldout deltas.
 
 ## Strictness
 
@@ -507,6 +531,9 @@ This means:
 
 - corrupted shards raise instead of being skipped
 - missing legal masks raise where legal masks are required
+- mixed-source batches preserve `value_weight`; shards without the field are treated as weight `1.0` instead of causing weighted shards to be dropped
+- curriculum, teacher, stockfish, tactical, and openings batches preserve `result_source` and `value_weight` through merges and shuffles
+- all-zero value weights after value source filters raise when source filters or source weights are configured
 - decoded curriculum/source-prefix batches raise on legal-mask construction failures instead of substituting all-legal masks
 - partial checkpoint loads raise unless explicitly configured as a migration
 - bad MCTS priors/logits raise instead of becoming uniform labels

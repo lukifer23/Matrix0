@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -598,7 +599,7 @@ def _sample_npz_eval_batch_by_result_source(
     policies: List[np.ndarray] = []
     values: List[np.ndarray] = []
     legal_masks: List[np.ndarray] = []
-    value_weights: List[float] = []
+    value_weights: List[np.ndarray] = []
     moves_left_parts: List[np.ndarray] = []
     sources: List[str] = []
 
@@ -620,7 +621,9 @@ def _sample_npz_eval_batch_by_result_source(
                 legal_masks.append(np.asarray(legal, dtype=np.uint8))
             if "value_weight" in data:
                 weights = np.asarray(data["value_weight"][idx], dtype=np.float32).reshape(-1)
-                value_weights.extend(float(weight) for weight in weights)
+            else:
+                weights = np.ones((len(idx),), dtype=np.float32)
+            value_weights.append(np.ascontiguousarray(weights, dtype=np.float32))
             moves_left = _npz_moves_left(data, idx)
             if moves_left is not None:
                 moves_left_parts.append(moves_left)
@@ -635,8 +638,8 @@ def _sample_npz_eval_batch_by_result_source(
     }
     if legal_masks and sum(mask.shape[0] for mask in legal_masks) == out["s"].shape[0]:
         out["legal_mask"] = np.ascontiguousarray(np.concatenate(legal_masks, axis=0), dtype=np.uint8)
-    if value_weights and len(value_weights) == out["s"].shape[0]:
-        out["value_weight"] = np.asarray(value_weights, dtype=np.float32)
+    if value_weights and sum(part.shape[0] for part in value_weights) == out["s"].shape[0]:
+        out["value_weight"] = np.ascontiguousarray(np.concatenate(value_weights, axis=0), dtype=np.float32)
     if moves_left_parts and sum(part.shape[0] for part in moves_left_parts) == out["s"].shape[0]:
         out["moves_left"] = np.ascontiguousarray(np.concatenate(moves_left_parts, axis=0), dtype=np.float32)
     return out
@@ -724,9 +727,10 @@ def _full_npz_eval_batches(
                         legal = legal.reshape(legal.shape[0], -1)
                     out["legal_mask"] = np.ascontiguousarray(legal, dtype=np.uint8)
                 if "value_weight" in data:
-                    out["value_weight"] = np.ascontiguousarray(
-                        np.asarray(data["value_weight"][start:end], dtype=np.float32).reshape(-1)
-                    )
+                    value_weight = np.asarray(data["value_weight"][start:end], dtype=np.float32).reshape(-1)
+                else:
+                    value_weight = np.ones((end - start,), dtype=np.float32)
+                out["value_weight"] = np.ascontiguousarray(value_weight, dtype=np.float32)
                 moves_left = _npz_moves_left(data, np.arange(start, end, dtype=np.int64))
                 if moves_left is not None:
                     out["moves_left"] = np.ascontiguousarray(
@@ -884,8 +888,6 @@ def _evaluate_loaded_model(
             rec["value_weight_sum"] = weight_sum
             if weight_sum > 0.0:
                 rec["value_weighted_mse"] = float(np.sum(value_error_sq * value_weight) / weight_sum)
-            else:
-                rec["value_weighted_mse"] = 0.0
     if "moves_left" in batch and feats is not None and hasattr(model, "compute_moves_left"):
         moves_left_target = np.asarray(batch["moves_left"], dtype=np.float32).reshape(-1)
         moves_left_pred_t = model.compute_moves_left(feats)
@@ -944,8 +946,6 @@ def _evaluate_loaded_model(
                     source_rec["value_weight_sum"] = source_weight_sum
                     if source_weight_sum > 0.0:
                         source_rec["value_weighted_mse"] = float(np.sum(source_errors * source_weights) / source_weight_sum)
-                    else:
-                        source_rec["value_weighted_mse"] = 0.0
                 source_metrics[source] = source_rec
             rec["source_metrics"] = source_metrics
     return rec
@@ -1208,6 +1208,151 @@ def _eval_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, floa
     }
 
 
+def _parse_source_mix_specs(specs: Optional[List[str]]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for raw in specs or []:
+        if "=" not in str(raw):
+            raise ValueError(f"Invalid source mix spec {raw!r}; expected prefix=fraction")
+        key, value = str(raw).split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Invalid source mix spec {raw!r}; source prefix is empty")
+        try:
+            weight = float(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid source mix spec {raw!r}; fraction must be numeric") from exc
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError(f"Invalid source mix spec {raw!r}; fraction must be finite and non-negative")
+        out[key] = weight
+    return out
+
+
+def _game_total(outcomes: Dict[str, Any]) -> int:
+    return sum(int(outcomes.get(k, 0)) for k in ("capped", "terminal", "tablebase", "adjudicated_draw"))
+
+
+def _capped_fraction(metrics: Dict[str, Any]) -> Optional[float]:
+    outcomes = metrics.get("game_outcomes", {})
+    total = _game_total(outcomes)
+    if total <= 0:
+        return None
+    return float(outcomes.get("capped", 0)) / float(total)
+
+
+def _fresh_quality_gate(metrics: Dict[str, Any], max_capped_fraction: Optional[float]) -> Dict[str, Any]:
+    capped_fraction = _capped_fraction(metrics)
+    checks: List[Dict[str, Any]] = []
+    if max_capped_fraction is not None:
+        checks.append(
+            {
+                "name": "fresh_capped_fraction",
+                "passed": capped_fraction is not None and capped_fraction <= float(max_capped_fraction),
+                "value": capped_fraction,
+                "max": float(max_capped_fraction),
+            }
+        )
+    passed = all(check["passed"] for check in checks)
+    return {
+        "type": "matrix0_fresh_quality_gate",
+        "passed": bool(passed),
+        "verdict": "pass" if passed else "reject",
+        "checks": checks,
+    }
+
+
+def _source_pressure_diagnostics(
+    data_metrics: Dict[str, Any],
+    *,
+    source_mix_specs: Optional[List[str]],
+    batch_size: int,
+    train_steps: int,
+) -> Dict[str, Any]:
+    source_mix = _parse_source_mix_specs(source_mix_specs)
+    if not source_mix:
+        return {"enabled": False}
+    allocations = DataManager._source_mix_allocations(int(batch_size), source_mix)
+    source_metrics = data_metrics.get("source_metrics", {}) or {}
+    sources: Dict[str, Any] = {}
+    for prefix, per_batch in allocations.items():
+        matched_samples = 0
+        matched_shards = 0
+        matched_sources: Dict[str, Any] = {}
+        for source, metrics in source_metrics.items():
+            if not str(source).startswith(prefix):
+                continue
+            samples = int(metrics.get("samples", 0) or 0)
+            shards = int(metrics.get("shards", 0) or 0)
+            matched_samples += samples
+            matched_shards += shards
+            matched_sources[str(source)] = {"samples": samples, "shards": shards}
+        expected_draws = int(per_batch) * int(train_steps)
+        reuse_factor = None if matched_samples <= 0 else float(expected_draws) / float(matched_samples)
+        sources[prefix] = {
+            "batch_allocation": int(per_batch),
+            "expected_draws": int(expected_draws),
+            "matched_samples": int(matched_samples),
+            "matched_shards": int(matched_shards),
+            "expected_reuse_factor": reuse_factor,
+            "matched_sources": matched_sources,
+        }
+    return {
+        "enabled": True,
+        "batch_size": int(batch_size),
+        "train_steps": int(train_steps),
+        "source_mix": source_mix,
+        "allocations": allocations,
+        "sources": sources,
+    }
+
+
+def _source_configuration_diagnostics(data_metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    source_metrics = data_metrics.get("source_metrics", {}) or {}
+    train_sources = sorted(str(source) for source in source_metrics)
+
+    def present(prefix: str) -> bool:
+        return any(source.startswith(prefix) for source in train_sources)
+
+    train_anchor_prefixes = [str(prefix) for prefix in (getattr(args, "train_anchor_source_prefix", []) or [])]
+    eval_result_sources = [str(prefix) for prefix in (getattr(args, "eval_result_source", []) or [])]
+    value_include_sources = [str(prefix) for prefix in (getattr(args, "value_include_source", []) or [])]
+    source_mix = _parse_source_mix_specs(list(getattr(args, "train_result_source_mix", []) or []))
+    source_mix_prefixes = sorted(source_mix)
+
+    warnings: List[str] = []
+    missing_eval_sources = [prefix for prefix in eval_result_sources if not present(prefix)]
+    missing_value_include_sources = [prefix for prefix in value_include_sources if prefix != "__none__" and not present(prefix)]
+    missing_source_mix_sources = [prefix for prefix in source_mix_prefixes if not present(prefix)]
+    mixed_sources_not_value_included: List[str] = []
+    if value_include_sources:
+        mixed_sources_not_value_included = [
+            prefix
+            for prefix in source_mix_prefixes
+            if not any(prefix.startswith(include) or include.startswith(prefix) for include in value_include_sources)
+        ]
+
+    if missing_eval_sources:
+        warnings.append(f"eval_result_source prefixes absent from training data: {missing_eval_sources}")
+    if missing_value_include_sources:
+        warnings.append(f"value_include_source prefixes absent from training data: {missing_value_include_sources}")
+    if missing_source_mix_sources:
+        warnings.append(f"train_result_source_mix prefixes absent from training data: {missing_source_mix_sources}")
+    if mixed_sources_not_value_included:
+        warnings.append(f"source-mix prefixes excluded from value loss: {mixed_sources_not_value_included}")
+
+    return {
+        "train_sources": train_sources,
+        "train_anchor_source_prefix": train_anchor_prefixes,
+        "eval_result_source": eval_result_sources,
+        "value_include_source": value_include_sources,
+        "train_result_source_mix": source_mix,
+        "missing_eval_sources_from_train": missing_eval_sources,
+        "missing_value_include_sources_from_train": missing_value_include_sources,
+        "missing_source_mix_sources_from_train": missing_source_mix_sources,
+        "source_mix_prefixes_not_in_value_include": mixed_sources_not_value_included,
+        "warnings": warnings,
+    }
+
+
 def _build_train_cmd(
     args: argparse.Namespace,
     config_path: Path,
@@ -1342,6 +1487,57 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
     stages.append(_run_stage("selfplay", selfplay_cmd, repo, env))
 
     data_after_selfplay = summarize_npz_shards(run_dir / "data")
+    fresh_quality_gate = _fresh_quality_gate(
+        data_after_selfplay,
+        getattr(args, "max_train_fresh_capped_fraction", None),
+    )
+    if fresh_quality_gate["checks"] and not fresh_quality_gate["passed"]:
+        report = {
+            "type": "matrix0_local_loop_benchmark",
+            "timestamp": datetime.now().isoformat(),
+            "repo": str(repo),
+            "run_dir": str(run_dir),
+            "config": str(config_path),
+            "platform": platform.platform(),
+            "device": device,
+            "env": collect_environment_info(device).to_dict(),
+            "args": vars(args),
+            "eval_data_dir": str(Path(args.eval_data_dir) if args.eval_data_dir else run_dir / "data"),
+            "eval_source_prefix": args.eval_source_prefix if args.eval_source_prefix else None,
+            "eval_result_source": args.eval_result_source if args.eval_result_source else None,
+            "checkpoints": {
+                "initial": str(initial_ckpt),
+                "initial_info": initial_checkpoint_info,
+                "final": str(initial_ckpt),
+            },
+            "stages": stages,
+            "fresh_selfplay_limit": None,
+            "anchor_data": None,
+            "fresh_quality_gate": fresh_quality_gate,
+            "train_skipped": True,
+            "train_skip_reason": "fresh_quality_gate",
+            "source_configuration": _source_configuration_diagnostics(data_after_selfplay, args),
+            "source_pressure": {"enabled": False},
+            "throughput": {
+                "selfplay_games_per_hour": float(args.games / max(stages[0]["seconds"], 1e-9) * 3600.0),
+                "train_steps_per_second": None,
+            },
+            "data_after_selfplay": data_after_selfplay,
+            "data_before_train": data_after_selfplay,
+            "data_after_train": data_after_selfplay,
+            "eval": {
+                "before": {},
+                "after": {},
+                "delta": {},
+                "source_delta": {},
+                "selection": {"enabled": False, "skipped": True, "reason": "fresh_quality_gate"},
+            },
+        }
+        out_path = Path(args.output) if args.output else run_dir / "local_loop_report.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        report["output"] = str(out_path)
+        return report
 
     fresh_limit_info: Optional[Dict[str, Any]] = None
     if int(args.train_fresh_max_files) > 0:
@@ -1361,6 +1557,13 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         )
 
     data_metrics_before = summarize_npz_shards(run_dir / "data")
+    source_configuration = _source_configuration_diagnostics(data_metrics_before, args)
+    source_pressure = _source_pressure_diagnostics(
+        data_metrics_before,
+        source_mix_specs=list(getattr(args, "train_result_source_mix", []) or []),
+        batch_size=int(args.batch_size),
+        train_steps=int(args.train_steps),
+    )
     eval_data_dir = Path(args.eval_data_dir) if args.eval_data_dir else run_dir / "data"
     eval_prefixes = args.eval_source_prefix if args.eval_source_prefix else None
     eval_result_prefixes = args.eval_result_source if args.eval_result_source else None
@@ -1526,6 +1729,11 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
         "stages": stages,
         "fresh_selfplay_limit": fresh_limit_info,
         "anchor_data": anchor_info,
+        "fresh_quality_gate": fresh_quality_gate,
+        "train_skipped": False,
+        "train_skip_reason": None,
+        "source_configuration": source_configuration,
+        "source_pressure": source_pressure,
         "throughput": {
             "selfplay_games_per_hour": float(args.games / max(stages[0]["seconds"], 1e-9) * 3600.0),
             "train_steps_per_second": train_steps_per_second,
@@ -1613,6 +1821,12 @@ def main() -> None:
     parser.add_argument("--eval-select-max-policy-ce-delta", type=float, default=0.001, help="Maximum allowed held-out policy CE regression for selected checkpoints.")
     parser.add_argument("--eval-select-max-policy-legal-ce-delta", type=float, default=1.0e-5, help="Maximum allowed held-out legal-policy CE regression for selected checkpoints.")
     parser.add_argument("--eval-select-max-source-value-mse-delta", type=float, default=None, help="Optional maximum allowed value MSE delta for every held-out source slice during eval selection.")
+    parser.add_argument(
+        "--max-train-fresh-capped-fraction",
+        type=float,
+        default=None,
+        help="Abort before anchor copy/training/eval if fresh self-play capped fraction exceeds this value.",
+    )
     parser.add_argument("--lr", type=float, default=4e-4)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--dataloader-workers", type=int, default=0)

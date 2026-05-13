@@ -185,6 +185,8 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
     for cycle in range(1, int(args.cycles) + 1):
         cycle_run_dir = base_run_dir / f"cycle_{cycle:04d}"
         cycle_bench_args = _replace_placeholders(bench_args, parent=current_parent, cycle_run_dir=cycle_run_dir, cycle=cycle)
+        if bool(args.pretrain_fresh_quality_gate) and "--max-train-fresh-capped-fraction" not in cycle_bench_args:
+            cycle_bench_args.extend(["--max-train-fresh-capped-fraction", str(float(args.max_fresh_capped_fraction))])
         cmd = [
             sys.executable,
             "-m",
@@ -285,6 +287,13 @@ def main() -> None:
     parser.add_argument("--max-policy-ce-delta", type=float, default=0.001)
     parser.add_argument("--max-policy-legal-ce-delta", type=float, default=1.0e-5)
     parser.add_argument("--max-fresh-capped-fraction", type=float, default=1.0)
+    parser.add_argument(
+        "--disable-pretrain-fresh-quality-gate",
+        dest="pretrain_fresh_quality_gate",
+        action="store_false",
+        help="Do not pass --max-fresh-capped-fraction down to bench_local_loop as a pre-train abort gate.",
+    )
+    parser.set_defaults(pretrain_fresh_quality_gate=True)
     parser.add_argument(
         "--max-source-value-mse-delta",
         type=float,

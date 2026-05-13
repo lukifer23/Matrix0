@@ -89,6 +89,47 @@ class DataManager:
             'z': ("z", "value", "values", "value_targets"),
         }
         self._discover_untracked_shards()
+
+    @staticmethod
+    def _batch_to_dict(
+        batch,
+        *,
+        default_source: str = "unknown",
+        fill_missing_metadata: bool = False,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """Normalize legacy tuple batches and dict batches to one shape.
+
+        Several curriculum paths combine data from helpers that historically
+        returned tuples, while newer source-aware helpers return dictionaries.
+        Normalizing at the boundary prevents dicts from being unpacked as keys
+        and keeps optional value/source metadata from disappearing.
+        """
+        if batch is None:
+            return None
+        if isinstance(batch, dict):
+            out = dict(batch)
+        else:
+            items = list(batch)
+            if len(items) < 3:
+                return None
+            out = {"s": items[0], "pi": items[1], "z": items[2]}
+            if len(items) >= 4 and items[3] is not None:
+                out["legal_mask"] = items[3]
+            if len(items) >= 5 and items[4] is not None:
+                out["value_weight"] = items[4]
+            if len(items) >= 6 and items[5] is not None:
+                out["result_source"] = items[5]
+            if len(items) >= 7 and items[6] is not None:
+                out["moves_left"] = items[6]
+
+        if not fill_missing_metadata or "s" not in out:
+            return out
+        n = int(np.asarray(out["s"]).shape[0])
+        if "value_weight" not in out:
+            out["value_weight"] = np.ones((n,), dtype=np.float32)
+        if "result_source" not in out:
+            out["result_source"] = np.asarray([default_source] * n)
+        return out
         
     def _connect(self) -> sqlite3.Connection:
         """Create a SQLite connection with WAL and busy timeout enabled."""
@@ -659,7 +700,9 @@ class DataManager:
                 out: Dict[str, np.ndarray] = {
                     's': batch_states,  # Map 'positions' -> 's'
                     'pi': batch_policies,  # Map 'policy_targets' -> 'pi'
-                    'z': batch_values  # Map 'value_targets' -> 'z'
+                    'z': batch_values,  # Map 'value_targets' -> 'z'
+                    'value_weight': np.ones((len(batch_states),), dtype=np.float32),
+                    'result_source': np.asarray(["tactical"] * len(batch_states)),
                 }
                 # Generate legal_mask for curriculum data using proper board reconstruction
                 legal_masks = []
@@ -717,7 +760,9 @@ class DataManager:
                 out: Dict[str, np.ndarray] = {
                     's': batch_states,  # Map 'positions' -> 's'
                     'pi': batch_policies,  # Map 'policy_targets' -> 'pi'
-                    'z': batch_values  # Map 'value_targets' -> 'z'
+                    'z': batch_values,  # Map 'value_targets' -> 'z'
+                    'value_weight': np.ones((len(batch_states),), dtype=np.float32),
+                    'result_source': np.asarray(["openings"] * len(batch_states)),
                 }
                 # Generate legal_mask for curriculum data using proper board reconstruction
                 legal_masks = []
@@ -758,7 +803,7 @@ class DataManager:
 
         # Combine batches
         combined_batch: Dict[str, np.ndarray] = {}
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
@@ -779,7 +824,7 @@ class DataManager:
 
         # Shuffle the combined batch
         indices = np.random.permutation(len(combined_batch['s']))
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = combined_batch[key][indices]
 
         # Include legal_mask only if present in both sources
@@ -837,7 +882,7 @@ class DataManager:
         
         # Combine with openings focus
         combined_batch: Dict[str, np.ndarray] = {}
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = np.concatenate([
                 openings_batch[key], tactical_batch[key]
             ], axis=0)
@@ -866,7 +911,7 @@ class DataManager:
 
         # Shuffle SSL targets
         indices = np.random.permutation(len(combined_batch['s']))
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = combined_batch[key][indices]
         if 'legal_mask' in combined_batch:
             combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
@@ -895,7 +940,7 @@ class DataManager:
         
         # Combine with tactics focus
         combined_batch: Dict[str, np.ndarray] = {}
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = np.concatenate([
                 tactical_batch[key], openings_batch[key]
             ], axis=0)
@@ -924,7 +969,7 @@ class DataManager:
 
         # Shuffle SSL targets
         indices = np.random.permutation(len(combined_batch['s']))
-        for key in ['s', 'pi', 'z']:
+        for key in ['s', 'pi', 'z', 'value_weight', 'result_source']:
             combined_batch[key] = combined_batch[key][indices]
         if 'legal_mask' in combined_batch:
             combined_batch['legal_mask'] = combined_batch['legal_mask'][indices]
@@ -1012,6 +1057,8 @@ class DataManager:
         result = {}
         for key in ['s', 'pi', 'z']:
             result[key] = np.concatenate(collected_data[key], axis=0)
+        result["value_weight"] = np.ones((len(result["s"]),), dtype=np.float32)
+        result["result_source"] = np.asarray(["teacher:ssl"] * len(result["s"]))
 
         if collected_legal_mask:
             result['legal_mask'] = np.concatenate(collected_legal_mask, axis=0)
@@ -1061,11 +1108,13 @@ class DataManager:
                     gen_t = self.get_training_batch_by_source_prefixes(teacher_take, ["teacher:"])
                     bt = next(gen_t, None)
                     if bt is not None:
-                        s, pi, z, lm = bt if len(bt) == 4 else (*bt, None)
-                        d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
-                        if lm is not None:
-                            d["legal_mask"] = lm
-                        parts.append(d)
+                        d = self._batch_to_dict(
+                            bt,
+                            default_source="teacher:",
+                            fill_missing_metadata=True,
+                        )
+                        if d is not None:
+                            parts.append(d)
             except Exception as e:
                 if not self._warned_teacher_portion_failure:
                     self._warned_teacher_portion_failure = True
@@ -1084,12 +1133,15 @@ class DataManager:
                 gen_e = self.get_training_batch_by_source_prefixes(remaining, ["external"])
                 be = next(gen_e, None)
                 if be is not None:
-                    s, pi, z, lm = be if len(be) == 4 else (*be, None)
-                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
-                    if lm is not None:
-                        d["legal_mask"] = lm
+                    d = self._batch_to_dict(
+                        be,
+                        default_source="external",
+                        fill_missing_metadata=True,
+                    )
+                    if d is None:
+                        raise RuntimeError("External source batch could not be normalized")
                     parts.append(d)
-                    remaining -= s.shape[0]
+                    remaining -= d["s"].shape[0]
             except Exception:
                 pass
         
@@ -1104,8 +1156,21 @@ class DataManager:
         external_batch = None
         if parts:
             external_batch = {}
+            parts = [
+                self._batch_to_dict(p, default_source="external", fill_missing_metadata=True)
+                for p in parts
+            ]
+            parts = [p for p in parts if p is not None]
             for key in ['s', 'pi', 'z']:
                 external_batch[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
+            external_batch["value_weight"] = np.concatenate(
+                [p.get("value_weight", np.ones((p["s"].shape[0],), dtype=np.float32)) for p in parts],
+                axis=0,
+            )
+            external_batch["result_source"] = np.concatenate(
+                [p.get("result_source", np.asarray(["external"] * p["s"].shape[0])) for p in parts],
+                axis=0,
+            )
 
             # Handle SSL targets in external parts
             ssl_keys_by_part = [[k for k in p.keys() if k.startswith('ssl_')] for p in parts]
@@ -1129,14 +1194,11 @@ class DataManager:
             # Get a batch from the regular replay buffer
             sp_generator = self.get_training_batch(batch_size - ext_half, "cpu")
             sp_batch = next(sp_generator)
-            sp_dict = {
-                's': sp_batch[0],
-                'pi': sp_batch[1], 
-                'z': sp_batch[2]
-            }
-            # Pass through optional legal_mask if present
-            if isinstance(sp_batch, (list, tuple)) and len(sp_batch) >= 4 and sp_batch[3] is not None:
-                sp_dict['legal_mask'] = sp_batch[3]
+            sp_dict = self._batch_to_dict(
+                sp_batch,
+                default_source="selfplay",
+                fill_missing_metadata=True,
+            )
         except Exception:
             sp_dict = None
         
@@ -1156,6 +1218,20 @@ class DataManager:
             combined_batch[key] = np.concatenate([
                 external_batch[key], sp_dict[key]
             ], axis=0)
+        combined_batch["value_weight"] = np.concatenate(
+            [
+                external_batch.get("value_weight", np.ones((external_batch["s"].shape[0],), dtype=np.float32)),
+                sp_dict.get("value_weight", np.ones((sp_dict["s"].shape[0],), dtype=np.float32)),
+            ],
+            axis=0,
+        )
+        combined_batch["result_source"] = np.concatenate(
+            [
+                external_batch.get("result_source", np.asarray(["external"] * external_batch["s"].shape[0])),
+                sp_dict.get("result_source", np.asarray(["selfplay"] * sp_dict["s"].shape[0])),
+            ],
+            axis=0,
+        )
 
         # Handle SSL targets - check if both sources have SSL targets
         ssl_keys_external = [k for k in external_batch.keys() if k.startswith('ssl_')]
@@ -1228,14 +1304,18 @@ class DataManager:
         Falls back gracefully if some buckets are missing.
         """
         try:
+            opening_take = int(max(1, round(batch_size * 0.30)))
+            tactical_take = int(max(1, round(batch_size * 0.30)))
+            minor_take = int(max(1, round(batch_size * 0.10)))
+            positional_take = batch_size - (opening_take + tactical_take + 3 * minor_take)
             # Define prefixes per bucket
             buckets = [
-                (int(max(1, round(batch_size * 0.30))), ["stockfish:openings/"]),
-                (int(max(1, round(batch_size * 0.30))), ["stockfish:tactical/"]),
-                (int(max(1, round(batch_size * 0.10))), ["stockfish:king_safety/"]),
-                (int(max(1, round(batch_size * 0.10))), ["stockfish:weaknesses/"]),
-                (int(max(1, round(batch_size * 0.10))), ["stockfish:endgames/"]),
-                (batch_size - (int(max(1, round(batch_size * 0.30))) + int(max(1, round(batch_size * 0.30))) + 3*int(max(1, round(batch_size * 0.10))))), ["stockfish:positional/"],
+                (opening_take, ["stockfish:openings/"]),
+                (tactical_take, ["stockfish:tactical/"]),
+                (minor_take, ["stockfish:king_safety/"]),
+                (minor_take, ["stockfish:weaknesses/"]),
+                (minor_take, ["stockfish:endgames/"]),
+                (positional_take, ["stockfish:positional/"]),
             ]
 
             parts: List[Dict[str, np.ndarray]] = []
@@ -1247,11 +1327,13 @@ class DataManager:
                     batch = next(gen, None)
                     if batch is None:
                         continue
-                    s, pi, z, lm = batch if len(batch) == 4 else (*batch, None)
-                    d: Dict[str, np.ndarray] = {"s": s, "pi": pi, "z": z}
-                    if lm is not None:
-                        d["legal_mask"] = lm
-                    parts.append(d)
+                    d = self._batch_to_dict(
+                        batch,
+                        default_source=prefs[0].rstrip("/") if prefs else "stockfish",
+                        fill_missing_metadata=True,
+                    )
+                    if d is not None:
+                        parts.append(d)
                 except Exception:
                     continue
 
@@ -1260,7 +1342,7 @@ class DataManager:
 
             # Concatenate parts
             combined: Dict[str, np.ndarray] = {}
-            for key in ["s", "pi", "z"]:
+            for key in ["s", "pi", "z", "value_weight", "result_source"]:
                 combined[key] = np.concatenate([p[key] for p in parts if key in p], axis=0)
 
             # Handle SSL targets
@@ -1281,7 +1363,7 @@ class DataManager:
 
             # Shuffle
             idx = np.random.permutation(len(combined["s"]))
-            for key in ["s", "pi", "z"]:
+            for key in ["s", "pi", "z", "value_weight", "result_source"]:
                 combined[key] = combined[key][idx]
             if "legal_mask" in combined:
                 combined["legal_mask"] = combined["legal_mask"][idx]
@@ -1880,7 +1962,9 @@ class DataManager:
                         raise ValueError(f"Shard missing legal_mask in strict mode: {shard_path}")
                     if "value_weight" in data:
                         weights = np.asarray(data["value_weight"][idx], dtype=np.float32).reshape(-1)
-                        value_weight_parts.append(np.ascontiguousarray(weights, dtype=np.float32))
+                    else:
+                        weights = np.ones((take,), dtype=np.float32)
+                    value_weight_parts.append(np.ascontiguousarray(weights, dtype=np.float32))
                     result_source = "unknown"
                     if "meta_result_source" in data:
                         raw_sources = np.asarray(data["meta_result_source"]).reshape(-1)

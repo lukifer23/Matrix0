@@ -886,6 +886,20 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             if v.numel() == z.numel():
                 v = v.view_as(z)
         weight_sum = value_weight.sum()
+        if (
+            weight_sum <= 0
+            and os.environ.get("MATRIX0_STRICT_DATA") == "1"
+            and (value_include_sources or value_exclude_sources or value_source_weights)
+        ):
+            sources = []
+            if result_source_np is not None:
+                raw_sources = np.asarray(result_source_np).reshape(-1)
+                sources = sorted({str(x.decode("utf-8") if isinstance(x, bytes) else x) for x in raw_sources})
+            raise ValueError(
+                "All value samples were masked or zero-weighted; "
+                f"sources={sources} include={value_include_sources} "
+                f"exclude={value_exclude_sources} source_weights={value_source_weights}"
+            )
         if value_loss_type == 'huber':
             per_sample_value_loss = nn.functional.smooth_l1_loss(v, z, beta=huber_delta, reduction='none')
         else:

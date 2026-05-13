@@ -510,3 +510,33 @@ def test_policy_distillation_loss_backprops_when_policy_targets_filtered_out():
     assert policy_loss == 0.0
     assert value_loss == 0.0
     assert student.bias.grad is not None
+
+
+def test_strict_data_rejects_all_zero_value_weight_after_source_filter(monkeypatch):
+    monkeypatch.setenv("MATRIX0_STRICT_DATA", "1")
+    model = SourceFilterModel()
+    optimizer = optim.SGD(model.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.zeros((2,), dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["capped", "capped"]),
+    }
+
+    with pytest.raises(ValueError, match="All value samples"):
+        train_step(
+            model,
+            optimizer,
+            None,
+            batch,
+            "cpu",
+            augment=False,
+            enable_ssl=False,
+            ssrl_weight=0.0,
+            enable_ssrl=False,
+            policy_masking=False,
+            precision="fp32",
+            value_include_sources=["terminal"],
+        )

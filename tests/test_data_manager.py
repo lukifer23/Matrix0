@@ -77,6 +77,23 @@ def test_training_batch_by_result_source_mix_balances_prefixes(tmp_path):
     assert batch["value_weight"].shape[0] == 12
 
 
+def test_result_source_mix_preserves_value_weights_when_one_source_omits_them(tmp_path):
+    manager = DataManager(base_dir=str(tmp_path))
+    capped = _make_sourced_shard_data(8, "capped", 0.25, fill_value=1.0)
+    terminal = _make_sourced_shard_data(8, "terminal", 1.0, fill_value=2.0)
+    terminal.pop("value_weight")
+    manager.add_training_data(capped, shard_id=0, source="replay")
+    manager.add_training_data(terminal, shard_id=1, source="replay")
+
+    batch = next(manager.get_training_batch_by_result_source_mix(8, {"capped": 0.5, "terminal": 0.5}))
+
+    assert "value_weight" in batch
+    capped_weights = batch["value_weight"][batch["result_source"] == "capped"]
+    terminal_weights = batch["value_weight"][batch["result_source"] == "terminal"]
+    np.testing.assert_allclose(capped_weights, 0.25)
+    np.testing.assert_allclose(terminal_weights, 1.0)
+
+
 def test_result_source_mix_uses_sample_count_shard_weights(tmp_path, monkeypatch):
     manager = DataManager(base_dir=str(tmp_path))
     manager.add_training_data(_make_sourced_shard_data(4, "terminal", 1.0, fill_value=0.25), shard_id=0, source="replay")
@@ -97,3 +114,72 @@ def test_result_source_mix_uses_sample_count_shard_weights(tmp_path, monkeypatch
     assert batch["s"].shape[0] == 8
     assert observed_probabilities
     np.testing.assert_allclose(observed_probabilities[0], np.array([4.0 / 44.0, 40.0 / 44.0]))
+
+
+def test_stockfish_mixed_batch_accepts_source_prefix_dict_batches(tmp_path):
+    manager = DataManager(base_dir=str(tmp_path))
+    manager.add_training_data(
+        _make_sourced_shard_data(8, "stockfish:openings/main", 1.0, fill_value=1.0),
+        shard_id=0,
+        source="stockfish:openings/main",
+    )
+    manager.add_training_data(
+        _make_sourced_shard_data(8, "stockfish:tactical/main", 0.5, fill_value=0.5),
+        shard_id=1,
+        source="stockfish:tactical/main",
+    )
+
+    batch = manager._get_stockfish_mixed_batch(6)
+
+    assert batch is not None
+    assert batch["s"].shape[0] == batch["value_weight"].shape[0] == batch["result_source"].shape[0]
+    assert set(np.unique(batch["result_source"])) == {
+        "stockfish:openings/main",
+        "stockfish:tactical/main",
+    }
+    np.testing.assert_allclose(
+        batch["value_weight"][batch["result_source"] == "stockfish:tactical/main"],
+        0.5,
+    )
+
+
+def test_mixed_external_batch_preserves_source_metadata(tmp_path, monkeypatch):
+    manager = DataManager(base_dir=str(tmp_path))
+
+    tactical = _make_sourced_shard_data(3, "tactical", 1.0, fill_value=1.0)
+    tactical["result_source"] = np.asarray(["tactical"] * 3)
+    tactical.pop("meta_result_source")
+    openings = _make_sourced_shard_data(3, "openings", 1.0, fill_value=2.0)
+    openings["result_source"] = np.asarray(["openings"] * 3)
+    openings.pop("meta_result_source")
+
+    monkeypatch.setattr(manager, "_get_tactical_batch", lambda _batch_size: tactical)
+    monkeypatch.setattr(manager, "_get_openings_batch", lambda _batch_size: openings)
+
+    batch = manager._get_mixed_external_batch(6)
+
+    assert batch is not None
+    assert batch["value_weight"].shape[0] == 6
+    assert batch["result_source"].shape[0] == 6
+    assert set(np.unique(batch["result_source"])) == {"openings", "tactical"}
+
+
+def test_curriculum_mixed_batch_preserves_external_and_replay_metadata(tmp_path):
+    manager = DataManager(base_dir=str(tmp_path))
+    manager.add_training_data(
+        _make_sourced_shard_data(16, "selfplay", 0.75, fill_value=1.0),
+        shard_id=0,
+        source="selfplay",
+    )
+    manager.add_training_data(
+        _make_sourced_shard_data(16, "stockfish:openings/main", 1.0, fill_value=0.5),
+        shard_id=1,
+        source="stockfish:openings/main",
+    )
+
+    batch = manager._get_curriculum_mixed_batch(8)
+
+    assert batch is not None
+    assert batch["s"].shape[0] == batch["value_weight"].shape[0] == batch["result_source"].shape[0]
+    assert "selfplay" in set(np.unique(batch["result_source"]))
+    assert "stockfish:openings/main" in set(np.unique(batch["result_source"]))
