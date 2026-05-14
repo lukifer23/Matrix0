@@ -326,6 +326,79 @@ def _source_weight_vector(sources, source_weights: Optional[Dict[str, float]]) -
     return torch.as_tensor(weights, dtype=torch.float32)
 
 
+def _source_names(sources) -> Optional[list[str]]:
+    if sources is None:
+        return None
+    if torch.is_tensor(sources):
+        raw = sources.detach().cpu().numpy()
+    else:
+        raw = np.asarray(sources)
+    return [str(x.decode("utf-8") if isinstance(x, bytes) else x) for x in raw.reshape(-1)]
+
+
+def value_mean_distillation_loss(
+    student_value: torch.Tensor,
+    teacher_value: torch.Tensor,
+    sample_weight: torch.Tensor,
+    sources=None,
+) -> torch.Tensor:
+    """Penalize source-wise mean value drift from a teacher checkpoint.
+
+    This constrains global/source value-bias shifts while still allowing
+    per-position residual learning inside each source slice.
+    """
+    student = student_value.reshape(-1)
+    teacher = teacher_value.reshape(-1).to(device=student.device, dtype=student.dtype)
+    weights = sample_weight.reshape(-1).to(device=student.device, dtype=student.dtype).clamp_min(0.0)
+    if student.numel() != teacher.numel() or student.numel() != weights.numel():
+        raise ValueError(
+            f"value mean distillation shape mismatch: student={student.numel()} "
+            f"teacher={teacher.numel()} weight={weights.numel()}"
+        )
+
+    names = _source_names(sources)
+    if names is None or len(names) != student.numel():
+        weight_sum = weights.sum()
+        if weight_sum <= 0:
+            return torch.zeros((), device=student.device, dtype=student.dtype)
+        mean_delta = ((student - teacher) * weights).sum() / weight_sum
+        return mean_delta.square()
+
+    penalties = []
+    for source in sorted(set(names)):
+        mask_values = [name == source for name in names]
+        mask = torch.as_tensor(mask_values, dtype=torch.bool, device=student.device)
+        source_weights = weights[mask]
+        weight_sum = source_weights.sum()
+        if weight_sum <= 0:
+            continue
+        source_delta = ((student[mask] - teacher[mask]) * source_weights).sum() / weight_sum
+        penalties.append(source_delta.square())
+    if not penalties:
+        return torch.zeros((), device=student.device, dtype=student.dtype)
+    return torch.stack(penalties).mean()
+
+
+def value_distillation_loss(
+    student_value: torch.Tensor,
+    teacher_value: torch.Tensor,
+    sample_weight: torch.Tensor,
+) -> torch.Tensor:
+    """Penalize per-position value drift from a teacher checkpoint."""
+    student = student_value.reshape(-1)
+    teacher = teacher_value.reshape(-1).to(device=student.device, dtype=student.dtype)
+    weights = sample_weight.reshape(-1).to(device=student.device, dtype=student.dtype).clamp_min(0.0)
+    if student.numel() != teacher.numel() or student.numel() != weights.numel():
+        raise ValueError(
+            f"value distillation shape mismatch: student={student.numel()} "
+            f"teacher={teacher.numel()} weight={weights.numel()}"
+        )
+    weight_sum = weights.sum()
+    if weight_sum <= 0:
+        return torch.zeros((), device=student.device, dtype=student.dtype)
+    return ((student - teacher).square() * weights).sum() / weight_sum
+
+
 def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 1, augment: bool = True,
                augment_rotate180: bool = True,
                ssl_weight: float = 0.1, enable_ssl: bool = True,
@@ -343,6 +416,8 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
                policy_distill_model: Optional[nn.Module] = None,
                policy_distill_weight: float = 0.0,
                policy_distill_temperature: float = 1.0,
+               value_distill_weight: float = 0.0,
+               value_mean_distill_weight: float = 0.0,
                moves_left_weight: float = 0.0,
                moves_left_scale: float = 256.0,
                value_source_weights: Optional[Dict[str, float]] = None):
@@ -848,10 +923,21 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             if current_step % 200 == 0:
                 logger.info("LEGAL_POLICY_LOSS: weight=%.4f ce=%.4f", float(legal_policy_weight), float(legal_policy_penalty.detach().item()))
         policy_distill_penalty = torch.zeros((), device=p.device, dtype=policy_loss.dtype)
-        if policy_distill_model is not None and policy_distill_weight > 0.0:
+        teacher_value = None
+        need_distill_teacher = (
+            policy_distill_model is not None
+            and (policy_distill_weight > 0.0 or value_distill_weight > 0.0 or value_mean_distill_weight > 0.0)
+        )
+        if need_distill_teacher:
             with torch.no_grad():
                 teacher_out = policy_distill_model(s_forward, return_ssl=False)
-                teacher_policy = teacher_out[0] if isinstance(teacher_out, (tuple, list)) else teacher_out
+                if isinstance(teacher_out, (tuple, list)):
+                    teacher_policy = teacher_out[0]
+                    teacher_value = teacher_out[1] if len(teacher_out) > 1 else None
+                else:
+                    teacher_policy = teacher_out
+                    teacher_value = None
+        if policy_distill_model is not None and policy_distill_weight > 0.0:
             policy_distill_penalty = policy_distillation_loss(
                 p,
                 teacher_policy.to(device=p.device, dtype=p.dtype),
@@ -908,6 +994,25 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
             value_loss = (per_sample_value_loss * value_weight).sum() / weight_sum
         else:
             value_loss = torch.zeros((), device=device, dtype=v.dtype)
+        value_distill_penalty = torch.zeros((), device=device, dtype=v.dtype)
+        if value_distill_weight > 0.0:
+            if teacher_value is None:
+                raise ValueError("--value-distill-weight requires --policy-distill-checkpoint to provide teacher values")
+            value_distill_penalty = value_distillation_loss(
+                v,
+                teacher_value.to(device=v.device, dtype=v.dtype),
+                value_weight,
+            ).to(dtype=v.dtype)
+        value_mean_distill_penalty = torch.zeros((), device=device, dtype=v.dtype)
+        if value_mean_distill_weight > 0.0:
+            if teacher_value is None:
+                raise ValueError("--value-mean-distill-weight requires --policy-distill-checkpoint to provide teacher values")
+            value_mean_distill_penalty = value_mean_distillation_loss(
+                v,
+                teacher_value.to(device=v.device, dtype=v.dtype),
+                value_weight,
+                result_source_np,
+            ).to(dtype=v.dtype)
 
         ssl_active = bool(enable_ssl and ssl_targets is not None and ssl_out is not None)
         ssl_loss = torch.zeros((), device=device, dtype=policy_loss.dtype)
@@ -1004,6 +1109,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
         target_dtype = policy_loss.dtype
         if value_loss.dtype != target_dtype:
             value_loss = value_loss.to(dtype=target_dtype)
+        if value_distill_penalty.dtype != target_dtype:
+            value_distill_penalty = value_distill_penalty.to(dtype=target_dtype)
+        if value_mean_distill_penalty.dtype != target_dtype:
+            value_mean_distill_penalty = value_mean_distill_penalty.to(dtype=target_dtype)
         if isinstance(ssl_loss, torch.Tensor):
             if ssl_loss.dtype != target_dtype:
                 ssl_loss = ssl_loss.to(dtype=target_dtype)
@@ -1022,6 +1131,10 @@ def train_step(model, optimizer, scaler, batch, device: str, accum_steps: int = 
 
         # Combine losses with consistent dtypes
         loss = policy_loss + policy_reg_loss + value_loss
+        if value_distill_weight > 0.0:
+            loss = loss + float(value_distill_weight) * value_distill_penalty
+        if value_mean_distill_weight > 0.0:
+            loss = loss + float(value_mean_distill_weight) * value_mean_distill_penalty
         if ssl_active and ssl_weight > 0.0:
             loss = loss + (ssl_weight * ramp * ssl_target_weight) * ssl_loss
         if ssrl_active and ssrl_weight > 0.0:
@@ -1211,6 +1324,8 @@ def train_comprehensive(
     policy_distill_checkpoint: Optional[str] = None,
     policy_distill_weight: float = 0.0,
     policy_distill_temperature: float = 1.0,
+    value_distill_weight: Optional[float] = None,
+    value_mean_distill_weight: Optional[float] = None,
     moves_left_weight: Optional[float] = None,
     moves_left_scale: Optional[float] = None,
 ):
@@ -1551,14 +1666,30 @@ def train_comprehensive(
         if policy_distill_temperature is not None
         else tr_cfg.get("policy_distill_temperature", 1.0)
     )
+    cfg_value_mean_distill_weight = float(
+        tr_cfg.get("value_mean_distill_weight", 0.0)
+        if value_mean_distill_weight is None
+        else value_mean_distill_weight
+    )
+    cfg_value_distill_weight = float(
+        tr_cfg.get("value_distill_weight", 0.0)
+        if value_distill_weight is None
+        else value_distill_weight
+    )
     policy_distill_model = None
-    if cfg_policy_distill_checkpoint and cfg_policy_distill_weight > 0.0:
+    if cfg_policy_distill_checkpoint and (
+        cfg_policy_distill_weight > 0.0
+        or cfg_value_distill_weight > 0.0
+        or cfg_value_mean_distill_weight > 0.0
+    ):
         policy_distill_model = load_frozen_policy_model(str(cfg_policy_distill_checkpoint), cfg, device)
         logger.info(
-            "Policy distillation enabled: checkpoint=%s weight=%.4f temperature=%.3f",
+            "Parent distillation enabled: checkpoint=%s policy_weight=%.4f temperature=%.3f value_weight=%.4f value_mean_weight=%.4f",
             cfg_policy_distill_checkpoint,
             cfg_policy_distill_weight,
             cfg_policy_distill_temperature,
+            cfg_value_distill_weight,
+            cfg_value_mean_distill_weight,
         )
 
     # Memory limits are now set at the beginning of the orchestrator main() function
@@ -1774,6 +1905,8 @@ def train_comprehensive(
                 policy_distill_model=policy_distill_model,
                 policy_distill_weight=cfg_policy_distill_weight,
                 policy_distill_temperature=cfg_policy_distill_temperature,
+                value_distill_weight=cfg_value_distill_weight,
+                value_mean_distill_weight=cfg_value_mean_distill_weight,
                 moves_left_weight=float(tr_cfg.get('moves_left_weight', 0.0) if moves_left_weight is None else moves_left_weight),
                 moves_left_scale=float(tr_cfg.get('moves_left_scale', 256.0) if moves_left_scale is None else moves_left_scale),
                 )
@@ -2272,6 +2405,8 @@ def main():
     parser.add_argument("--policy-distill-checkpoint", type=str, default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
     parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
     parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
+    parser.add_argument("--value-distill-weight", type=float, default=None, help="Weight for per-position parent value drift penalty.")
+    parser.add_argument("--value-mean-distill-weight", type=float, default=None, help="Weight for source-wise parent value-mean drift penalty.")
     parser.add_argument("--moves-left-weight", type=float, default=None, help="Auxiliary normalized moves-left loss weight.")
     parser.add_argument("--moves-left-scale", type=float, default=None, help="Log normalization scale for moves-left targets.")
     
@@ -2310,6 +2445,8 @@ def main():
         policy_distill_checkpoint=args.policy_distill_checkpoint,
         policy_distill_weight=args.policy_distill_weight,
         policy_distill_temperature=args.policy_distill_temperature,
+        value_distill_weight=args.value_distill_weight,
+        value_mean_distill_weight=args.value_mean_distill_weight,
         moves_left_weight=args.moves_left_weight,
         moves_left_scale=args.moves_left_scale,
     )

@@ -1163,6 +1163,8 @@ def write_loop_config(base_cfg: Config, run_dir: Path, args: argparse.Namespace)
             "policy_distill_checkpoint": str(getattr(args, "policy_distill_checkpoint", "") or ""),
             "policy_distill_weight": float(getattr(args, "policy_distill_weight", 0.0) or 0.0),
             "policy_distill_temperature": float(getattr(args, "policy_distill_temperature", 1.0) or 1.0),
+            "value_distill_weight": float(getattr(args, "value_distill_weight", 0.0) or 0.0),
+            "value_mean_distill_weight": float(getattr(args, "value_mean_distill_weight", 0.0) or 0.0),
             "moves_left_weight": float(getattr(args, "moves_left_weight", 0.0) or 0.0),
             "moves_left_scale": float(getattr(args, "moves_left_scale", 256.0) or 256.0),
         }
@@ -1407,6 +1409,10 @@ def _build_train_cmd(
         train_cmd.extend(["--policy-distill-checkpoint", str(args.policy_distill_checkpoint)])
         train_cmd.extend(["--policy-distill-weight", str(float(getattr(args, "policy_distill_weight", 0.0) or 0.0))])
         train_cmd.extend(["--policy-distill-temperature", str(float(getattr(args, "policy_distill_temperature", 1.0) or 1.0))])
+    if float(getattr(args, "value_distill_weight", 0.0) or 0.0) > 0.0:
+        train_cmd.extend(["--value-distill-weight", str(float(args.value_distill_weight))])
+    if float(getattr(args, "value_mean_distill_weight", 0.0) or 0.0) > 0.0:
+        train_cmd.extend(["--value-mean-distill-weight", str(float(args.value_mean_distill_weight))])
     if args.no_amp:
         train_cmd.append("--no-amp")
     return train_cmd
@@ -1892,6 +1898,8 @@ def main() -> None:
     parser.add_argument("--policy-distill-checkpoint", default=None, help="Frozen parent checkpoint used as policy distillation teacher.")
     parser.add_argument("--policy-distill-weight", type=float, default=0.0, help="KL weight for preserving parent policy logits.")
     parser.add_argument("--policy-distill-temperature", type=float, default=1.0, help="Temperature for policy distillation KL.")
+    parser.add_argument("--value-distill-weight", type=float, default=0.0, help="Weight for per-position parent value drift penalty.")
+    parser.add_argument("--value-mean-distill-weight", type=float, default=0.0, help="Weight for source-wise parent value-mean drift penalty.")
     parser.add_argument("--moves-left-weight", type=float, default=0.0, help="Auxiliary normalized moves-left loss weight.")
     parser.add_argument("--moves-left-scale", type=float, default=256.0, help="Log normalization scale for moves-left targets.")
     parser.add_argument("--ssl-weight", type=float, default=None)

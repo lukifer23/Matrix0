@@ -16,6 +16,8 @@ from azchess.training.train import (
     parse_source_weight_specs,
     policy_distillation_loss,
     train_step,
+    value_distillation_loss,
+    value_mean_distillation_loss,
 )
 
 
@@ -43,6 +45,19 @@ class SourceFilterModel(nn.Module):
         p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
         p[:, 0] = self.bias + 4.0
         v = self.bias.expand(batch).clone()
+        ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
+        return p, v, ssl
+
+
+class FixedValueTeacher(nn.Module):
+    def __init__(self, value: float = 0.0):
+        super().__init__()
+        self.value = float(value)
+
+    def forward(self, x, return_ssl=True):
+        batch = x.size(0)
+        p = torch.zeros(batch, int(np.prod(POLICY_SHAPE)), dtype=torch.float32, device=x.device)
+        v = torch.full((batch,), self.value, dtype=torch.float32, device=x.device)
         ssl = torch.zeros(batch, 1, dtype=torch.float32, device=x.device)
         return p, v, ssl
 
@@ -509,6 +524,106 @@ def test_policy_distillation_loss_backprops_when_policy_targets_filtered_out():
     assert loss > 0.0
     assert policy_loss == 0.0
     assert value_loss == 0.0
+    assert student.bias.grad is not None
+
+
+def test_value_mean_distillation_loss_penalizes_source_mean_drift():
+    student_value = torch.tensor([0.1, 0.3, -0.2, -0.4], dtype=torch.float32)
+    teacher_value = torch.zeros_like(student_value)
+    weights = torch.ones_like(student_value)
+    sources = np.array(["capped", "capped", "terminal", "terminal"])
+
+    loss = value_mean_distillation_loss(student_value, teacher_value, weights, sources)
+
+    assert torch.allclose(loss, torch.tensor((0.2**2 + 0.3**2) / 2, dtype=torch.float32))
+
+
+def test_value_distillation_loss_penalizes_per_position_drift():
+    student_value = torch.tensor([0.1, 0.3, -0.2], dtype=torch.float32)
+    teacher_value = torch.zeros_like(student_value)
+    weights = torch.tensor([1.0, 0.0, 2.0], dtype=torch.float32)
+
+    loss = value_distillation_loss(student_value, teacher_value, weights)
+
+    assert loss.item() == pytest.approx(((0.1**2) + 2.0 * (0.2**2)) / 3.0)
+
+
+def test_train_step_value_mean_distillation_uses_teacher_value():
+    student = SourceFilterModel()
+    with torch.no_grad():
+        student.bias.fill_(0.1)
+    teacher = FixedValueTeacher(value=0.0)
+    teacher.eval()
+    optimizer = optim.SGD(student.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((4, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((4, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.full((4,), 0.1, dtype=np.float32),
+        "value_weight": np.ones((4,), dtype=np.float32),
+        "result_source": np.array(["capped", "capped", "terminal", "terminal"]),
+    }
+
+    loss, policy_loss, value_loss, *_ = train_step(
+        student,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+        policy_distill_model=teacher,
+        policy_distill_weight=0.0,
+        value_mean_distill_weight=10.0,
+    )
+
+    assert policy_loss == 0.0
+    assert value_loss == pytest.approx(0.0, abs=1e-8)
+    assert loss == pytest.approx(0.1, rel=1e-5)
+    assert student.bias.grad is not None
+
+
+def test_train_step_value_distillation_uses_teacher_value():
+    student = SourceFilterModel()
+    with torch.no_grad():
+        student.bias.fill_(0.2)
+    teacher = FixedValueTeacher(value=0.0)
+    optimizer = optim.SGD(student.parameters(), lr=0.0)
+    policy_size = int(np.prod(POLICY_SHAPE))
+    batch = {
+        "s": np.zeros((2, 19, 8, 8), dtype=np.float32),
+        "pi": np.full((2, policy_size), 1.0 / policy_size, dtype=np.float32),
+        "z": np.full((2,), 0.2, dtype=np.float32),
+        "value_weight": np.ones((2,), dtype=np.float32),
+        "result_source": np.array(["capped", "terminal"]),
+    }
+
+    loss, policy_loss, value_loss, *_ = train_step(
+        student,
+        optimizer,
+        None,
+        batch,
+        "cpu",
+        augment=False,
+        enable_ssl=False,
+        ssrl_weight=0.0,
+        enable_ssrl=False,
+        policy_masking=False,
+        precision="fp32",
+        policy_include_sources=["__none__"],
+        policy_distill_model=teacher,
+        policy_distill_weight=0.0,
+        value_distill_weight=5.0,
+    )
+
+    assert policy_loss == 0.0
+    assert value_loss == pytest.approx(0.0, abs=1e-8)
+    assert loss == pytest.approx(0.2, rel=1e-5)
     assert student.bias.grad is not None
 
 

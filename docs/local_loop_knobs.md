@@ -269,6 +269,29 @@ Current `bootstrap_007` diagnosis: terminal positions are underrepresented in th
 
 Keep `tablebase` at the default `1.0` unless a run shows tablebase becoming the limiting guard. Do not combine high terminal weights with loose source gates; the point is to align training with the existing gate, not bypass it.
 
+### `--value-distill-weight`, `--value-mean-distill-weight`
+
+Parent value distillation guards against the source-conflict failure mode where a candidate improves one source slice by shifting the whole value head up/down, then regresses another heldout source.
+
+`--value-distill-weight` is a per-position parent value anchor. Use this first for guarded local-loop scouts; it directly damps prediction drift while still allowing target MSE to move the model.
+
+`--value-mean-distill-weight` is a source-wise mean anchor. It is useful as a diagnostic, but early `bootstrap_007` probes showed that mean-only anchoring can still permit same-sign value prediction drift across all sources.
+
+Both options require a teacher checkpoint:
+
+```bash
+--policy-distill-checkpoint {parent} \
+--policy-distill-weight 1.0 \
+--value-distill-weight 0.25
+```
+
+Anchor-only probes on May 14 showed the current root issue clearly:
+
+- `tablebase+capped` value training improved capped/tablebase but regressed terminal.
+- `terminal_only` improved terminal but regressed capped/tablebase.
+- balanced source training mostly behaved like a same-sign value bias shift.
+- `--value-distill-weight 0.25` reduced the bias shift and improved aggregate heldout value, but terminal still needs a source-gate check before an unattended loop.
+
 ### `--policy-include-source`, `--policy-exclude-source`
 
 Source-aware policy-loss gates. These operate on shard `meta_result_source` values and affect the main policy CE plus legal-policy CE. Legal-mass regularization remains global.
@@ -403,6 +426,7 @@ As of May 14, 2026, the active loop is a sample-weighted, raw-state, balanced-so
 --policy-include-source __none__
 --policy-distill-checkpoint {parent}
 --policy-distill-weight 1.0
+--value-distill-weight 0.25
 --train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
 --train-anchor-source-prefix tablebase
 --train-anchor-source-prefix terminal
