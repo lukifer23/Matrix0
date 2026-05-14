@@ -168,6 +168,30 @@ def _prune_generated_artifacts(path: Path) -> dict[str, Any]:
     return {"files": removed, "count": len(removed)}
 
 
+def _eval_selection_summary(report: dict[str, Any]) -> dict[str, Any]:
+    selection = report.get("eval", {}).get("selection", {})
+    if not isinstance(selection, dict):
+        return {"enabled": False}
+    candidates = selection.get("candidates", [])
+    if not isinstance(candidates, list):
+        candidates = []
+    return {
+        "enabled": bool(selection.get("enabled", False)),
+        "selected_chunk": selection.get("selected_chunk"),
+        "best_metric_value": selection.get("best_metric_value"),
+        "candidates": [
+            {
+                "chunk": candidate.get("chunk"),
+                "metric_value": candidate.get("metric_value"),
+                "passes_policy_limits": candidate.get("passes_policy_limits"),
+                "selection_failures": candidate.get("selection_failures", []),
+            }
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        ],
+    }
+
+
 def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any]:
     base_run_dir = Path(args.base_run_dir)
     base_run_dir.mkdir(parents=True, exist_ok=True)
@@ -241,6 +265,7 @@ def run_cycles(args: argparse.Namespace, bench_args: list[str]) -> dict[str, Any
         cycle_record = {
             "report": str(report_path),
             "promotion": promotion,
+            "eval_selection": _eval_selection_summary(report),
             "stdout_tail": proc.stdout[-4000:],
         }
         if prune is not None:

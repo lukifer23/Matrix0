@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from azchess.tools.local_loop_cycle import _prune_generated_artifacts, _replace_placeholders, evaluate_cycle_promotion
+from azchess.tools.local_loop_cycle import (
+    _eval_selection_summary,
+    _prune_generated_artifacts,
+    _replace_placeholders,
+    evaluate_cycle_promotion,
+)
 
 
 def test_cycle_promotion_rejects_policy_drift():
@@ -161,6 +166,39 @@ def test_replace_placeholders():
         "cycle_0003",
         "logs/cycles/cycle_0003/x",
     ]
+
+
+def test_eval_selection_summary_includes_candidate_failures():
+    report = {
+        "eval": {
+            "selection": {
+                "enabled": True,
+                "selected_chunk": None,
+                "best_metric_value": None,
+                "candidates": [
+                    {
+                        "chunk": 1,
+                        "metric_value": -1.0e-6,
+                        "passes_policy_limits": False,
+                        "selection_failures": [
+                            {
+                                "name": "source:terminal:value_weighted_mse",
+                                "value": 1.1e-5,
+                                "max": 2.0e-6,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+
+    summary = _eval_selection_summary(report)
+
+    assert summary["enabled"] is True
+    assert summary["selected_chunk"] is None
+    assert summary["candidates"][0]["chunk"] == 1
+    assert summary["candidates"][0]["selection_failures"][0]["name"] == "source:terminal:value_weighted_mse"
 
 
 def test_prune_generated_artifacts_removes_checkpoints_and_events(tmp_path):
