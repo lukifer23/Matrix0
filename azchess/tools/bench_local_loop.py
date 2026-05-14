@@ -1417,29 +1417,77 @@ def _selection_passes(
     args: argparse.Namespace,
     source_delta: Optional[Dict[str, Any]] = None,
 ) -> bool:
+    return not _selection_failures(delta, args, source_delta)
+
+
+def _selection_failures(
+    delta: Dict[str, float],
+    args: argparse.Namespace,
+    source_delta: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    failures: List[Dict[str, Any]] = []
     policy_ce = float(delta.get("policy_ce", 0.0))
     policy_legal_ce = float(delta.get("policy_legal_ce", 0.0))
-    if policy_ce > float(args.eval_select_max_policy_ce_delta):
-        return False
-    if policy_legal_ce > float(args.eval_select_max_policy_legal_ce_delta):
-        return False
+    policy_ce_cap = float(args.eval_select_max_policy_ce_delta)
+    policy_legal_ce_cap = float(args.eval_select_max_policy_legal_ce_delta)
+    if policy_ce > policy_ce_cap:
+        failures.append(
+            {
+                "name": "policy_ce",
+                "value": policy_ce,
+                "max": policy_ce_cap,
+                "reason": "policy_ce_delta_exceeded",
+            }
+        )
+    if policy_legal_ce > policy_legal_ce_cap:
+        failures.append(
+            {
+                "name": "policy_legal_ce",
+                "value": policy_legal_ce,
+                "max": policy_legal_ce_cap,
+                "reason": "policy_legal_ce_delta_exceeded",
+            }
+        )
     max_source_value_mse = getattr(args, "eval_select_max_source_value_mse_delta", None)
     if max_source_value_mse is not None:
         if not source_delta:
-            return False
+            failures.append(
+                {
+                    "name": "source_delta",
+                    "reason": "source_delta_missing",
+                }
+            )
+            return failures
         cap = float(max_source_value_mse)
         saw_metric = False
-        for metrics in source_delta.values():
+        metric_name = str(getattr(args, "eval_select_source_metric", "value_mse") or "value_mse")
+        for source, metrics in source_delta.items():
             if not isinstance(metrics, dict):
                 continue
-            value = metrics.get(str(getattr(args, "eval_select_source_metric", "value_mse") or "value_mse"))
-            if value is not None and float(value) > cap:
-                return False
+            value = metrics.get(metric_name)
             if value is not None:
                 saw_metric = True
+                metric_value = float(value)
+                if metric_value > cap:
+                    failures.append(
+                        {
+                            "name": f"source:{source}:{metric_name}",
+                            "source": str(source),
+                            "metric": metric_name,
+                            "value": metric_value,
+                            "max": cap,
+                            "reason": "source_metric_delta_exceeded",
+                        }
+                    )
         if not saw_metric:
-            return False
-    return True
+            failures.append(
+                {
+                    "name": f"source:{metric_name}",
+                    "metric": metric_name,
+                    "reason": "source_metric_missing",
+                }
+            )
+    return failures
 
 
 def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
@@ -1647,7 +1695,8 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                 delta = _eval_delta(eval_before, chunk_eval)
                 source_delta = _delta_source_metrics(eval_before, chunk_eval)
                 metric_value = float(delta.get(args.eval_select_metric, float("inf")))
-                passed = _selection_passes(delta, args, source_delta)
+                selection_failures = _selection_failures(delta, args, source_delta)
+                passed = not selection_failures
                 candidate = {
                     "chunk": chunk_idx,
                     "steps": int(chunk_steps),
@@ -1657,6 +1706,7 @@ def run_local_loop(args: argparse.Namespace) -> Dict[str, Any]:
                     "metric": str(args.eval_select_metric),
                     "metric_value": metric_value,
                     "passes_policy_limits": bool(passed),
+                    "selection_failures": selection_failures,
                 }
                 candidates.append(candidate)
                 if passed and metric_value < best_metric_value:

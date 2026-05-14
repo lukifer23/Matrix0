@@ -19,6 +19,7 @@ from azchess.tools.bench_local_loop import (
     _prepare_initial_checkpoint,
     _sample_eval_batch,
     _sample_eval_batches,
+    _selection_failures,
     _selection_passes,
     _source_configuration_diagnostics,
     _source_pressure_diagnostics,
@@ -642,6 +643,57 @@ def test_selection_can_reject_source_value_regression():
 
     source_delta["terminal"]["value_mse"] = 0.0000001
     assert _selection_passes(delta, args, source_delta)
+
+
+def test_selection_reports_source_value_regression_reason():
+    delta = {
+        "policy_ce": 0.0005,
+        "policy_legal_ce": 0.000002,
+        "value_weighted_mse": -0.01,
+    }
+    source_delta = {
+        "tablebase": {"value_weighted_mse": -0.02},
+        "terminal": {"value_weighted_mse": 0.00001},
+    }
+    args = Namespace(
+        eval_select_max_policy_ce_delta=0.001,
+        eval_select_max_policy_legal_ce_delta=1.0e-5,
+        eval_select_max_source_value_mse_delta=0.0000005,
+        eval_select_source_metric="value_weighted_mse",
+    )
+
+    failures = _selection_failures(delta, args, source_delta)
+
+    assert failures == [
+        {
+            "name": "source:terminal:value_weighted_mse",
+            "source": "terminal",
+            "metric": "value_weighted_mse",
+            "value": 0.00001,
+            "max": 0.0000005,
+            "reason": "source_metric_delta_exceeded",
+        }
+    ]
+
+
+def test_selection_reports_policy_failure_reasons():
+    delta = {
+        "policy_ce": 0.002,
+        "policy_legal_ce": 0.00002,
+        "value_weighted_mse": -0.01,
+    }
+    args = Namespace(
+        eval_select_max_policy_ce_delta=0.001,
+        eval_select_max_policy_legal_ce_delta=1.0e-5,
+        eval_select_max_source_value_mse_delta=None,
+    )
+
+    failures = _selection_failures(delta, args)
+
+    assert [failure["reason"] for failure in failures] == [
+        "policy_ce_delta_exceeded",
+        "policy_legal_ce_delta_exceeded",
+    ]
 
 
 def test_selection_can_use_custom_source_metric():

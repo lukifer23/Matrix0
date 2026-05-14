@@ -389,7 +389,7 @@ Use this together with the cycle-level `--max-source-value-mse-delta`.
 
 ## Current Fresh Self-Play Recipe
 
-As of May 13, 2026, the active loop is the sample-weighted, raw-state, tablebase-protected recipe:
+As of May 14, 2026, the active loop is a sample-weighted, raw-state, balanced-source scout. The previous tablebase-protected recipe improved aggregate/tablebase/capped value but repeatedly regressed terminal. The terminal-protected scout fixed terminal but overcorrected and damaged capped. Use the middle recipe below before adding teacher or stockfish data.
 
 ```text
 --games 24
@@ -397,7 +397,7 @@ As of May 13, 2026, the active loop is the sample-weighted, raw-state, tablebase
 --max-game-len 240
 --train-steps 60
 --eval-select-interval 10
---lr 3.0e-8
+--lr 1.5e-8
 --warmup-steps 10
 --capped-value-weight 0.25
 --policy-include-source __none__
@@ -407,20 +407,22 @@ As of May 13, 2026, the active loop is the sample-weighted, raw-state, tablebase
 --train-anchor-source-prefix tablebase
 --train-anchor-source-prefix terminal
 --train-anchor-source-prefix capped
---train-result-source-mix terminal=0.25
---train-result-source-mix tablebase=0.60
---train-result-source-mix capped=0.15
+--train-result-source-mix terminal=0.30
+--train-result-source-mix tablebase=0.50
+--train-result-source-mix capped=0.20
 --value-include-source tablebase
 --value-include-source terminal
 --value-include-source capped
 --value-include-source resignation
---value-source-weight terminal=2.0
---value-source-weight capped=1.5
+--value-source-weight terminal=2.5
+--value-source-weight capped=2.0
 --checkpoint-state model
 --initial-checkpoint-state model_ema
 ```
 
 This is still a guarded scout recipe, not an unattended long-run recipe. Promote only through `local_loop_cycle`, keep the policy drift gates active, and stop when a candidate reports all-zero eval deltas because that usually means eval-select chose the parent after every candidate chunk failed selection guards.
+
+Eval-select candidate records include `selection_failures`. Read these before changing knobs. A failure like `source:terminal:value_weighted_mse` means terminal protection is still insufficient; `source:capped:value_weighted_mse` means terminal/tablebase pressure is overcorrecting and capped bootstrap value needs more protection or a lower LR.
 
 The May 13 hardening pass fixed two important data-path issues before further runs:
 
@@ -500,12 +502,12 @@ Force each training batch to contain an explicit mix of result-source prefixes.
 
 Use this when a rare source has a hard promotion gate. Loss multipliers alone increase gradient size after a rare source appears; this knob ensures the source appears every step.
 
-Current tablebase-protected source mix:
+Current balanced-source scout mix:
 
 ```bash
---train-result-source-mix terminal=0.25 \
---train-result-source-mix tablebase=0.60 \
---train-result-source-mix capped=0.15
+--train-result-source-mix terminal=0.30 \
+--train-result-source-mix tablebase=0.50 \
+--train-result-source-mix capped=0.20
 ```
 
 This is a training sampler only. Keep `--value-source-weight`, value include filters, policy distillation, and the same heldout source gates so the training objective and promotion criteria stay aligned.
