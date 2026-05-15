@@ -25,6 +25,8 @@
 - Added optional moves-left auxiliary supervision: self-play now writes per-position `moves_left` targets, old per-game shards can derive them from `meta_moves`, `PolicyValueNet` can enable a `moves_left` head, training can use `--moves-left-weight`, and checkpoint eval reports `moves_left_mse` when targets are present.
 - Added `azchess.tools.diagnose_policy_targets` for target-entropy, top-probability, and legal-count bucket diagnostics.
 - Added tests covering legal-policy loss, fresh-shard metadata pruning, exact zero-jitter selection, batched virtual-loss leaf collection, self-play worker shutdown, and current-search MCTS policy targets.
+- Added parent value distillation controls and source-conflict diagnostics for short guarded local-loop scouts.
+- Added eval-selection candidate/failure reporting to cycle reports so zero-delta rejections show whether selection fell back to the parent and which source slice blocked the candidate.
 
 ### Documentation
 - Updated the current working plan, local-loop knob guide, status docs, and README status pointer to reflect the active generator-quality blocker and promotion gate.
@@ -32,6 +34,8 @@
 - Documented the May 12 `bootstrap_007_fresh_anchor_best.pt` guarded fresh self-play workflow, including source guards, capped-fraction limits, checkpoint pruning, and teacher-data caution.
 - Documented the May 12 broad-validation result and failed terminal-repair scouts; the guarded fresh recipe is now treated as saturated rather than ready for unattended looped self-play.
 - Added LC0-inspired adoption notes covering moves-left, WDL, draw calibration, search presets, backend boundaries, and ideas to defer.
+- Updated docs for the May 15 cycle6 recipe: short value-distilled scouts from `bootstrap_007_fresh_anchor_best.pt`, terminal source weighting, disabled pretrain fresh abort for diagnostics, and the rule that each future run gets a full copy-paste command.
+- Documented the current terminal-source blocker: aggregate value can improve while `source:terminal:value_weighted_mse` fails eval selection, so the next root-cause patch should split terminal zero-value and decisive terminal positions if the cycle6h scout fails similarly.
 
 ## v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates (September 2025)
 

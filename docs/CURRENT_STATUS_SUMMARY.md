@@ -1,12 +1,14 @@
 # Matrix0 Current Status Summary
 
-**Date**: May 9, 2026
-**Version**: v2.3 - Curriculum Learning + Legal Mask Fixes + Documentation Updates
-**Status**: Production training pipeline operational with complete SSL architecture integration, data pipeline fixes, EX0Bench external engine benchmarking, enhanced WebUI monitoring, 100K step pretraining in progress
+**Date**: May 15, 2026
+**Version**: v2.4 - Guarded Local-Loop Source Diagnostics
+**Status**: Production training pipeline operational with complete SSL architecture integration, data pipeline fixes, EX0Bench external engine benchmarking, enhanced WebUI monitoring, and active guarded local-loop source diagnostics
 
 ## Executive Summary
 
-Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M parameter model featuring advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** - all integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis. Two additional SSL heads (**pawn structure** and **king safety**) exist in the codebase but are currently disabled while we gather reliable targets and validation metrics.
+Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M parameter model featuring an advanced multi-task SSL learning framework. The system includes **5 SSL tasks: piece recognition, threat detection, pin detection, fork detection, and control detection** integrated with the training pipeline architecture. **Data pipeline issues have been resolved** including SSL target concatenation, shape mismatches, and value target corrections. **EX0Bench system provides pure external engine battles** for Stockfish vs LC0 performance analysis. **Training stability issues have been resolved** with proper scheduler stepping and gradient management. **Enhanced WebUI provides comprehensive monitoring** of SSL performance, training metrics, and model analysis.
+
+The active work is now the guarded `bootstrap_007` local-loop path. The current parent is `checkpoints/bootstrap_007_fresh_anchor_best.pt`. Short source-balanced, value-distilled scouts can produce real aggregate heldout gains, but the terminal heldout slice is the recurring blocker. The immediate objective is to keep promotion gated on aggregate `value_weighted_mse`, policy drift, fresh capped fraction, and per-source `tablebase`/`terminal`/`capped` value deltas while diagnosing terminal zero-value versus decisive terminal positions.
 
 ## ✅ What's Actually Working (Current Reality)
 
@@ -136,10 +138,10 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M
 ## Current Development Priorities
 
 ### Priority 1: Reliable Local-Loop Improvement (active)
-1. **Generator Quality Gate**: Keep `checkpoints/bootstrap_006_capped_value.pt` as parent until a candidate improves heldout metrics and generates better data
-2. **Fixed-Jitter Probe**: Rerun the anchor-only no-SSL candidate generator with exact `--selection-jitter 0.0`
-3. **Capped-Game Diagnosis**: Use final-position metadata to identify whether caps come from material, draw-claim, or search-quality issues
-4. **Legal-Policy Validation**: Treat raw policy CE gains as insufficient unless legal-policy metrics and value MSE are stable
+1. **Guarded Parent**: Continue from `checkpoints/bootstrap_007_fresh_anchor_best.pt` only through `azchess.tools.local_loop_cycle`.
+2. **Terminal Source Diagnosis**: Treat `source:terminal:value_weighted_mse` eval-selection failures as the active blocker; split terminal zero-value and decisive terminal positions before more knob chasing if the next scout fails the same way.
+3. **Current Recipe**: Use short cycle6-style scouts: 24 games, 50 sims, 10 train steps, LR `1.5e-8`, source mix `terminal=0.25/tablebase=0.55/capped=0.20`, terminal value weight `3.0`, capped weight `1.75`, parent policy distill `1.0`, parent value distill `0.5`.
+4. **Promotion Discipline**: Require aggregate `value_weighted_mse` improvement, source guards, policy drift guards, and fresh capped fraction guard. Do not accept zero-delta fallback candidates.
 
 ### Priority 2: SSL Performance Validation
 1. **SSL Learning Effectiveness**: Measure and validate SSL task learning across all 5 production objectives
@@ -256,14 +258,14 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M
 
 ## Documentation Status
 
-### ✅ Updated and Accurate (reviewed May 9, 2026)
-- **CURRENT_STATUS_SUMMARY.md**: ✅ **COMPLETELY UPDATED** - Full SSL integration status
-- **docs/webui.md**: ✅ **MAJOR UPDATE NEEDED** - Complete WebUI overhaul documentation
-- **docs/status.md**: ✅ **UPDATE NEEDED** - SSL integration completion
-- **docs/model_v2.md**: ✅ **UPDATE NEEDED** - SSL architecture completion
-- **docs/training_stability_and_performance_plan.md**: ✅ **UPDATE NEEDED** - Issues resolved
-- **README.md**: ✅ Current project status and capabilities
-- **docs/configuration.md**: ✅ Current SSL configuration options
+### ✅ Updated and Accurate (reviewed May 15, 2026)
+- **README.md**: ✅ Current project status, guarded parent, and active doc pointers
+- **docs/index.md**: ✅ Current docs entrypoint and priorities
+- **docs/current_working_plan.md**: ✅ Current cycle6 recipe, terminal blocker, and next step
+- **docs/local_loop_knobs.md**: ✅ Current source-guarded local-loop knobs and full-command convention
+- **docs/status.md**: ✅ Current local-loop action plan
+- **CURRENT_STATUS_SUMMARY.md**: ✅ Current SSL integration and local-loop source-diagnostic status
+- **CHANGELOG.md**: ✅ Current unreleased local-loop reliability notes
 
 ### Recent Documentation Improvements
 - **SSL Status**: ✅ Corrected all claims - SSL is fully operational with 5 tasks
@@ -281,11 +283,11 @@ Matrix0 has achieved **SSL architecture integration** with a sophisticated 44.2M
 3. ✅ **Training Stability Resolved**: All scheduler/gradient issues fixed
 4. ✅ **Documentation Update**: Current status summary completely updated
 
-### Short Term Actions (1-2 weeks, updated May 10, 2026)
-1. **Local-Loop Promotion Gate**: Promote checkpoints only after stable heldout metrics and candidate generator quality both pass
-2. **Fixed-Jitter Generator Probe**: Rerun the anchor-only no-SSL candidate generator now that `--selection-jitter 0.0` is exact
-3. **Capped-Game Diagnosis**: Use final-position metadata to determine whether capped games are material-heavy, draw-claim related, or search-quality related
-4. **SSL Learning Validation**: Resume SSL contribution measurement after the policy/value self-play loop is trustworthy
+### Short Term Actions (1-2 weeks, updated May 15, 2026)
+1. **Cycle6h Scout**: Run the documented terminal-weighted recipe with `--disable-pretrain-fresh-quality-gate` so train/eval diagnostics are always written.
+2. **Terminal Split Diagnostic**: If terminal still blocks selection, patch reports to split terminal zero-value positions from decisive terminal positions.
+3. **Recipe Freeze**: Keep teacher/Stockfish data out of the mainline until source-split terminal diagnostics explain the failure mode.
+4. **SSL Learning Validation**: Resume SSL contribution measurement after the policy/value self-play loop is trustworthy.
 
 ### Medium Term Actions (2-4 weeks)
 1. **Enhanced SSL Evaluation**: Multi-engine tournaments with SSL-aware metrics
@@ -311,10 +313,11 @@ Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 44.2M par
 - ✅ **System Stability**: No critical issues, robust error handling and recovery with SSL validation
 
 ### Current Focus
-- 🎯 **Reliable Self-Play Improvement**: Validate labels and outcome mix before training or promotion
-- 🎯 **Generator Quality Gate**: Current best remains `checkpoints/bootstrap_006_capped_value.pt` until a candidate improves heldout metrics and generates better data
-- 🎯 **Capped-Game Diagnosis**: Use final FEN, material, halfmove, legal-count, and draw-claim metadata to choose the next search/termination fix
-- 🎯 **SSL Performance Validation**: Secondary until the local-loop promotion gate is reliable
+- **Reliable Self-Play Improvement**: Validate labels and outcome mix before training or promotion.
+- **Guarded Parent**: Current best is `checkpoints/bootstrap_007_fresh_anchor_best.pt`.
+- **Terminal Source Diagnosis**: Terminal heldout regressions are the current blocker for otherwise improving candidates.
+- **Run Discipline**: Every new run should be documented as a full copy-paste command with exact `RUN`, `ANCHOR`, `PARENT`, and seed.
+- **SSL Performance Validation**: Secondary until the local-loop promotion gate is reliable.
 
 ### Success Criteria (All Met)
 - ✅ **SSL Integration**: Five production SSL algorithms working with the training pipeline; experimental pawn structure and king safety heads are tracked separately
@@ -327,5 +330,5 @@ Matrix0 has achieved **COMPLETE SSL INTEGRATION** with a sophisticated 44.2M par
 
 ---
 
-**Status**: Production training pipeline operational with complete SSL integration, data pipeline fixes, EX0Bench external benchmarking, enhanced WebUI monitoring, and active local-loop reliability diagnostics
-**Next Review**: After the fixed-jitter candidate generator probe and capped-game final-position analysis
+**Status**: Production training pipeline operational with complete SSL integration, data pipeline fixes, EX0Bench external benchmarking, enhanced WebUI monitoring, and active local-loop source diagnostics
+**Next Review**: After the cycle6h terminal-weighted scout or after the terminal zero-value/decisive split diagnostic patch

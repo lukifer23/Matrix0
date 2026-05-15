@@ -80,7 +80,9 @@ Matrix0 has achieved **production training capability** with a sophisticated 44.
 - [x] **Legal-conditioned policy loss** - `--legal-policy-weight` directly trains legal-move ranking
 - [x] **Exact no-jitter ablations** - `--selection-jitter 0.0` no longer adds hidden random noise
 - [x] **Final-position metadata** - capped-game reports include final FEN, material, halfmove clock, legal count, and draw-claim availability
-- [ ] **Candidate generator gate** - current best remains `checkpoints/bootstrap_006_capped_value.pt` until a candidate improves heldout metrics and generates better data
+- [x] **Guarded parent promotion path** - current best is `checkpoints/bootstrap_007_fresh_anchor_best.pt`, promoted only through source-sliced local-loop gates
+- [x] **Eval-selection failure reports** - cycle reports now expose candidate chunk failures such as `source:terminal:value_weighted_mse`
+- [ ] **Terminal source diagnostic** - split terminal zero-value and decisive terminal positions before unattended local-loop runs if the next terminal-weighted scout still fails the source gate
 
 ### Priority 2: SSL Algorithm Validation
 - [x] **Basic piece recognition** - working and operational

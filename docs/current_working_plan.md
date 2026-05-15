@@ -1,6 +1,6 @@
 # Current Working Plan
 
-Last updated: 2026-05-12
+Last updated: 2026-05-15
 
 This is the living document for the active Matrix0 training/debugging loop. Keep it short, factual, and current. Historical project status belongs in `status.md` and `CURRENT_STATUS_SUMMARY.md`; this page tracks the immediate problem, current best checkpoint, active hypotheses, and promotion criteria.
 
@@ -24,7 +24,7 @@ Use this as the parent until a candidate beats it on stable heldout metrics and 
 checkpoints/bootstrap_007_fresh_anchor_best.pt
 ```
 
-This checkpoint is the current mainline parent after the `bootstrap_007` tablebase, terminal, capped-anchor, and guarded fresh self-play sequence. Promote only through the source-guarded local-loop cycle path described below. Do not promote candidates from runs that are mostly capped, mostly early draw-adjudicated, only improve raw unmasked policy metrics while regressing legal policy/value, or generate weaker self-play labels than the parent.
+This checkpoint is the current mainline parent after the `bootstrap_007` tablebase, terminal, capped-anchor, and guarded fresh self-play sequence. Promote only through the source-guarded local-loop cycle path described below. Do not promote candidates from runs that are mostly capped, mostly early draw-adjudicated, only improve raw unmasked policy metrics while regressing legal policy/value, generate weaker self-play labels than the parent, or pass aggregate value while failing the terminal source slice.
 
 ## What We Fixed Recently
 
@@ -61,8 +61,46 @@ The local-loop path now fails hard instead of silently producing bad data:
 - cycle runs now use copy-on-write checkpoint aliases and `--prune-cycle-checkpoints` to avoid filling the repo with rejected `.pt` files
 - heldout eval now reports `value_weighted_mse` when batches include `value_weight`, weights top-level full-dataset metric means by sample count instead of treating every shard/batch equally, and can select/gate on weighted value metrics
 - training now supports explicit per-batch result-source sampling through `--train-result-source-mix prefix=fraction`
+- training now supports parent value distillation through `--value-distill-weight` and source-mean value anchoring through `--value-mean-distill-weight`
+- `azchess.tools.source_conflict_probe` can diagnose source-slice conflicts before another cycle run
+- `azchess.tools.local_loop_cycle` now writes eval-selection candidates and selection failures into cycle reports so rejected zero-delta runs are no longer opaque
 
 ## Current Findings
+
+### Bootstrap 007 Is Moving, But Terminal Is The Active Blocker
+
+The current cycle6 recipe can still produce real aggregate heldout value gains. The cleanest recent promotion was:
+
+- `bootstrap_007_fresh24_t20_tb60_c20_valuedistill_cycle6d_s10_i5_lr15e9_vd05_src2e6_relaxed25_seed2026051428`
+- promoted with heldout `value_weighted_mse -4.95e-7`
+- source deltas: capped `-6.50e-6`, tablebase `+6.88e-7`, terminal `-4.84e-7`
+- policy drift stayed far inside the guard
+- fresh capped fraction was `0.50`
+
+The next same-shape seed rejected even though candidate chunks had strong aggregate gains around `-1.1e-6`, because terminal `value_weighted_mse` regressed around `+1.1e-5`. Raising terminal mix/weight did not solve this by itself; the latest no-preabort run still rejected with eval-selection failures on `source:terminal:value_weighted_mse`.
+
+Interpretation: the parent is not fully plateaued, but the heldout terminal slice is small, brittle, and often zero-heavy. Do not scale cycle length or run unattended loops until terminal zero-value and decisive terminal positions are separated in diagnostics.
+
+### Current Cycle Recipe
+
+The next controlled run is still a micro-run, not a longer training push:
+
+- `24` fresh games, `50` sims, `max-game-len 240`
+- `10` train steps, eval every `5` steps
+- LR `1.5e-8`, warmup `10`
+- heldout/eval anchor: `logs/local_loop/bootstrap_003_capped_value_48g/data`
+- train anchor sources: `tablebase`, `terminal`, `capped`
+- source mix: terminal `0.25`, tablebase `0.55`, capped `0.20`
+- value source weights: terminal `3.0`, capped `1.75`
+- capped value weight `0.25`
+- policy loss disabled with `--policy-include-source __none__`
+- parent policy distillation `1.0`
+- parent value distillation `0.5`
+- aggregate value gate relaxed to `--max-value-mse-delta -0.00000025`
+- source value gate remains `--max-source-value-mse-delta 0.000002`
+- keep `--disable-pretrain-fresh-quality-gate` so bad fresh outcome mixes still produce train/eval diagnostics
+
+Every future run should be written as a full copy-paste command with `RUN`, `ANCHOR`, and `PARENT` variables, including the exact seed and run directory.
 
 ### Sharp Search Helps Labels, But Not Enough
 
@@ -234,6 +272,8 @@ Acceptance:
 
 Current status: the ptt050 policy-only reweight experiment failed this acceptance test. The follow-up `bootstrap_007` sequence established the current safer recipe: train with stable tablebase/terminal/capped anchors, keep policy loss disabled except for parent policy distillation, allow capped value targets only at low weight, and promote only if aggregate heldout value improves while tablebase, terminal, and capped source slices stay inside the source guard.
 
+Current refinement: value distillation is required for the short cycle6 scouts. It dampens whole-head value bias shifts while still allowing small improvements. Without source-split terminal diagnostics, more teacher/Stockfish data is a bias risk rather than a reliable fix.
+
 ### H3: Outcome Mix Needs Search/Termination Work
 
 If the fixed-jitter plus virtual-loss generator remains mostly capped, the next fix is not more retraining. Investigate:
@@ -247,16 +287,9 @@ If the fixed-jitter plus virtual-loss generator remains mostly capped, the next 
 
 ## Current Next Step
 
-Continue the guarded fresh self-play loop from `checkpoints/bootstrap_007_fresh_anchor_best.pt` while gains remain clean. The current accepted recipe is:
+Run one more controlled cycle6-style scout from `checkpoints/bootstrap_007_fresh_anchor_best.pt` with terminal weight raised to `3.0`, value distillation kept at `0.5`, and pretrain fresh-quality abort disabled. If terminal still fails eval selection, stop cycle runs and patch diagnostics to split terminal zero-value positions from decisive terminal positions before changing more knobs.
 
-- generate small fresh batches (`8` to `12` games) at `50` sims and `max-game-len 240`
-- train for `60` steps with LR `3e-8` to `5e-8`
-- use `logs/local_loop/bootstrap_003_capped_value_48g/data` as stable anchor and heldout eval data
-- evaluate the full heldout anchor set for `tablebase`, `terminal`, and `capped`
-- require `--max-source-value-mse-delta 0.0000005`
-- require `--max-fresh-capped-fraction` between `0.67` and `0.75`
-- use `--policy-include-source __none__` and parent policy distillation to keep policy stable
-- use `--prune-cycle-checkpoints` and prune promotion archives after the run
+The notes below are historical context for how we reached the current cycle6 recipe. They are not the current run recipe; use the "Current Cycle Recipe" section above for new commands.
 
 Recent accepted fresh-loop promotions:
 

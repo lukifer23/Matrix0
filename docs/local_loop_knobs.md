@@ -412,41 +412,61 @@ Use this together with the cycle-level `--max-source-value-mse-delta`.
 
 ## Current Fresh Self-Play Recipe
 
-As of May 14, 2026, the active loop is a sample-weighted, raw-state, balanced-source scout. The previous tablebase-protected recipe improved aggregate/tablebase/capped value but repeatedly regressed terminal. The terminal-protected scout fixed terminal but overcorrected and damaged capped. Use the middle recipe below before adding teacher or stockfish data.
+As of May 15, 2026, the active loop is a short, source-guarded, value-distilled scout. The model can still promote, but rejected chunks now show the real blocker: aggregate value often improves while the terminal heldout source regresses. The current recipe deliberately keeps runs short, preserves parent policy behavior, and uses terminal source weighting plus parent value distillation to test whether terminal can stay inside the guard.
 
 ```text
 --games 24
 --sims 50
 --max-game-len 240
---train-steps 60
---eval-select-interval 10
+--train-steps 10
+--eval-select-interval 5
 --lr 1.5e-8
 --warmup-steps 10
 --capped-value-weight 0.25
 --policy-include-source __none__
 --policy-distill-checkpoint {parent}
 --policy-distill-weight 1.0
---value-distill-weight 0.25
+--value-distill-weight 0.5
 --train-anchor-data-dir logs/local_loop/bootstrap_003_capped_value_48g/data
 --train-anchor-source-prefix tablebase
 --train-anchor-source-prefix terminal
 --train-anchor-source-prefix capped
---train-result-source-mix terminal=0.30
---train-result-source-mix tablebase=0.50
+--train-result-source-mix terminal=0.25
+--train-result-source-mix tablebase=0.55
 --train-result-source-mix capped=0.20
 --value-include-source tablebase
 --value-include-source terminal
 --value-include-source capped
---value-include-source resignation
---value-source-weight terminal=2.5
---value-source-weight capped=2.0
+--value-source-weight terminal=3.0
+--value-source-weight capped=1.75
 --checkpoint-state model
 --initial-checkpoint-state model_ema
 ```
 
-This is still a guarded scout recipe, not an unattended long-run recipe. Promote only through `local_loop_cycle`, keep the policy drift gates active, and stop when a candidate reports all-zero eval deltas because that usually means eval-select chose the parent after every candidate chunk failed selection guards.
+This is still a guarded scout recipe, not an unattended long-run recipe. Promote only through `local_loop_cycle`, keep the policy drift gates active, and inspect `eval_selection.candidates` on every reject.
 
-Eval-select candidate records include `selection_failures`. Read these before changing knobs. A failure like `source:terminal:value_weighted_mse` means terminal protection is still insufficient; `source:capped:value_weighted_mse` means terminal/tablebase pressure is overcorrecting and capped bootstrap value needs more protection or a lower LR.
+Eval-select candidate records include `selection_failures`. Read these before changing knobs. A failure like `source:terminal:value_weighted_mse` means terminal protection is still insufficient; `source:capped:value_weighted_mse` means terminal/tablebase pressure is overcorrecting and capped bootstrap value needs more protection or a lower LR. If terminal remains the blocker after the `terminal=0.25`, `terminal weight=3.0`, `value-distill=0.5` scout, stop cycle runs and patch diagnostics to split terminal zero-value and terminal decisive positions.
+
+Use `--disable-pretrain-fresh-quality-gate` for these diagnostics. Otherwise a fresh capped fraction above the pretrain cap can stop before training/eval and hide the source-slice failure that we need to see.
+
+Every run request should include a full copy-paste command with:
+
+```text
+source /Users/admin/Downloads/VSCode/Matrix0/.venv/bin/activate
+cd /Users/admin/Downloads/VSCode/Matrix0
+RUN=...
+ANCHOR=logs/local_loop/bootstrap_003_capped_value_48g/data
+PARENT=checkpoints/bootstrap_007_fresh_anchor_best.pt
+```
+
+Latest cycle6 notes:
+
+- `cycle6d` promoted with aggregate `value_weighted_mse -4.95e-7` and clean source gates.
+- `cycle6e` rejected despite aggregate candidate gains near `-1.1e-6` because terminal regressed around `+1.1e-5`.
+- `cycle6f` proved the pretrain fresh-quality gate can suppress training/eval when capped fraction is high; use `--disable-pretrain-fresh-quality-gate` for diagnostics.
+- `cycle6g` trained/evaluated with no preabort, but terminal still failed selection (`+6.86e-6` to `+1.19e-5`).
+
+The next scout is `cycle6h`: same short-loop shape, terminal mix `0.25`, tablebase `0.55`, capped `0.20`, terminal value weight `3.0`, capped weight `1.75`, and value distill `0.5`.
 
 The May 13 hardening pass fixed two important data-path issues before further runs:
 

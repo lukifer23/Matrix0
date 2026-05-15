@@ -17,7 +17,7 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 
 ## Current Project Status
 
-**Matrix0 v2.2** - SSL Architecture Integration + hardened local-loop training diagnostics + EX0Bench System deployed. Active work is focused on reliable self-play improvement before checkpoint promotion.
+**Matrix0 v2.4** - SSL Architecture Integration + guarded local-loop source diagnostics + EX0Bench System deployed. Active work is focused on reliable self-play improvement before checkpoint promotion, with `checkpoints/bootstrap_007_fresh_anchor_best.pt` as the guarded parent.
 
 ### ✅ What's Working
 - **Training Pipeline**: Complete self-play → training → evaluation cycle with strict diagnostics and promotion gates
@@ -32,8 +32,9 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 - **Web Interface**: FastAPI-based evaluation and analysis interface with comprehensive monitoring
 
 ### 🔄 Active Development
-- **Reliable Model Improvement**: Validate self-play labels before training and promote only on stable heldout metrics plus candidate generator quality
-- **Search/Data Tuning**: Diagnose capped games with final-position metadata; tune MCTS, draw adjudication, capped value weights, and anchor data mix
+- **Reliable Model Improvement**: Validate self-play labels before training and promote only on stable heldout metrics plus source-sliced candidate checks
+- **Terminal Source Diagnosis**: Current cycle6 scouts often improve aggregate value while failing `source:terminal:value_weighted_mse`; split terminal zero-value and decisive terminal positions before longer runs if this persists
+- **Search/Data Tuning**: Diagnose capped games with final-position metadata; tune MCTS, draw adjudication, capped value weights, source mix, and anchor data mix
 - **SSL Performance Validation**: Measure and validate SSL learning effectiveness across all 5 tasks after the local-loop promotion gate is trustworthy
 - **Performance Optimization**: Memory usage and training throughput improvements
 
@@ -54,9 +55,9 @@ Welcome to the Matrix0 documentation. This directory contains detailed guides fo
 For a quick look at current problem areas, check the [status report](status.md).
 
 ### Current Priorities
-1. **Reliable Training Signal**: Improve model only from verified self-play, heldout evaluation, and candidate generator checks
-2. **Search/Outcome Mix**: Reduce capped-game dominance while preserving sharp policy labels
-3. **Capped-Game Diagnosis**: Use final-position metadata to decide whether to fix search, draw adjudication, or value targets
+1. **Reliable Training Signal**: Improve model only from verified self-play, heldout evaluation, and source-sliced candidate checks
+2. **Terminal Source Diagnosis**: Resolve terminal heldout regressions before unattended local-loop runs
+3. **Run Discipline**: Document every run as a full copy-paste command with exact `RUN`, `ANCHOR`, `PARENT`, and seed
 4. **SSL Validation**: Test and validate advanced SSL algorithm effectiveness
 5. **Performance Optimization**: Memory usage and training throughput improvements
 
@@ -95,5 +96,5 @@ python -m azchess.eval --external-engines --games 50
 
 ---
 
-**Last Updated**: 2026-05-10
-**Status**: Production training pipeline operational with strict local-loop diagnostics, complete SSL architecture integration, EX0Bench external benchmarking, and active generator-quality gating before checkpoint promotion
+**Last Updated**: 2026-05-15
+**Status**: Production training pipeline operational with strict local-loop diagnostics, complete SSL architecture integration, EX0Bench external benchmarking, and active terminal-source gating before checkpoint promotion
