@@ -184,6 +184,7 @@ def _eval_selection_summary(report: dict[str, Any]) -> dict[str, Any]:
                 "chunk": candidate.get("chunk"),
                 "metric_value": candidate.get("metric_value"),
                 "passes_policy_limits": candidate.get("passes_policy_limits"),
+                "source_delta": candidate.get("source_delta", {}),
                 "selection_failures": candidate.get("selection_failures", []),
             }
             for candidate in candidates

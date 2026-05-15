@@ -180,6 +180,10 @@ def test_eval_selection_summary_includes_candidate_failures():
                         "chunk": 1,
                         "metric_value": -1.0e-6,
                         "passes_policy_limits": False,
+                        "source_delta": {
+                            "capped": {"value_weighted_mse": 6.8e-6},
+                            "terminal": {"value_weighted_mse": -1.7e-6},
+                        },
                         "selection_failures": [
                             {
                                 "name": "source:terminal:value_weighted_mse",
@@ -198,6 +202,7 @@ def test_eval_selection_summary_includes_candidate_failures():
     assert summary["enabled"] is True
     assert summary["selected_chunk"] is None
     assert summary["candidates"][0]["chunk"] == 1
+    assert summary["candidates"][0]["source_delta"]["capped"]["value_weighted_mse"] == 6.8e-6
     assert summary["candidates"][0]["selection_failures"][0]["name"] == "source:terminal:value_weighted_mse"
 
 

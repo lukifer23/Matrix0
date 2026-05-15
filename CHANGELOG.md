@@ -26,7 +26,7 @@
 - Added `azchess.tools.diagnose_policy_targets` for target-entropy, top-probability, and legal-count bucket diagnostics.
 - Added tests covering legal-policy loss, fresh-shard metadata pruning, exact zero-jitter selection, batched virtual-loss leaf collection, self-play worker shutdown, and current-search MCTS policy targets.
 - Added parent value distillation controls and source-conflict diagnostics for short guarded local-loop scouts.
-- Added eval-selection candidate/failure reporting to cycle reports so zero-delta rejections show whether selection fell back to the parent and which source slice blocked the candidate.
+- Added eval-selection candidate/failure reporting to cycle reports so zero-delta rejections show whether selection fell back to the parent, which source slice blocked the candidate, and the full per-source candidate deltas behind that decision.
 
 ### Documentation
 - Updated the current working plan, local-loop knob guide, status docs, and README status pointer to reflect the active generator-quality blocker and promotion gate.
