@@ -5,7 +5,7 @@
 [![Training Pipeline Test](https://github.com/lukifer23/Matrix0/workflows/Training%20Pipeline%20Test/badge.svg)](https://github.com/lukifer23/Matrix0/actions)
 [![Bugbot Review](https://img.shields.io/badge/Bugbot-Review%20Ready-blue?logo=bug)](https://bugbot.dev)
 
-Matrix0 is a **production-ready AlphaZero-style chess engine** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **five specialized tasks**: piece, threat, pin, fork, and control.
+Matrix0 is an **experimental AlphaZero-style chess engine under active development** featuring **complete SSL (Self-Supervised Learning) integration** designed for Apple Silicon. It provides a sophisticated multi-task learning pipeline combining policy/value optimization with advanced SSL capabilities for chess pattern recognition across **five specialized tasks**: piece, threat, pin, fork, and control.
 
 ## Project Overview
 
@@ -222,10 +222,8 @@ python benchmarks/ex0bench.py --engine1 stockfish --engine2 lc0 --games 50 --tim
 # Quick benchmark against external engines
 python benchmarks/benchmark.py --model checkpoints/v2_base.pt --engine stockfish --games 10
 
-engine vs engine tournament (lc0 vs Stockfish)
-```bash
+# Engine vs engine tournament (lc0 vs Stockfish)
 python benchmarks/enhanced_runner.py --config benchmarks/configs/enhanced_scenarios.yaml --scenario Multi_Engine_Tournament
-```
 
 # Training data analysis
 python -m azchess.tools.process_lichess
@@ -332,4 +330,4 @@ Major milestones, active priorities, and planned work are documented in [docs/CU
 
 **Matrix0 v2.2 - SSL Architecture Integration + EX0Bench System**
 
-*Advanced chess AI research platform with 53.4M parameter model and SSL architecture integration. Multi-task learning framework operational with comprehensive monitoring, EX0Bench external engine battles, and data pipeline fixes.*
+*Chess AI research platform under active development, with SSL architecture integration, monitoring, and EX0Bench external engine battles. See the current working plan for training limitations and promotion criteria.*
